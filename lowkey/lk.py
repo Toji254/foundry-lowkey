@@ -28794,6 +28794,8 @@ _PROXY_HELP_GUIDES["proxy"].update({
         ("--json", "Print the structured evidence report or storage diff as JSON.", "lk proxy audit 0xTarget --json"),
         ("--verbose", "Include source anchors, ABI signals and investigation hypotheses.", "lk proxy inspect 0xTarget --verbose"),
         ("--reference / --candidate", "Select the V1 and V2 compiler artifacts for storage validation.", "lk proxy validate --reference out/V1.json --candidate out/V2.json"),
+        ("--reference-contract / --candidate-contract", "Select the exact contract layout inside multi-contract Foundry/solc build-info files.", "lk proxy validate --reference out/build-info/V1.json --candidate out/build-info/V2.json --reference-contract Vault --candidate-contract Vault"),
+        ("--reference-source / --candidate-source", "Compare ERC-7201 annotations and struct declarations in V1/V2 source trees; source text is not compiler layout proof.", "lk proxy validate --reference out/V1.json --candidate out/V2.json --reference-source ./V1 --candidate-source ./V2"),
     ],
     "children": {
         "inspect": _help_entry(
@@ -28836,13 +28838,17 @@ _PROXY_HELP_GUIDES["proxy"].update({
         ),
         "validate": _help_entry(
             "Compare V1/V2 compiler storage layouts conservatively.",
-            "lk proxy validate --reference <V1.json> --candidate <V2.json> [--json]",
+            "lk proxy validate --reference <V1.json> --candidate <V2.json> [--reference-contract NAME --candidate-contract NAME] [--reference-source DIR --candidate-source DIR] [--json]",
             "lk proxy validate --reference out/V1.json --candidate out/V2.json",
             "Use before considering an upgrade. Storage gaps and namespaces remain manual/adapter review; compatible-candidate is not a formal proof.",
             options=[
                 ("--reference <file>", "Select the original implementation artifact containing compiler storageLayout.", "lk proxy validate --reference out/V1.json --candidate out/V2.json"),
                 ("--candidate <file>", "Select the proposed implementation artifact containing compiler storageLayout.", "lk proxy validate --reference out/V1.json --candidate out/V2.json"),
-                ("--json", "Emit the storage comparison as JSON.", "lk proxy validate --reference out/V1.json --candidate out/V2.json --json"),
+                ("--reference-contract <name>", "Select the V1 contract in a multi-contract build-info file. Accepts ContractName or Source.sol:ContractName.", "lk proxy validate --reference out/build-info/V1.json --candidate out/build-info/V2.json --reference-contract Vault --candidate-contract Vault"),
+                ("--candidate-contract <name>", "Select the V2 contract in a multi-contract build-info file.", "lk proxy validate --reference out/build-info/V1.json --candidate out/build-info/V2.json --reference-contract Vault --candidate-contract Vault"),
+                ("--reference-source <dir>", "Scan V1 source and local lib/node_modules dependencies for ERC-7201 namespace annotations.", "lk proxy validate --reference out/V1.json --candidate out/V2.json --reference-source ./V1 --candidate-source ./V2"),
+                ("--candidate-source <dir>", "Scan V2 source and local lib/node_modules dependencies for ERC-7201 namespace annotations.", "lk proxy validate --reference out/V1.json --candidate out/V2.json --reference-source ./V1 --candidate-source ./V2"),
+                ("--json", "Emit the storage and ERC-7201 comparison as JSON.", "lk proxy validate --reference out/V1.json --candidate out/V2.json --reference-source ./V1 --candidate-source ./V2 --json"),
             ],
             related=["lk storage", "lk namespace"],
         ),

@@ -682,13 +682,18 @@ lk proxy plan 0xTarget --rpc-url "$FOUNDRY_ETH_RPC_URL"
 
 # Compare compiler storage layouts before an upgrade
 lk proxy validate --reference out/V1.json --candidate out/V2.json
+lk proxy validate --reference out/V1.json --candidate out/V2.json --reference-source ./V1 --candidate-source ./V2 --json
+lk proxy validate --reference out/build-info/V1.json --candidate out/build-info/V2.json --reference-contract Vault --candidate-contract Vault
 ```
 
 The detector separates implementation, beacon and admin-slot evidence; reports conflicting implementation/beacon slots; validates the beacon's `implementation()` result against two read-only caller probes; recognizes the canonical EIP-1167 runtime; and probes Diamond Loupe facets and selectors. A direct `proxiableUUID()` match is reported only as a UUPS-compatible implementation signal, not proof that upgrade authorization is safe or that the proxy is exclusively UUPS.
 
+The audit also checks owner getter candidates, differential Transparent admin routing behavior, ABI-declared initializer entrypoints and safe public initialization-version getters, plus bounded nested clone/proxy implementation chains. These are evidence signals only: no mutating initializer is called, owner getters do not prove upgrade authority, and nested traversal stops on custom or unresolved routing.
+
+
 Inspection reads are pinned to one block number and the block hash is checked again before the report is returned. RPC failures are UNVERIFIED, unsupported proxy shapes remain UNCLASSIFIED, and an empty admin slot never proves that a target is not a proxy. Admin-slot contents are reported as candidates rather than effective admin proof because immutable-admin proxy implementations can diverge from mirrored storage.
 
-`lk proxy audit` scans local `src/` and `contracts/` Solidity files for line-anchored signals. That scanner is textual and deliberately does not claim compiler-AST reachability. `lk proxy plan` writes NOT_EXECUTED hypotheses only; it does not send transactions. `lk proxy validate` is a conservative compiler-layout comparison, not a replacement for OpenZeppelin's compiler-backed upgrade validator. Storage gaps and namespaces remain inconclusive. Generic upgrade simulation and executable proxy attack campaigns remain blocked until a deployment-specific adapter, implementation artifact, initialization calldata, paired controls and target invariants are supplied.
+`lk proxy audit` scans local `src/` and `contracts/` Solidity files for line-anchored signals. That scanner is textual and deliberately does not claim compiler-AST reachability. `lk proxy plan` writes NOT_EXECUTED hypotheses only; it does not send transactions. `lk proxy validate` is a conservative compiler-layout comparison, not a replacement for OpenZeppelin's compiler-backed upgrade validator. With paired source roots, it also inventories ERC-7201 namespace IDs, root slots and annotated struct-member declarations; source-text equality is not compiler layout proof. Storage gaps, changed namespace members and incomplete scans remain inconclusive. Generic upgrade simulation and executable proxy attack campaigns remain blocked until a deployment-specific adapter, implementation artifact, initialization calldata, paired controls and target invariants are supplied.
 
 ## ABI and function discovery
 

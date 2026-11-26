@@ -31,9 +31,16 @@ class FakeRpc:
         return self.codes[address]
 
     def storage(self, address, slot):
-        if slot not in self.slots:
-            raise pe.ProxyError("missing test storage")
-        return self.slots[slot]
+        scoped = (address.lower(), slot.lower())
+        if scoped in self.slots:
+            return self.slots[scoped]
+        if slot in self.slots:
+            # Existing tests model the inspected target only. Unknown downstream
+            # implementation addresses are direct contracts unless explicitly scoped.
+            if address.lower() == ("0x" + "11" * 20).lower():
+                return self.slots[slot]
+            return word_address(pe.ZERO_ADDRESS)
+        raise pe.ProxyError("missing test storage")
 
     def call(self, to, data, caller=pe.SENTINEL_CALLERS[0]):
         self.requested_calls.append((to, data, caller))
@@ -62,6 +69,89 @@ def dynamic_array(items, address_items=False):
     return "0x" + "0" * 62 + "20" + format(len(items), "064x") + "".join(words)
 
 
+
+
+class RpcSnapshotTests(unittest.TestCase):
+    def test_rpc_reads_use_the_same_explicit_block_tag_and_recheck_hash(self):
+        import json
+
+        block_hash = "0x" + "a" * 64
+        requests = []
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self):
+                return json.dumps(self.payload).encode()
+
+        def fake_urlopen(request, timeout):
+            payload = json.loads(request.data.decode())
+            requests.append(payload)
+            method = payload["method"]
+            if method == "eth_chainId":
+                result = "0x7a69"
+            elif method == "eth_getBlockByNumber":
+                result = {
+                    "number": "0x64",
+                    "hash": block_hash,
+                    "timestamp": "0x1234",
+                }
+            elif method == "eth_getCode":
+                result = "0x6000"
+            elif method == "eth_getStorageAt":
+                result = "0x" + "00" * 32
+            else:
+                raise AssertionError("unexpected JSON-RPC method: " + method)
+            return Response({"jsonrpc": "2.0", "id": payload["id"], "result": result})
+
+        client = pe.RpcClient("http://localhost:8545")
+        with patch.object(pe.urllib.request, "urlopen", side_effect=fake_urlopen):
+            snapshot = client.pin(requested_block=100)
+            client.code("0x" + "11" * 20)
+            client.storage("0x" + "11" * 20, pe.EIP1967_IMPLEMENTATION_SLOT)
+            self.assertTrue(client.verify_snapshot())
+        self.assertEqual(snapshot["block_number"], 100)
+        self.assertEqual(snapshot["block_hash"], block_hash)
+        code_request = next(item for item in requests if item["method"] == "eth_getCode")
+        storage_request = next(item for item in requests if item["method"] == "eth_getStorageAt")
+        self.assertEqual(code_request["params"][1], "0x64")
+        self.assertEqual(storage_request["params"][2], "0x64")
+
+    def test_block_hash_change_invalidates_snapshot(self):
+        import json
+
+        hashes = iter(["0x" + "a" * 64, "0x" + "b" * 64])
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self):
+                return json.dumps(self.payload).encode()
+
+        def fake_urlopen(request, timeout):
+            payload = json.loads(request.data.decode())
+            if payload["method"] == "eth_chainId":
+                result = "0x1"
+            elif payload["method"] == "eth_getBlockByNumber":
+                result = {"number": "0x64", "hash": next(hashes), "timestamp": "0x1"}
+            else:
+                raise AssertionError("unexpected JSON-RPC method")
+            return Response({"jsonrpc": "2.0", "id": payload["id"], "result": result})
+
+        client = pe.RpcClient("http://localhost:8545")
+        with patch.object(pe.urllib.request, "urlopen", side_effect=fake_urlopen):
+            client.pin(requested_block=100)
+            self.assertFalse(client.verify_snapshot())
+
+
 class KeccakTests(unittest.TestCase):
     def test_ethereum_keccak_selectors(self):
         self.assertEqual(pe.function_selector("owner()"), "0x8da5cb5b")
@@ -85,6 +175,17 @@ class SlotAndBytecodeTests(unittest.TestCase):
         runtime = "0x363d3d373d3d3d363d73" + implementation[2:] + "5af43d82803e903d91602b57fd5bf3"
         self.assertEqual(pe._minimal_clone_implementation(runtime), implementation)
         self.assertIsNone(pe._minimal_clone_implementation(runtime + "00"))
+
+    def test_diamond_selector_array_respects_auditor_rpc_budget(self):
+        selectors = ["0x" + format(index + 1, "08x") for index in range(pe.MAX_DIAMOND_SELECTORS + 1)]
+        self.assertIsNone(
+            pe._decode_dynamic_array(
+                dynamic_array(selectors),
+                32,
+                address_items=False,
+                max_items=pe.MAX_DIAMOND_SELECTORS,
+            )
+        )
 
     def test_opcode_scan_skips_push_payload(self):
         # PUSH4 payload contains f4 but the instruction stream has no DELEGATECALL.
@@ -156,6 +257,22 @@ class InspectionTests(unittest.TestCase):
             report = pe.inspect_proxy("http://rpc.invalid", target)
         self.assertEqual(report["status"], "UNVERIFIED")
         self.assertEqual(report["architecture"], "UNVERIFIED_EIP1967")
+
+    def test_unreadable_admin_slot_is_not_reported_as_empty(self):
+        target = "0x" + "11" * 20
+        implementation = "0x" + "22" * 20
+        fake = FakeRpc(
+            slots={
+                pe.EIP1967_IMPLEMENTATION_SLOT: word_address(implementation),
+                pe.EIP1967_BEACON_SLOT: word_address(pe.ZERO_ADDRESS),
+                # Deliberately omit EIP1967_ADMIN_SLOT.
+            },
+            code={target: "0x6000", implementation: "0x6001"},
+        )
+        with patch.object(pe, "RpcClient", return_value=fake):
+            report = pe.inspect_proxy("http://rpc.invalid", target)
+        self.assertEqual(report["checks"]["admin_slot_authority"]["status"], "UNVERIFIED")
+        self.assertFalse(any("was successfully read as zero" in item for item in report["evidence"]))
 
     def test_beacon_caller_dependence_is_reported(self):
         target = "0x" + "11" * 20
@@ -232,6 +349,197 @@ class InspectionTests(unittest.TestCase):
         self.assertTrue(any("does not exclude" in item for item in report["warnings"]))
 
 
+
+
+class AuthorityAndLifecycleTests(unittest.TestCase):
+    def _base_slots(self, implementation=None, beacon=None, admin=None):
+        return {
+            pe.EIP1967_IMPLEMENTATION_SLOT: word_address(implementation or pe.ZERO_ADDRESS),
+            pe.EIP1967_BEACON_SLOT: word_address(beacon or pe.ZERO_ADDRESS),
+            pe.EIP1967_ADMIN_SLOT: word_address(admin or pe.ZERO_ADDRESS),
+        }
+
+    def test_transparent_admin_routing_requires_differential_call_evidence(self):
+        target = "0x" + "11" * 20
+        implementation = "0x" + "22" * 20
+        admin = "0x" + "33" * 20
+        selector = pe.function_selector("totalSupply()")
+        value = "0x" + "00" * 31 + "01"
+        abi = [{
+            "type": "function", "name": "totalSupply", "inputs": [],
+            "outputs": [{"type": "uint256"}], "stateMutability": "view",
+        }]
+        fake = FakeRpc(
+            slots=self._base_slots(implementation=implementation, admin=admin),
+            code={target: "0x6000", implementation: "0x6001"},
+            calls={
+                (implementation, selector, admin): value,
+                (implementation, selector, pe.SENTINEL_CALLERS[0]): value,
+                (target, selector, pe.SENTINEL_CALLERS[0]): value,
+            },
+        )
+        with patch.object(pe, "RpcClient", return_value=fake):
+            report = pe.inspect_proxy("http://rpc.invalid", target, abi=abi)
+        probe = report["checks"]["transparent_admin_routing"]
+        self.assertEqual(probe["status"], "TRANSPARENT_ROUTING_CANDIDATE")
+        self.assertIn("TRANSPARENT_ADMIN_ROUTING_CANDIDATE", report["upgrade_mechanisms"])
+        self.assertEqual(probe["matched_function"], "totalSupply()")
+
+    def test_owner_getter_is_reported_as_candidate_not_proxy_authority(self):
+        admin = "0x" + "33" * 20
+        owner = "0x" + "44" * 20
+        fake = FakeRpc(code={admin: "0x6001"})
+        selector = pe.function_selector("owner()")
+        fake.calls[(admin, selector, pe.SENTINEL_CALLERS[0])] = word_address(owner)
+        fake.calls[(admin, selector, pe.SENTINEL_CALLERS[1])] = word_address(owner)
+        result = pe._probe_owner_getter(fake, admin)
+        self.assertEqual(result["status"], "OWNER_GETTER_VALUE_OBSERVED")
+        self.assertEqual(result["owner_candidate"], owner)
+        self.assertIn("does not by itself prove", result["limitation"])
+
+    def test_zero_owner_getter_is_not_reported_as_an_authority_candidate(self):
+        admin = "0x" + "33" * 20
+        fake = FakeRpc(code={admin: "0x6001"})
+        selector = pe.function_selector("owner()")
+        fake.calls[(admin, selector, pe.SENTINEL_CALLERS[0])] = word_address(pe.ZERO_ADDRESS)
+        fake.calls[(admin, selector, pe.SENTINEL_CALLERS[1])] = word_address(pe.ZERO_ADDRESS)
+        result = pe._probe_owner_getter(fake, admin)
+        self.assertEqual(result["status"], "ZERO_OWNER_VALUE_OBSERVED")
+        self.assertNotIn("owner_candidate", result)
+
+    def test_caller_dependent_owner_getter_is_not_trusted(self):
+        admin = "0x" + "33" * 20
+        owner_a = "0x" + "44" * 20
+        owner_b = "0x" + "55" * 20
+        fake = FakeRpc(code={admin: "0x6001"})
+        selector = pe.function_selector("owner()")
+        fake.calls[(admin, selector, pe.SENTINEL_CALLERS[0])] = word_address(owner_a)
+        fake.calls[(admin, selector, pe.SENTINEL_CALLERS[1])] = word_address(owner_b)
+        result = pe._probe_owner_getter(fake, admin)
+        self.assertEqual(result["status"], "CALLER_DEPENDENT")
+        self.assertNotIn("owner_candidate", result)
+
+    def test_initializer_entrypoint_is_never_called_during_readiness_inspection(self):
+        target = "0x" + "11" * 20
+        implementation = "0x" + "22" * 20
+        initialized_selector = pe.function_selector("initialized()")
+        initialized_false = "0x" + "00" * 32
+        abi = [
+            {
+                "type": "function", "name": "initialize",
+                "inputs": [{"type": "address"}], "outputs": [],
+                "stateMutability": "nonpayable",
+            },
+            {
+                "type": "function", "name": "initialized",
+                "inputs": [], "outputs": [{"type": "bool"}],
+                "stateMutability": "view",
+            },
+        ]
+        fake = FakeRpc(
+            slots=self._base_slots(implementation=implementation),
+            code={target: "0x6000", implementation: "0x6001"},
+            calls={(target, initialized_selector): initialized_false},
+        )
+        with patch.object(pe, "RpcClient", return_value=fake):
+            report = pe.inspect_proxy("http://rpc.invalid", target, abi=abi)
+        init = report["checks"]["initialization"]
+        self.assertEqual(init["status"], "EXPLICIT_GETTER_VALUES_OBSERVED")
+        self.assertEqual(init["initializer_entrypoints"][0]["signature"], "initialize(address)")
+        self.assertFalse(init["mutating_entrypoints_called"])
+        self.assertTrue(any(
+            call[0] == target and call[1] == initialized_selector
+            for call in fake.requested_calls
+        ))
+        initialize_selector = pe.function_selector("initialize(address)")
+        self.assertFalse(any(call[1] == initialize_selector for call in fake.requested_calls))
+
+    def test_nested_clone_to_erc1967_proxy_chain_is_followed_and_bounded(self):
+        clone = "0x" + "11" * 20
+        nested_proxy = "0x" + "22" * 20
+        implementation = "0x" + "33" * 20
+        clone_runtime = (
+            "0x363d3d373d3d3d363d73" + nested_proxy[2:]
+            + "5af43d82803e903d91602b57fd5bf3"
+        )
+        fake = FakeRpc(
+            slots={
+                pe.EIP1967_IMPLEMENTATION_SLOT: word_address(pe.ZERO_ADDRESS),
+                pe.EIP1967_BEACON_SLOT: word_address(pe.ZERO_ADDRESS),
+                pe.EIP1967_ADMIN_SLOT: word_address(pe.ZERO_ADDRESS),
+                (nested_proxy, pe.EIP1967_IMPLEMENTATION_SLOT): word_address(implementation),
+                (nested_proxy, pe.EIP1967_BEACON_SLOT): word_address(pe.ZERO_ADDRESS),
+            },
+            code={
+                clone: clone_runtime,
+                nested_proxy: "0x6000",
+                implementation: "0x6001",
+            },
+        )
+        with patch.object(pe, "RpcClient", return_value=fake):
+            report = pe.inspect_proxy("http://rpc.invalid", clone)
+        chain = report["nested_proxy_chain"]
+        self.assertEqual(chain["status"], "TERMINAL_IMPLEMENTATION")
+        self.assertEqual(
+            [item["architecture"] for item in chain["hops"]],
+            ["ERC1967_IMPLEMENTATION_PROXY", "TERMINAL_IMPLEMENTATION"],
+        )
+        self.assertEqual(chain["hops"][0]["address"], nested_proxy)
+        self.assertEqual(chain["hops"][1]["address"], implementation)
+
+    def test_nested_proxy_cycle_is_detected(self):
+        proxy_a = "0x" + "11" * 20
+        proxy_b = "0x" + "22" * 20
+        fake = FakeRpc(
+            slots={
+                (proxy_a, pe.EIP1967_IMPLEMENTATION_SLOT): word_address(proxy_b),
+                (proxy_a, pe.EIP1967_BEACON_SLOT): word_address(pe.ZERO_ADDRESS),
+                (proxy_b, pe.EIP1967_IMPLEMENTATION_SLOT): word_address(proxy_a),
+                (proxy_b, pe.EIP1967_BEACON_SLOT): word_address(pe.ZERO_ADDRESS),
+            },
+            code={proxy_a: "0x6000", proxy_b: "0x6001"},
+        )
+        result = pe._resolve_nested_proxy_chain(fake, proxy_a)
+        self.assertEqual(result["status"], "CYCLE_DETECTED")
+        self.assertEqual(len(result["hops"]), 3)
+
+class FoundryBuildInfoLayoutTests(unittest.TestCase):
+    def test_selects_contract_layout_from_multi_contract_build_info(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "build-info.json"
+            vault_layout = {
+                "storage": [{"label": "owner", "slot": "0", "offset": 0, "type": "t_address"}],
+                "types": {"t_address": {"encoding": "inplace", "label": "address", "numberOfBytes": "20"}},
+            }
+            token_layout = {
+                "storage": [{"label": "supply", "slot": "0", "offset": 0, "type": "t_uint256"}],
+                "types": {"t_uint256": {"encoding": "inplace", "label": "uint256", "numberOfBytes": "32"}},
+            }
+            payload = {
+                "output": {"contracts": {
+                    "src/Vault.sol": {"Vault": {"storageLayout": vault_layout}},
+                    "src/Token.sol": {"Token": {"storageLayout": token_layout}},
+                }}
+            }
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            selected = pe._read_json_file(str(path), "src/Vault.sol:Vault")
+            self.assertEqual(selected["storageLayout"], vault_layout)
+
+    def test_multi_contract_build_info_requires_explicit_contract_selector(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "build-info.json"
+            empty_layout = {"storage": [], "types": {}}
+            path.write_text(json.dumps({
+                "output": {"contracts": {
+                    "src/A.sol": {"A": {"storageLayout": empty_layout}},
+                    "src/B.sol": {"B": {"storageLayout": empty_layout}},
+                }}
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(pe.ProxyError, "contains 2 contract storage layouts"):
+                pe._read_json_file(str(path))
+
 class StorageLayoutTests(unittest.TestCase):
     def setUp(self):
         self.reference = {
@@ -292,7 +600,99 @@ class StorageLayoutTests(unittest.TestCase):
         self.assertEqual(report["status"], "INCONCLUSIVE")
 
 
+class Erc7201NamespaceTests(unittest.TestCase):
+    def _source(self, root, path, body):
+        file_path = pathlib.Path(root) / path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(body, encoding="utf-8")
+        return file_path
+
+    def test_openzeppelin_initializable_namespace_root_matches_known_erc7201_slot(self):
+        self.assertEqual(
+            pe._erc7201_root_slot("openzeppelin.storage.Initializable"),
+            "0xf0c57e16840df040f15088dc2f81fe391c3923bec73e23a9662efc9c229c6a00",
+        )
+
+    def test_scans_erc7201_annotations_and_members_in_dependency_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self._source(
+                root,
+                "lib/openzeppelin/contracts/Initializable.sol",
+                "/// @custom:storage-location erc7201:openzeppelin.storage.Initializable\n"
+                "struct InitializableStorage {\n"
+                "    uint64 _initialized;\n"
+                "    bool _initializing;\n"
+                "}\n",
+            )
+            result = pe.scan_erc7201_namespaces(root)
+        self.assertEqual(result["status"], "SCANNED")
+        self.assertEqual(len(result["namespaces"]), 1)
+        item = result["namespaces"][0]
+        self.assertEqual(item["namespace_id"], "openzeppelin.storage.Initializable")
+        self.assertEqual(item["struct_name"], "InitializableStorage")
+        self.assertEqual(item["members"], ["uint64 _initialized", "bool _initializing"])
+
+    def test_namespace_pair_comparison_marks_identical_source_as_review_only(self):
+        with tempfile.TemporaryDirectory() as left, tempfile.TemporaryDirectory() as right:
+            source = (
+                "/// @custom:storage-location erc7201:example.storage.Vault\n"
+                "struct VaultStorage {\n"
+                "    address owner;\n"
+                "    uint256 totalAssets;\n"
+                "}\n"
+            )
+            self._source(left, "src/Vault.sol", source)
+            self._source(right, "src/Vault.sol", source)
+            result = pe.compare_erc7201_namespaces(left, right)
+        self.assertEqual(result["status"], "IDS_AND_DECLARATIONS_MATCH")
+        self.assertEqual(len(result["unchanged"]), 1)
+        self.assertTrue(any("not a storage-compatibility proof" in item for item in result["warnings"]))
+
+    def test_namespace_member_change_never_receives_green(self):
+        with tempfile.TemporaryDirectory() as left, tempfile.TemporaryDirectory() as right:
+            self._source(
+                left, "src/Vault.sol",
+                "/// @custom:storage-location erc7201:example.storage.Vault\n"
+                "struct VaultStorage { address owner; uint256 totalAssets; }\n",
+            )
+            self._source(
+                right, "src/Vault.sol",
+                "/// @custom:storage-location erc7201:example.storage.Vault\n"
+                "struct VaultStorage { address owner; uint128 totalAssets; uint128 debt; }\n",
+            )
+            result = pe.compare_erc7201_namespaces(left, right)
+        self.assertEqual(result["status"], "LAYOUT_CHANGE_REQUIRES_VALIDATION")
+        self.assertEqual(len(result["changed"]), 1)
+
+    def test_missing_reference_namespace_is_not_accepted(self):
+        with tempfile.TemporaryDirectory() as left, tempfile.TemporaryDirectory() as right:
+            self._source(
+                left, "src/Vault.sol",
+                "/// @custom:storage-location erc7201:example.storage.Vault\n"
+                "struct VaultStorage { address owner; }\n",
+            )
+            self._source(right, "src/Vault.sol", "contract Vault {}\n")
+            result = pe.compare_erc7201_namespaces(left, right)
+        self.assertEqual(result["status"], "INCOMPATIBLE_CANDIDATE")
+        self.assertEqual(len(result["removed"]), 1)
+
+
 class AuditPlanTests(unittest.TestCase):
+    def test_attack_plan_adds_namespaced_storage_scenario_only_when_observed(self):
+        report = {
+            "target": "0x" + "11" * 20,
+            "architecture": "ERC1967_IMPLEMENTATION_PROXY",
+            "erc7201_namespaces": {
+                "namespaces": [{"namespace_id": "example.storage.Vault"}],
+                "root_collisions": [],
+            },
+        }
+        plan = pe.build_attack_plan(report)
+        scenario = next(item for item in plan["scenarios"] if item["id"] == "PROXY-ERC7201-001")
+        self.assertEqual(scenario["status"], "NOT_EXECUTED")
+        self.assertIn("pre/post namespaced state snapshots", scenario["required_evidence"])
+
     def test_attack_plan_never_claims_execution(self):
         report = {"target": "0x" + "11" * 20, "architecture": "ERC1967_IMPLEMENTATION_PROXY", "snapshot": {"block_number": 1}}
         plan = pe.build_attack_plan(report)

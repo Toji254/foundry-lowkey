@@ -28,7 +28,7 @@ SENTINEL_CALLERS = (
     "0x0000000000000000000000000000000000000002",
 )
 MAX_DIAMOND_FACETS = 64
-MAX_DIAMOND_SELECTORS = 256
+MAX_DIAMOND_SELECTORS = 64
 
 
 class ProxyError(RuntimeError):
@@ -251,6 +251,330 @@ def _decode_returned_address(data: str) -> str | None:
     return None if address == ZERO_ADDRESS else address
 
 
+def _decode_abi_address(data: str) -> str | None:
+    raw = _hex_bytes(data)
+    if raw is None or len(raw) != 32 or raw[:12] != b"\x00" * 12:
+        return None
+    return "0x" + raw[12:].hex()
+
+
+def _try_call(client: RpcClient, address: str, selector: str, caller: str) -> tuple[bool, str | None]:
+    try:
+        return True, client.call(address, selector, caller=caller)
+    except ProxyError:
+        return False, None
+
+
+def _probe_owner_getter(client: RpcClient, address: str) -> dict[str, Any]:
+    """Read owner() from two independent caller contexts; a getter value is not authority proof."""
+    try:
+        code = client.code(address)
+    except ProxyError as exc:
+        return {"status": "UNVERIFIED", "error": str(exc)}
+    if code == "0x":
+        return {"status": "NO_CODE"}
+    selector = function_selector("owner()")
+    values = []
+    for caller in SENTINEL_CALLERS:
+        ok, raw = _try_call(client, address, selector, caller)
+        owner = _decode_abi_address(raw) if ok and raw is not None else None
+        values.append({"caller": caller, "readable": ok, "owner": owner})
+    owners = {item["owner"] for item in values if item["readable"] and item["owner"] is not None}
+    if owners == {ZERO_ADDRESS} and all(
+        item["readable"] and item["owner"] is not None for item in values
+    ):
+        return {
+            "status": "ZERO_OWNER_VALUE_OBSERVED",
+            "probes": values,
+            "limitation": "owner() consistently returned address(0); this is not an authority candidate and may represent a renounced or unset owner.",
+        }
+    if len(owners) == 1 and all(item["readable"] and item["owner"] is not None for item in values):
+        owner = next(iter(owners))
+        return {
+            "status": "OWNER_GETTER_VALUE_OBSERVED",
+            "owner_candidate": owner,
+            "caller_independence": "CONSISTENT_FOR_TWO_SENTINEL_CALLERS",
+            "probes": values,
+            "limitation": "owner() is an application getter signal; it does not by itself prove control over the proxy upgrade route.",
+        }
+    if len(owners) > 1:
+        return {
+            "status": "CALLER_DEPENDENT",
+            "probes": values,
+            "limitation": "Different callers observed different owner() values; do not treat one as the authority.",
+        }
+    return {
+        "status": "UNAVAILABLE",
+        "probes": values,
+        "limitation": "No consistent canonical owner() address was decoded.",
+    }
+
+
+def _probe_transparent_admin_routing(
+    client: RpcClient,
+    proxy: str,
+    implementation: str,
+    admin_candidate: str | None,
+    abi: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Compare safe view calls through the implementation and proxy for an admin candidate."""
+    if not admin_candidate:
+        return {"status": "NO_ADMIN_SLOT_CANDIDATE"}
+    other_caller = next((item for item in SENTINEL_CALLERS if item.lower() != admin_candidate.lower()), None)
+    if other_caller is None:
+        return {"status": "NO_INDEPENDENT_CALLER"}
+    view_items = []
+    for item in abi or []:
+        if not isinstance(item, dict) or item.get("type") != "function":
+            continue
+        if item.get("stateMutability") not in {"view", "pure"}:
+            continue
+        if item.get("inputs"):
+            continue
+        if not item.get("outputs"):
+            continue
+        name = str(item.get("name") or "")
+        if not name or name in {"proxiableUUID", "implementation", "admin"}:
+            continue
+        signature = name + "()"
+        view_items.append((signature, function_selector(signature)))
+    if not view_items:
+        return {"status": "NOT_PROBED_NO_SAFE_NOARG_VIEW_FUNCTIONS"}
+
+    examined = []
+    for signature, selector in view_items[:8]:
+        direct_admin_ok, direct_admin_result = _try_call(client, implementation, selector, admin_candidate)
+        direct_other_ok, direct_other_result = _try_call(client, implementation, selector, other_caller)
+        proxy_admin_ok, proxy_admin_result = _try_call(client, proxy, selector, admin_candidate)
+        proxy_other_ok, proxy_other_result = _try_call(client, proxy, selector, other_caller)
+        row = {
+            "signature": signature,
+            "selector": selector,
+            "implementation_admin_call_succeeded": direct_admin_ok,
+            "implementation_other_call_succeeded": direct_other_ok,
+            "proxy_admin_call_succeeded": proxy_admin_ok,
+            "proxy_other_call_succeeded": proxy_other_ok,
+        }
+        examined.append(row)
+        if (
+            direct_admin_ok and direct_other_ok and proxy_other_ok and not proxy_admin_ok
+        ):
+            return {
+                "status": "TRANSPARENT_ROUTING_CANDIDATE",
+                "admin_slot_candidate": admin_candidate,
+                "matched_function": signature,
+                "probes": examined,
+                "limitation": "Observed only with this admin-slot candidate and one safe view selector; not a version fingerprint or proof of every upgrade route.",
+            }
+    return {
+        "status": "NOT_OBSERVED",
+        "admin_slot_candidate": admin_candidate,
+        "probes": examined,
+        "limitation": "No tested selector showed the expected admin-only fallback restriction. This does not exclude Transparent proxies, especially where the effective admin is immutable or the ABI lacks suitable view functions.",
+    }
+
+
+def _resolve_nested_proxy_chain(
+    client: RpcClient,
+    start: str,
+    max_depth: int = 5,
+) -> dict[str, Any]:
+    """Follow standard proxy/clone edges without allowing loops or unbounded RPC work."""
+    current = start
+    seen: set[str] = set()
+    hops: list[dict[str, Any]] = []
+    status = "TERMINAL_IMPLEMENTATION"
+    for depth in range(max_depth):
+        normalized = current.lower()
+        if normalized in seen:
+            status = "CYCLE_DETECTED"
+            hops.append({"depth": depth, "address": current, "architecture": "CYCLE"})
+            break
+        seen.add(normalized)
+        try:
+            runtime = client.code(current)
+        except ProxyError as exc:
+            status = "UNVERIFIED"
+            hops.append({"depth": depth, "address": current, "architecture": "UNVERIFIED", "error": str(exc)})
+            break
+        if runtime == "0x":
+            status = "NO_CODE_AT_HOP"
+            hops.append({"depth": depth, "address": current, "architecture": "NO_CODE"})
+            break
+        clone_impl = _minimal_clone_implementation(runtime)
+        if clone_impl:
+            hops.append({"depth": depth, "address": current, "architecture": "EIP1167_MINIMAL_CLONE", "implementation": clone_impl})
+            current = clone_impl
+            continue
+
+        slot_values: dict[str, str | None] = {}
+        try:
+            impl, _ = _decode_slot_address(client.storage(current, EIP1967_IMPLEMENTATION_SLOT))
+            beacon, _ = _decode_slot_address(client.storage(current, EIP1967_BEACON_SLOT))
+            slot_values = {"implementation": impl, "beacon": beacon}
+        except ProxyError as exc:
+            status = "UNVERIFIED"
+            hops.append({"depth": depth, "address": current, "architecture": "UNVERIFIED", "error": str(exc)})
+            break
+
+        impl = slot_values["implementation"]
+        beacon = slot_values["beacon"]
+        if impl and beacon:
+            status = "CONFLICTING_ROUTING"
+            hops.append({
+                "depth": depth, "address": current,
+                "architecture": "CONFLICTING_EIP1967_SLOTS",
+                "implementation_candidate": impl, "beacon_candidate": beacon,
+            })
+            break
+        if impl:
+            hops.append({"depth": depth, "address": current, "architecture": "ERC1967_IMPLEMENTATION_PROXY", "implementation": impl})
+            current = impl
+            continue
+        if beacon:
+            try:
+                beacon_code = client.code(beacon)
+                if beacon_code == "0x":
+                    status = "BEACON_NO_CODE"
+                    hops.append({"depth": depth, "address": current, "architecture": "ERC1967_BEACON_PROXY", "beacon": beacon, "error": "Beacon has no runtime code."})
+                    break
+                results = [
+                    _decode_returned_address(client.call(beacon, function_selector("implementation()"), caller=caller))
+                    for caller in SENTINEL_CALLERS
+                ]
+            except ProxyError as exc:
+                status = "UNVERIFIED"
+                hops.append({"depth": depth, "address": current, "architecture": "ERC1967_BEACON_PROXY", "beacon": beacon, "error": str(exc)})
+                break
+            if not results[0] or not results[1] or results[0].lower() != results[1].lower():
+                status = "BEACON_CALLER_DEPENDENT_OR_UNRESOLVED"
+                hops.append({
+                    "depth": depth, "address": current,
+                    "architecture": "ERC1967_BEACON_PROXY",
+                    "beacon": beacon, "implementation_probes": results,
+                })
+                break
+            resolved = results[0]
+            hops.append({
+                "depth": depth, "address": current,
+                "architecture": "ERC1967_BEACON_PROXY",
+                "beacon": beacon, "implementation": resolved,
+            })
+            current = resolved
+            continue
+        hops.append({
+            "depth": depth,
+            "address": current,
+            "architecture": "TERMINAL_IMPLEMENTATION",
+            "code_sha256": hashlib.sha256(bytes.fromhex(runtime[2:])).hexdigest(),
+        })
+        status = "TERMINAL_IMPLEMENTATION"
+        break
+    else:
+        status = "DEPTH_LIMIT_REACHED"
+    return {
+        "start": start,
+        "status": status,
+        "max_depth": max_depth,
+        "hops": hops,
+        "limitations": [
+            "Only standard ERC-1967 implementation/beacon slots and the canonical ERC-1167 runtime are followed.",
+            "Custom slots, immutable routing, diamonds and arbitrary delegatecall graphs require dedicated adapters.",
+        ],
+    }
+
+
+def _inspect_initialization(
+    client: RpcClient,
+    proxy: str,
+    implementation: str | None,
+    abi: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Read declared view getters only; never call initialize/reinitialize entrypoints."""
+    functions = [
+        item for item in (abi or [])
+        if isinstance(item, dict) and item.get("type") == "function"
+    ]
+    entrypoints = []
+    getters = []
+    for item in functions:
+        name = str(item.get("name") or "")
+        inputs = item.get("inputs") or []
+        signature = name + "(" + ",".join(str(value.get("type") or "") for value in inputs) + ")"
+        if name == "initialize" or name.startswith("initializeV") or name.startswith("reinitialize"):
+            entrypoints.append({
+                "name": name,
+                "signature": signature,
+                "selector": function_selector(signature),
+                "mutability": item.get("stateMutability"),
+                "input_count": len(inputs),
+            })
+        if (
+            name in {"initialized", "initializedVersion", "initialized_version", "getInitializedVersion"}
+            and not inputs
+            and item.get("stateMutability") in {"view", "pure"}
+            and len(item.get("outputs") or []) == 1
+        ):
+            getters.append({
+                "name": name,
+                "signature": signature,
+                "selector": function_selector(signature),
+                "output_type": str((item.get("outputs") or [{}])[0].get("type") or ""),
+            })
+
+    probes = []
+    scopes = [("proxy", proxy)]
+    if implementation and implementation.lower() != proxy.lower():
+        scopes.append(("implementation", implementation))
+    for scope, address in scopes:
+        for getter in getters:
+            try:
+                raw = client.call(address, getter["selector"])
+                raw_bytes = _hex_bytes(raw)
+                if raw_bytes is None or len(raw_bytes) != 32:
+                    probes.append({
+                        "scope": scope, "getter": getter["signature"],
+                        "status": "MALFORMED_RESULT", "raw": raw,
+                    })
+                    continue
+                value = int.from_bytes(raw_bytes, "big")
+                output_type = getter["output_type"]
+                if output_type == "bool" and value not in {0, 1}:
+                    probes.append({
+                        "scope": scope, "getter": getter["signature"],
+                        "status": "MALFORMED_BOOL", "raw": raw,
+                    })
+                else:
+                    probes.append({
+                        "scope": scope, "getter": getter["signature"],
+                        "status": "VALUE_OBSERVED",
+                        "value": bool(value) if output_type == "bool" else value,
+                        "raw": raw,
+                    })
+            except ProxyError as exc:
+                probes.append({
+                    "scope": scope, "getter": getter["signature"],
+                    "status": "UNAVAILABLE", "error": str(exc),
+                })
+
+    if probes and any(item["status"] == "VALUE_OBSERVED" for item in probes):
+        status = "EXPLICIT_GETTER_VALUES_OBSERVED"
+    elif entrypoints:
+        status = "INITIALIZER_ENTRYPOINTS_STATE_NOT_EXTERNALLY_READABLE"
+    elif getters:
+        status = "GETTERS_UNAVAILABLE"
+    else:
+        status = "NO_STANDARD_PUBLIC_INITIALIZATION_GETTER"
+    return {
+        "status": status,
+        "initializer_entrypoints": entrypoints,
+        "public_state_getters": getters,
+        "probes": probes,
+        "mutating_entrypoints_called": False,
+        "limitation": "An initializer ABI entrypoint or a public getter value does not alone prove takeover risk. Initializer writes, caller authorization, version semantics and deployment history need target-specific tests.",
+    }
+
+
 def _decode_dynamic_array(
     data: str,
     item_bytes: int,
@@ -303,6 +627,8 @@ def _diamond_loupe(client: RpcClient, target: str) -> dict[str, Any] | None:
             if facet_code == "0x":
                 return None
             normalized_selectors = [selector.lower() for selector in selectors]
+            if len(seen_selectors) + len(normalized_selectors) > MAX_DIAMOND_SELECTORS:
+                return None
             if len(set(normalized_selectors)) != len(normalized_selectors):
                 return None
             for selector in normalized_selectors:
@@ -390,6 +716,22 @@ def inspect_proxy(
             "admin": admin_slot,
         }
         report["addresses"]["admin_slot_candidate"] = admin_slot
+        if not slot_results["admin"]["read"]:
+            report["checks"]["admin_slot_authority"] = {
+                "status": "UNVERIFIED",
+                "note": "The EIP-1967 admin slot could not be read; no conclusion about a zero or non-zero value is made.",
+            }
+            report["warnings"].append("The admin slot was unreadable; effective proxy administration remains unknown.")
+        elif admin_slot:
+            report["checks"]["admin_slot_authority"] = {
+                "status": "NONZERO_SLOT_CANDIDATE",
+                "note": "Storage candidate only; immutable-admin runtime behavior may use a different effective address.",
+            }
+        else:
+            report["checks"]["admin_slot_authority"] = {
+                "status": "ZERO_VALUE_OBSERVED",
+                "note": "A zero EIP-1967 admin slot does not exclude UUPS or immutable-admin proxy designs.",
+            }
 
         # The EIP-1967 beacon slot is meaningful only when the implementation slot is empty.
         if impl and beacon:
@@ -446,8 +788,22 @@ def inspect_proxy(
                     "The EIP-1967 admin slot is a candidate signal, not proof of the effective admin. "
                     "Immutable-admin proxy designs can diverge from this mirrored slot."
                 )
-            if not admin_slot:
-                report["evidence"].append("No non-zero EIP-1967 admin storage value was observed; this does not exclude UUPS or immutable-admin designs.")
+                owner_probe = _probe_owner_getter(client, admin_slot)
+                report["checks"]["admin_owner_getter"] = owner_probe
+                if owner_probe.get("owner_candidate"):
+                    report["addresses"]["admin_slot_owner_candidate"] = owner_probe["owner_candidate"]
+                transparent_probe = _probe_transparent_admin_routing(
+                    client, target, impl, admin_slot, abi,
+                )
+                report["checks"]["transparent_admin_routing"] = transparent_probe
+                if transparent_probe.get("status") == "TRANSPARENT_ROUTING_CANDIDATE":
+                    report["upgrade_mechanisms"].append("TRANSPARENT_ADMIN_ROUTING_CANDIDATE")
+                    report["evidence"].append(
+                        "A safe no-argument view call succeeded through the implementation and for a non-admin proxy caller, "
+                        "but failed when called through the proxy from the EIP-1967 admin-slot candidate."
+                    )
+            if not admin_slot and slot_results["admin"]["read"]:
+                report["evidence"].append("The EIP-1967 admin slot was successfully read as zero; this does not exclude UUPS or immutable-admin designs.")
         elif beacon:
             report["addresses"]["beacon"] = beacon
             report["architecture"] = "ERC1967_BEACON_PROXY"
@@ -491,6 +847,10 @@ def inspect_proxy(
                 report["errors"].append(str(exc))
                 report["status"] = "UNVERIFIED"
             report["upgrade_mechanisms"].append("BEACON_CONTROLLED")
+            beacon_owner = _probe_owner_getter(client, beacon)
+            report["checks"]["beacon_owner_getter"] = beacon_owner
+            if beacon_owner.get("owner_candidate"):
+                report["addresses"]["beacon_owner_candidate"] = beacon_owner["owner_candidate"]
             if admin_slot:
                 report["addresses"]["admin_slot_candidate"] = admin_slot
                 report["warnings"].append("Beacon admin slot is recorded as a candidate only; it does not establish beacon ownership.")
@@ -545,6 +905,14 @@ def inspect_proxy(
         report["checks"]["upgrade_abi_signals"] = functions
         if any(item["name"] in {"upgradeTo", "upgradeToAndCall"} for item in functions):
             report["upgrade_mechanisms"].append("IMPLEMENTATION_UPGRADE_FUNCTION_IN_ABI")
+        report["checks"]["initialization"] = _inspect_initialization(
+            client, target, report.get("addresses", {}).get("implementation"), abi,
+        )
+        impl_for_chain = report.get("addresses", {}).get("implementation")
+        if impl_for_chain and report.get("architecture") not in {
+            "CONFLICTING_EIP1967_SLOTS", "UNVERIFIED_EIP1967",
+        }:
+            report["nested_proxy_chain"] = _resolve_nested_proxy_chain(client, impl_for_chain)
 
         # Re-check the pinned block hash so a reorg cannot silently mix states.
         try:
@@ -593,7 +961,7 @@ def scan_sources(root: str | Path, max_files: int = 400) -> list[dict[str, Any]]
             relative_parts = path.relative_to(base).parts
             if any(part in excluded for part in relative_parts):
                 continue
-            if path.stat().st_size > 1_000_000:
+            if path.stat().st_size > 500_000:
                 continue
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
@@ -622,7 +990,14 @@ def audit_proxy(
     """Combine pinned runtime facts with source and ABI investigation leads."""
     report = inspect_proxy(rpc_url, target, requested_block=requested_block, abi=abi)
     source_signals = scan_sources(root) if root else []
+    namespace_inventory = scan_erc7201_namespaces(root) if root else {
+        "status": "NOT_AVAILABLE",
+        "namespaces": [],
+        "root_collisions": [],
+        "warnings": ["No local source root was available for namespace inventory."],
+    }
     report["source_signals"] = source_signals
+    report["erc7201_namespaces"] = namespace_inventory
     report["source_scan"] = {
         "status": "SCANNED" if root else "NOT_AVAILABLE",
         "root": str(Path(root).resolve()) if root else None,
@@ -631,6 +1006,10 @@ def audit_proxy(
     upgrade_names = {
         row.get("name") for row in (report.get("checks", {}).get("upgrade_abi_signals") or [])
     }
+    namespace_ids = [
+        item.get("namespace_id")
+        for item in namespace_inventory.get("namespaces", [])
+    ]
     source_names = {row.get("signal") for row in source_signals}
     hypotheses = []
     architecture = report.get("architecture")
@@ -674,6 +1053,17 @@ def audit_proxy(
             "status": "INVESTIGATION_REQUIRED",
             "reason": "A coherent Diamond Loupe interface was observed; cut permissions and initialization delegatecall were not tested.",
             "next": "Resolve the diamondCut selector, authorization path, facet changes and storage invariants.",
+        })
+    if namespace_ids or namespace_inventory.get("root_collisions"):
+        hypotheses.append({
+            "id": "PROXY-ERC7201-001",
+            "title": "Review namespaced storage migration and root-slot integrity",
+            "status": "INVESTIGATION_REQUIRED",
+            "reason": (
+                f"ERC-7201 namespace annotations were found ({len(namespace_ids)} namespace(s)); "
+                "the source inventory does not prove compiler member layout or migration compatibility."
+            ),
+            "next": "Compare V1/V2 source roots with lk proxy validate --reference-source/--candidate-source, then run compiler-backed upgrade validation.",
         })
     if "upgradeTo" in upgrade_names or "upgradeToAndCall" in upgrade_names:
         hypotheses.append({
@@ -755,6 +1145,20 @@ def build_attack_plan(report: dict[str, Any]) -> dict[str, Any]:
                 "required_evidence": ["V1/V2 compiler storage layouts", "upgrade route", "state invariants", "paired control"],
             },
         ])
+    if (report.get("erc7201_namespaces") or {}).get("namespaces"):
+        applicable.append({
+            "id": "PROXY-ERC7201-001",
+            "title": "Namespaced storage compatibility and migration",
+            "invariant_to_test": "preserve namespace roots, member slots and initialized application state across implementation changes",
+            "status": "NOT_EXECUTED",
+            "required_evidence": [
+                "V1/V2 annotated namespace source trees",
+                "compiler-backed struct/member storage layout",
+                "initializer/reinitializer migration path",
+                "paired expected-control and attacker scenarios",
+                "pre/post namespaced state snapshots",
+            ],
+        })
     # De-duplicate IDs where general and architecture-specific plans overlap.
     unique = {item["id"]: item for item in applicable}
     return {
@@ -802,16 +1206,296 @@ def _type_fingerprint(type_id: str, type_table: dict[str, Any], seen: set[str] |
     return result
 
 
-def _extract_layout(value: Any) -> dict[str, Any] | None:
+def _build_info_layouts(value: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
+    output = value.get("output") if isinstance(value.get("output"), dict) else value
+    contracts = output.get("contracts") if isinstance(output, dict) else None
+    if not isinstance(contracts, dict):
+        return []
+    layouts = []
+    for source_name, source_contracts in contracts.items():
+        if not isinstance(source_contracts, dict):
+            continue
+        for contract_name, contract_data in source_contracts.items():
+            if not isinstance(contract_data, dict):
+                continue
+            layout = contract_data.get("storageLayout") or contract_data.get("storage_layout")
+            if isinstance(layout, dict) and isinstance(layout.get("storage"), list) and isinstance(layout.get("types"), dict):
+                layouts.append((str(source_name), str(contract_name), layout))
+    return layouts
+
+
+def _extract_layout(value: Any, contract_name: str | None = None) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
+    direct = value
     for key in ("storageLayout", "storage_layout", "storageLayoutOutput"):
         if isinstance(value.get(key), dict):
-            value = value[key]
+            direct = value[key]
             break
-    if isinstance(value.get("storage"), list) and isinstance(value.get("types"), dict):
-        return value
-    return None
+    if isinstance(direct.get("storage"), list) and isinstance(direct.get("types"), dict):
+        return direct
+
+    layouts = _build_info_layouts(value)
+    if contract_name:
+        selector = str(contract_name).strip()
+        matches = [
+            layout for source, name, layout in layouts
+            if selector in {name, f"{source}:{name}"}
+        ]
+        return matches[0] if len(matches) == 1 else None
+    return layouts[0][2] if len(layouts) == 1 else None
+
+
+def _namespace_struct_block(source: str, start: int) -> tuple[str | None, int | None]:
+    """Find the struct declaration following an ERC-7201 annotation."""
+    match = re.search(
+        r"\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{",
+        source[start:start + 1200],
+    )
+    if not match:
+        return None, None
+    absolute_open = start + match.end() - 1
+    depth = 0
+    for index in range(absolute_open, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return match.group(1), index + 1
+    return match.group(1), None
+
+
+def _erc7201_root_slot(namespace_id: str) -> str:
+    """Calculate the ERC-7201 namespace root exactly as specified."""
+    first = int.from_bytes(keccak256(namespace_id.encode("utf-8")), "big")
+    encoded = ((first - 1) % (1 << 256)).to_bytes(32, "big")
+    root = int.from_bytes(keccak256(encoded), "big") & (~0xFF)
+    return "0x" + root.to_bytes(32, "big").hex()
+
+
+def scan_erc7201_namespaces(root: str | Path, max_files: int = 400) -> dict[str, Any]:
+    """Inventory ERC-7201 NatSpec annotations and source-level struct declarations."""
+    base = Path(root).expanduser().resolve()
+    candidates = []
+    priorities = {"src": 0, "contracts": 1, "lib": 2, "node_modules": 3}
+    for folder_name in ("src", "contracts", "lib", "node_modules"):
+        folder = base / folder_name
+        if folder.is_dir():
+            candidates.extend(folder.rglob("*.sol"))
+    excluded = {".git", "vendor", "cache", "out", "artifacts"}
+    namespaces = []
+    warnings = []
+    ordered = sorted(
+        set(candidates),
+        key=lambda path: (
+            priorities.get(path.relative_to(base).parts[0], 9),
+            path.relative_to(base).as_posix(),
+        ),
+    )
+    if len(ordered) > max_files:
+        warnings.append(
+            f"Namespace scan capped at {max_files} Solidity files; {len(ordered) - max_files} file(s) were not examined."
+        )
+    if not base.is_dir():
+        return {
+            "status": "UNVERIFIED",
+            "root": str(base),
+            "namespaces": [],
+            "root_collisions": [],
+            "warnings": [f"Source directory does not exist: {base}"],
+            "limitation": "No namespace conclusion is possible without both source trees.",
+        }
+    for path in ordered[:max_files]:
+        try:
+            relative_parts = path.relative_to(base).parts
+            if any(part in excluded for part in relative_parts):
+                continue
+            size = path.stat().st_size
+            if size > 1_000_000:
+                warnings.append(
+                    f"{path.relative_to(base).as_posix()} was skipped because it exceeds the 1 MB source-scan limit."
+                )
+                continue
+            source = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            warnings.append(f"Could not read {path}: {exc}")
+            continue
+        for match in re.finditer(
+            r"@custom:storage-location\s+erc7201:([A-Za-z0-9._-]+)",
+            source,
+            re.IGNORECASE,
+        ):
+            namespace_id = match.group(1)
+            struct_name, struct_end = _namespace_struct_block(source, match.end())
+            if not struct_name or struct_end is None:
+                warnings.append(
+                    f"{path.relative_to(base).as_posix()}:{source.count(chr(10), 0, match.start()) + 1}: "
+                    f"namespace {namespace_id!r} has no complete following struct declaration."
+                )
+                continue
+            struct_header = re.search(
+                r"\bstruct\s+" + re.escape(struct_name) + r"\s*\{",
+                source[match.end():struct_end],
+            )
+            if not struct_header:
+                warnings.append(
+                    f"{path.relative_to(base).as_posix()}:{source.count(chr(10), 0, match.start()) + 1}: "
+                    f"namespace {namespace_id!r} could not anchor its struct body."
+                )
+                continue
+            struct_start = match.end() + struct_header.end() - 1
+            body = source[struct_start + 1:struct_end - 1]
+            # This is deliberately a source declaration digest, not a compiler layout.
+            body = re.sub(r"/\*[\s\S]*?\*/", "", body)
+            body = re.sub(r"//[^\n]*", "", body)
+            members = [
+                re.sub(r"\s+", " ", item).strip()
+                for item in body.split(";")
+                if re.sub(r"\s+", " ", item).strip()
+            ]
+            line = source.count("\n", 0, match.start()) + 1
+            namespaces.append({
+                "namespace_id": namespace_id,
+                "struct_name": struct_name,
+                "root_slot": _erc7201_root_slot(namespace_id),
+                "path": path.relative_to(base).as_posix(),
+                "line": line,
+                "members": members,
+                "members_sha256": hashlib.sha256(
+                    "\n".join(members).encode("utf-8")
+                ).hexdigest(),
+                "evidence_type": "NATSPEC_SOURCE_DECLARATION",
+                "confidence": "MEDIUM",
+            })
+    root_owners: dict[str, set[str]] = {}
+    for item in namespaces:
+        root_owners.setdefault(item["root_slot"], set()).add(item["namespace_id"])
+    collisions = [
+        {"root_slot": slot, "namespace_ids": sorted(ids)}
+        for slot, ids in root_owners.items() if len(ids) > 1
+    ]
+    return {
+        "status": "SCANNED",
+        "root": str(base),
+        "namespaces": namespaces,
+        "root_collisions": collisions,
+        "warnings": warnings,
+        "limitation": (
+            "Member declarations are source-text evidence only. This scanner does not resolve inheritance, "
+            "aliases, compiler packing, custom assembly layout or nested type encoding; use compiler-backed "
+            "storage layouts and OpenZeppelin's upgrade validator before approving an upgrade."
+        ),
+    }
+
+
+def compare_erc7201_namespaces(
+    reference_root: str | Path,
+    candidate_root: str | Path,
+) -> dict[str, Any]:
+    """Compare namespace identifiers, calculated roots and source-level members."""
+    reference = scan_erc7201_namespaces(reference_root)
+    candidate = scan_erc7201_namespaces(candidate_root)
+    result = {
+        "schema": "lowkey.proxy.erc7201-diff.v1",
+        "status": "INCONCLUSIVE",
+        "removed": [],
+        "added": [],
+        "changed": [],
+        "unchanged": [],
+        "root_collisions": {
+            "reference": reference["root_collisions"],
+            "candidate": candidate["root_collisions"],
+        },
+        "warnings": list(reference["warnings"]) + list(candidate["warnings"]),
+        "reference": reference,
+        "candidate": candidate,
+        "summary": "",
+    }
+    if reference.get("status") != "SCANNED" or candidate.get("status") != "SCANNED":
+        result["status"] = "INCONCLUSIVE"
+        result["summary"] = "One or both namespace source trees could not be scanned."
+        return result
+    old_items = reference["namespaces"]
+    new_items = candidate["namespaces"]
+    old_counts: dict[str, int] = {}
+    new_counts: dict[str, int] = {}
+    for item in old_items:
+        old_counts[item["namespace_id"]] = old_counts.get(item["namespace_id"], 0) + 1
+    for item in new_items:
+        new_counts[item["namespace_id"]] = new_counts.get(item["namespace_id"], 0) + 1
+    result["duplicate_ids"] = {
+        "reference": sorted(key for key, count in old_counts.items() if count > 1),
+        "candidate": sorted(key for key, count in new_counts.items() if count > 1),
+    }
+    old_by_id = {item["namespace_id"]: item for item in old_items}
+    new_by_id = {item["namespace_id"]: item for item in new_items}
+    for namespace_id in sorted(old_by_id.keys() - new_by_id.keys()):
+        result["removed"].append(old_by_id[namespace_id])
+    for namespace_id in sorted(new_by_id.keys() - old_by_id.keys()):
+        result["added"].append(new_by_id[namespace_id])
+    for namespace_id in sorted(old_by_id.keys() & new_by_id.keys()):
+        old = old_by_id[namespace_id]
+        new = new_by_id[namespace_id]
+        differences = []
+        if old["root_slot"] != new["root_slot"]:
+            differences.append("calculated root slot changed")
+        if old["struct_name"] != new["struct_name"]:
+            differences.append("annotated struct name changed")
+        if old["members"] != new["members"]:
+            differences.append("source-level member declarations changed")
+        if differences:
+            result["changed"].append({
+                "namespace_id": namespace_id,
+                "differences": differences,
+                "reference": old,
+                "candidate": new,
+            })
+        else:
+            result["unchanged"].append({
+                "namespace_id": namespace_id,
+                "root_slot": old["root_slot"],
+                "struct_name": old["struct_name"],
+                "member_count": len(old["members"]),
+            })
+    if result["root_collisions"]["reference"] or result["root_collisions"]["candidate"]:
+        result["status"] = "REVIEW_REQUIRED"
+        result["warnings"].append("Multiple namespace identifiers calculate to the same root slot.")
+    elif result["duplicate_ids"]["reference"] or result["duplicate_ids"]["candidate"]:
+        result["status"] = "REVIEW_REQUIRED"
+        result["warnings"].append("A namespace identifier appears in multiple source locations; the inventory is ambiguous.")
+    elif result["warnings"]:
+        result["status"] = "INCONCLUSIVE"
+        result["summary"] = "The namespace scan reported incomplete or unreadable source evidence."
+    elif result["removed"]:
+        result["status"] = "INCOMPATIBLE_CANDIDATE"
+        result["summary"] = "One or more reference namespace identifiers are missing from the candidate."
+    elif result["changed"]:
+        result["status"] = "LAYOUT_CHANGE_REQUIRES_VALIDATION"
+        result["warnings"].append(
+            "Source-level namespace declarations changed. This is not a compiler layout diff; "
+            "validate member slots, offsets, inheritance and migration semantics."
+        )
+    elif result["added"]:
+        result["status"] = "NAMESPACE_ADDITIONS_REVIEW"
+        result["warnings"].append(
+            "New namespace IDs were added. Check root-slot collisions, initializer migration and protocol invariants."
+        )
+    elif not old_items and not new_items:
+        result["status"] = "NO_ERC7201_ANNOTATIONS"
+        result["warnings"].append("No ERC-7201 annotations were found in either source tree.")
+    else:
+        result["status"] = "IDS_AND_DECLARATIONS_MATCH"
+        result["warnings"].append(
+            "Namespace IDs and source declarations match, but this is not a storage-compatibility proof."
+        )
+    if not result["summary"]:
+        result["summary"] = (
+            f"{len(result['unchanged'])} unchanged, {len(result['changed'])} changed, "
+            f"{len(result['removed'])} removed, {len(result['added'])} added namespace(s)."
+        )
+    return result
 
 
 def compare_storage_layouts(reference: Any, candidate: Any) -> dict[str, Any]:
@@ -925,7 +1609,7 @@ def compare_storage_layouts(reference: Any, candidate: Any) -> dict[str, Any]:
     return result
 
 
-def _read_json_file(path: str) -> dict[str, Any]:
+def _read_json_file(path: str, contract_name: str | None = None) -> dict[str, Any]:
     candidate = Path(path).expanduser()
     if not candidate.is_file():
         raise ProxyError(f"Storage layout file does not exist: {candidate}")
@@ -935,11 +1619,29 @@ def _read_json_file(path: str) -> dict[str, Any]:
         raise ProxyError(f"Could not read JSON artifact {candidate}: {exc}") from exc
     if not isinstance(value, dict):
         raise ProxyError(f"JSON artifact must contain an object: {candidate}")
-    layout = _extract_layout(value)
+    layout = _extract_layout(value, contract_name=contract_name)
     if layout is None:
+        available = _build_info_layouts(value)
+        if available and not contract_name:
+            choices = ", ".join(
+                f"{source}:{name}" for source, name, _layout in available[:12]
+            )
+            suffix = " ..." if len(available) > 12 else ""
+            raise ProxyError(
+                f"{candidate} contains {len(available)} contract storage layouts. "
+                f"Select the contract with --reference-contract/--candidate-contract. "
+                f"Available: {choices}{suffix}"
+            )
+        if available and contract_name:
+            raise ProxyError(
+                f"Contract selector {contract_name!r} did not uniquely match a storage layout in {candidate}. "
+                "Use the exact ContractName or Source.sol:ContractName."
+            )
         raise ProxyError(
             f"{candidate} has no compiler storage layout. Rebuild with storageLayout output enabled."
         )
+    # Normalize the selected nested Foundry/solc build-info layout for the comparator.
+    value["storageLayout"] = layout
     return value
 
 
@@ -989,9 +1691,35 @@ def _render_inspection(report: dict[str, Any], verbose: bool = False) -> str:
         lines.append(f"BEACON SLOT CAND {slot_candidates.get('beacon')}")
     if addresses.get("implementation_has_code") is not None:
         lines.append(f"IMPL CODE      {'YES' if addresses['implementation_has_code'] else 'NO'}")
-    uuid = (report.get("checks") or {}).get("proxiable_uuid") or {}
+    checks = report.get("checks") or {}
+    uuid = checks.get("proxiable_uuid") or {}
     if uuid:
         lines.append(f"PROXIABLE UUID {uuid.get('status')}")
+    admin_authority = checks.get("admin_slot_authority") or {}
+    if admin_authority:
+        lines.append(f"ADMIN SLOT STATE {admin_authority.get('status')}")
+    transparent = checks.get("transparent_admin_routing") or {}
+    if transparent:
+        lines.append(f"ADMIN ROUTING    {transparent.get('status')}")
+    initialization = checks.get("initialization") or {}
+    if initialization:
+        lines.append(f"INITIALIZATION   {initialization.get('status')}")
+        if initialization.get("initializer_entrypoints"):
+            lines.append(
+                "INIT FUNCTIONS   " + ", ".join(
+                    item.get("signature", item.get("name", "?"))
+                    for item in initialization["initializer_entrypoints"]
+                )
+            )
+    chain = report.get("nested_proxy_chain") or {}
+    if chain:
+        lines.append(f"NESTED ROUTE     {chain.get('status')}")
+    for key, label in (
+        ("admin_slot_owner_candidate", "ADMIN OWNER CAND"),
+        ("beacon_owner_candidate", "BEACON OWNER CAND"),
+    ):
+        if addresses.get(key):
+            lines.append(f"{label:<16} {addresses[key]}")
     lines.append("")
     for evidence in report.get("evidence") or []:
         lines.append("EVIDENCE       " + str(evidence))
@@ -1004,6 +1732,27 @@ def _render_inspection(report: dict[str, Any], verbose: bool = False) -> str:
         lines.append("UPGRADE MECHANISM SIGNALS")
         for item in report.get("upgrade_mechanisms") or []:
             lines.append("  " + item)
+        namespace_inventory = report.get("erc7201_namespaces") or {}
+        lines.append("ERC-7201 NAMESPACES")
+        for item in namespace_inventory.get("namespaces", []):
+            lines.append(
+                f"  {item.get('namespace_id')} -> {item.get('root_slot')} "
+                f"({item.get('path')}:{item.get('line')})"
+            )
+        lines.append("AUTHORITY / LIFECYCLE CHECKS")
+        for key in ("transparent_admin_routing", "admin_owner_getter", "beacon_owner_getter", "initialization"):
+            value = checks.get(key)
+            if value:
+                lines.append(f"  {key}: {value.get('status')}")
+                for probe in value.get("probes", []):
+                    lines.append(f"    {probe}")
+        if chain:
+            lines.append("NESTED PROXY CHAIN")
+            for hop in chain.get("hops", []):
+                lines.append(
+                    f"  [{hop.get('depth')}] {hop.get('address')} "
+                    f"{hop.get('architecture')} -> {hop.get('implementation', '-')}"
+                )
         lines.append("SOURCE SIGNALS")
         for item in report.get("source_signals") or []:
             lines.append(f"  {item.get('path')}:{item.get('line')}  {item.get('signal')}")
@@ -1046,10 +1795,30 @@ def run_cli(
         reference = values.get("--reference")
         candidate = values.get("--candidate")
         if not reference or not candidate:
-            print("Usage: lk proxy validate --reference <V1-artifact.json> --candidate <V2-artifact.json>")
+            print("Usage: lk proxy validate --reference <V1.json> --candidate <V2.json> [--reference-contract NAME --candidate-contract NAME] [--reference-source DIR --candidate-source DIR]")
             return 2
         try:
-            result = compare_storage_layouts(_read_json_file(reference), _read_json_file(candidate))
+            reference_contract = values.get("--reference-contract")
+            candidate_contract = values.get("--candidate-contract")
+            if bool(reference_contract) != bool(candidate_contract):
+                raise ProxyError("--reference-contract and --candidate-contract must be provided together.")
+            result = compare_storage_layouts(
+                _read_json_file(reference, reference_contract),
+                _read_json_file(candidate, candidate_contract),
+            )
+            reference_source = values.get("--reference-source")
+            candidate_source = values.get("--candidate-source")
+            if bool(reference_source) != bool(candidate_source):
+                raise ProxyError("--reference-source and --candidate-source must be provided together.")
+            if reference_source and candidate_source:
+                result["erc7201"] = compare_erc7201_namespaces(reference_source, candidate_source)
+                if (
+                    result["status"] == "COMPATIBLE_CANDIDATE"
+                    and result["erc7201"]["status"] != "IDS_AND_DECLARATIONS_MATCH"
+                ):
+                    result["status"] = "INCONCLUSIVE"
+                    result["compatible_candidate"] = False
+                    result["summary"] += " ERC-7201 source review is not a clean match."
         except ProxyError as exc:
             print("LOWKEY BLOCKED: " + str(exc))
             return 2
@@ -1060,6 +1829,11 @@ def run_cli(
             f"BREAKING     {len(result['breaking'])}\n"
             f"ADDITIONS    {len(result['additions'])}\n"
             + "\n".join("REVIEW       " + item for item in result["warnings"])
+            + (
+                "\nERC-7201      " + result["erc7201"]["status"]
+                + "\n" + result["erc7201"]["summary"]
+                if result.get("erc7201") else ""
+            )
             + "\nNOTE         Candidate compatibility is not proof of upgrade safety."
         ))
         return 0 if result["status"] == "COMPATIBLE_CANDIDATE" else 1

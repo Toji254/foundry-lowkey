@@ -26,7 +26,7 @@ This matrix is the acceptance contract for generic verification. "Implemented" m
 | Vault / lending accounting | Solidity + Foundry | Share inflation; solvency invariant violation | Pending |
 | Reentrancy / callbacks | Solidity + Foundry | State update after external call; nested withdrawal | Pending |
 | Oracle / AMM integration | Solidity + Foundry | Stale price; slippage bound bypass; bad decimal assumptions | Pending |
-| Proxy / upgradeable contracts | Solidity + Foundry | Pinned ERC-1967 slot/precedence, beacon caller dependence, EIP-1167 exact runtime, Diamond Loupe consistency, storage-layout reorder/type regression | Partial: read-only proxy intelligence and unit fixtures; executable upgrade/attack campaigns pending |
+| Proxy / upgradeable contracts | Solidity + Foundry | Pinned ERC-1967 slot/precedence, beacon caller dependence, UUPS UUID signal, Transparent routing candidate, initialization/owner getters, nested clone/proxy chain, Diamond Loupe cross-check, storage-layout and ERC-7201 namespace regression | Partial: read-only intelligence, bounded investigation plans and mocked adversarial tests; executable target-specific upgrade/attack campaigns pending |
 | Cross-contract integration | Solidity + Foundry | Wrong dependency wiring; token/oracle revert behavior | Pending |
 | Solidity + Hardhat | Hardhat / JavaScript or TypeScript | Test failure, config mismatch, mutation | Pending |
 | Vyper | Vyper + Foundry-compatible ABI tooling | ABI/build mismatch; state transition regression | Detection/build CI exists; generation pending |
