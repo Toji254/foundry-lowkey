@@ -1429,12 +1429,18 @@ function initialise(){
   if(MODEL.initial_only){
     const modeMap={storage:"storage",reads:"storage",writes:"storage",assets:"assets"};
     if(modeMap[MODEL.initial_only])mode=modeMap[MODEL.initial_only];
-    if(MODEL.initial_only==="imports")document.querySelectorAll("[data-edge]").forEach(function(input){input.checked=input.dataset.edge==="IMPORTS"});
-    if(MODEL.initial_only==="all")document.querySelector('[data-edge="IMPORTS"]').checked=true;
-    if(MODEL.initial_only==="reads")document.querySelector('[data-edge="WRITES"]').checked=false;
-    if(MODEL.initial_only==="writes")document.querySelector('[data-edge="READS"]').checked=false;
-    if(MODEL.initial_only==="calls"){
-      document.querySelectorAll("[data-edge]").forEach(function(input){input.checked=["CALLS","EXTERNAL_CALL","APPLIES_MODIFIER","USES_LIBRARY"].includes(input.dataset.edge)});
+    const onlyKinds={
+      calls:["CALLS","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES","USES_LIBRARY","EMITS","REVERTS"],
+      imports:["IMPORTS","INHERITS","USES_LIBRARY"],
+      storage:["READS","WRITES","DELETES","USES_TYPE"],
+      reads:["READS"],
+      writes:["WRITES"],
+      assets:["ASSET_FLOW"],
+      all:["CALLS","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES","USES_LIBRARY","EMITS","REVERTS","READS","WRITES","DELETES","USES_TYPE","ASSET_FLOW","IMPORTS"]
+    };
+    const allowed=onlyKinds[MODEL.initial_only];
+    if(allowed){
+      document.querySelectorAll("[data-edge]").forEach(function(input){input.checked=allowed.includes(input.dataset.edge)});
     }
     document.querySelectorAll(".mode-tab").forEach(function(button){button.classList.toggle("active",button.dataset.mode===mode)});
   }
