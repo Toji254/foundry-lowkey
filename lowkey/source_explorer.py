@@ -1327,7 +1327,7 @@ async function importFiles(fileList){
   if(!SERVER_MODE){toast("Source import needs the local workspace. Run lk link --serve");return}
   const files=Array.from(fileList||[]).filter(function(file){
     const path=file.webkitRelativePath||file.name,parts=path.replace(/\\/g,"/").split("/");
-    if(parts.some(function(part){return [".git",".hg",".svn","node_modules","out","cache","broadcast","artifacts","build","dist","__pycache__",".venv","venv"].includes(part)}))return false;
+    if(parts.some(function(part){return [".git",".hg",".svn","node_modules","out","cache","broadcast","artifacts","build","dist","__pycache__",".venv","venv"].includes(part.toLowerCase())}))return false;
     const ext=file.name.toLowerCase().split(".").pop();
     return ext==="sol"||["foundry.toml","remappings.txt","soldeer.lock",".gitmodules",".gitignore"].includes(file.name.toLowerCase());
   });
