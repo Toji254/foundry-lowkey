@@ -14,6 +14,7 @@ if str(LOWKEY) not in sys.path:
     sys.path.insert(0, str(LOWKEY))
 
 from source_index import build_source_index
+from source_link import main
 from source_explorer import (
     build_explorer_model,
     create_explorer_server,
@@ -118,7 +119,7 @@ class ProtocolExplorerTests(unittest.TestCase):
         library_edges = [e for e in self.model["edges"] if e["kind"] == "LIBRARY_CALL"]
         interface_edges = [
             e for e in self.model["edges"]
-            if e["kind"] == "EXTERNAL_CALL" and "pluginTransfer" in e["label"]
+            if e["kind"] == "EXTERNAL_CALL" and e.get("details", {}).get("method") == "pluginTransfer"
         ]
         self.assertTrue(library_edges, "using-for library calls should remain visible as separate edges")
         self.assertTrue(interface_edges, "typed interface calls should remain visible as external-call edges")
@@ -195,6 +196,24 @@ class ProtocolExplorerTests(unittest.TestCase):
             bundle.writestr("../escape.sol", "contract Escape {}")
         with self.assertRaises(ValueError):
             extract_source_archive(malicious, self.root / "bad-extract")
+
+    def test_archive_cli_exports_the_same_explorer_graph(self):
+        archive = self.root / "cli-project.zip"
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("project/foundry.toml", '[profile.default]\nsrc = "src"\n')
+            bundle.writestr("project/src/Imported.sol", "pragma solidity ^0.8.20; contract Imported {}")
+            bundle.writestr("project/README.md", "Project documentation")
+        output = self.root / "imported-graph.html"
+        import io
+        from contextlib import redirect_stdout
+        capture = io.StringIO()
+        with redirect_stdout(capture):
+            status = main(["link", "--archive", str(archive), "--format", "html", "--output", str(output)])
+        self.assertEqual(status, 0, capture.getvalue())
+        self.assertTrue(output.is_file())
+        document = output.read_text(encoding="utf-8")
+        self.assertIn("LOWKEY // PROTOCOL GRAPH", document)
+        self.assertIn("Imported", document)
 
     def test_github_url_validation_is_strict(self):
         self.assertEqual(
