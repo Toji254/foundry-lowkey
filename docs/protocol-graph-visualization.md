@@ -28,13 +28,19 @@ existing source-map workflows remain available.
 ## Reading the graph
 
 Nodes represent source declarations or aggregated dependencies. Terminal and
-HTML architecture views group contracts by source directory. Directed edges
-retain their relationship kind and resolution state; repeated source edges are
-aggregated and shown with a count.
+HTML architecture views group contracts by source directory. Directed relationships retain their kind and resolution state; repeated source
+relationships are aggregated and shown with a count. Imports are excluded from
+the default architecture view because they obscure meaningful protocol links;
+use `--only imports` to inspect dependency structure. Calls into declared
+libraries are labelled separately from ordinary contract calls.
 
-The offline HTML view embeds its graph data and renderer. It has no CDN or
-runtime network dependency. Search, relationship-kind filtering, zoom, fit,
-node selection, and connection details work locally in the browser.
+The offline HTML view is a contract-first relationship explorer. It embeds its
+graph data and renderer and has no CDN or runtime network dependency. Start by
+choosing a contract, inspect its incoming and outgoing relationships separately,
+read the recorded source locations, and use Follow / Back to move through the
+protocol one contract at a time. Relationship-kind filtering and contract search
+work locally in the browser. The project-wide all-node map is intentionally not
+the default: it becomes unreadable on large protocols.
 
 Third-party dependencies are hidden from the default graph to keep protocol
 architecture readable. Use \`--include-third-party\` to include declarations
