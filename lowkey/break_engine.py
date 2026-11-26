@@ -529,6 +529,7 @@ def _parse_args(args: list[str]):
     opts = {
         "function": None,
         "family": None,
+        "proxy_address": None,
         "pattern": None,
         "catalog": False,
         "system": False,
@@ -567,6 +568,15 @@ def _parse_args(args: list[str]):
             if i + 1 >= len(args):
                 raise ValueError(f"{item} needs a function name/signature.")
             opts["function"] = str(args[i + 1])
+            i += 2
+            continue
+        if low == "--proxy-address":
+            if i + 1 >= len(args):
+                raise ValueError("--proxy-address needs the proxy address controlled by the selected ProxyAdmin target.")
+            address = str(args[i + 1]).strip()
+            if not re.fullmatch(r"0x[0-9a-fA-F]{40}", address):
+                raise ValueError("--proxy-address must be a 20-byte hexadecimal address.")
+            opts["proxy_address"] = address.lower()
             i += 2
             continue
         if low in {"--catalog", "--patterns"}:
@@ -638,6 +648,8 @@ def _parse_args(args: list[str]):
         opts["function"] = positionals[0]
     if opts["family"] is None and len(positionals) > 1:
         opts["family"] = positionals[1].lower()
+    if opts["proxy_address"] and opts["family"] != "proxy":
+        raise ValueError("--proxy-address can only be used with --family proxy.")
     return opts
 
 
@@ -677,7 +689,7 @@ ATTACK FAMILIES
   oracle        oracle/price dependency probes
   economic      economic and flash-loan-shaped probes
   erc20         non-standard token assumption probes
-  proxy         unprivileged EIP-1967 upgradeTo/upgradeToAndCall probes
+  proxy         unprivileged UUPS and ProxyAdmin upgrade-route probes
   storage       storage/invariant probes
 
 MODES
@@ -692,6 +704,10 @@ MODES
   --fund-target 10ether
                 Fund the target only inside the disposable Forge fork.
                 This is useful for withdrawal/reserve experiments.
+  --proxy-address ADDRESS  For a ProxyAdmin target, specify the proxy whose
+                    EIP-1967 implementation slot and delegated route are checked.
+                    Select the ProxyAdmin as the Lowkey target and pass --function
+                    upgrade (v4) or upgradeAndCall (v4/v5).
   --control-manifest FILE  Require a matched sequential-control run before any
                     candidate BREAK is accepted. The manifest must name the
                     same target_address, function, family and same_calls_id.
@@ -1697,6 +1713,87 @@ contract LowkeyBreakProxyUpgrade is Test {{
 }}
 
 
+
+
+def _render_proxy_admin_upgrade_test(admin: Target, proxy_address: str, signature: str):
+    """Probe a ProxyAdmin route and inspect state on the separately supplied proxy."""
+    admin_lit = f"address(uint160(0x00{admin.address[2:].lower()}))"
+    proxy_lit = f"address(uint160(0x00{proxy_address[2:].lower()}))"
+    slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+    if _function_name(signature).lower() == "upgradeandcall":
+        encoded_call = f'abi.encodeWithSignature("{signature}", PROXY, replacement, bytes(""))'
+    else:
+        encoded_call = f'abi.encodeWithSignature("{signature}", PROXY, replacement)'
+    return _render_common_header() + f"""
+contract LowkeyProxyReplacement {{
+    fallback() external payable {{}}
+
+    function proxiableUUID() external pure returns (bytes32) {{
+        return 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+    }}
+
+    function lowkeyProxyMarker(bytes32 challenge) external view returns (bytes32) {{
+        return keccak256(abi.encodePacked("LOWKEY_PROXY_ROUTE_PROBE", challenge, address(this)));
+    }}
+}}
+
+contract LowkeyBreakProxyAdmin is Test {{
+    address constant ADMIN = {admin_lit};
+    address constant PROXY = {proxy_lit};
+    address constant ATTACKER = address(uint160(0x00BEEF000000000000000000000000000000000042));
+    bytes32 constant IMPLEMENTATION_SLOT = {slot};
+
+    function test_break_proxy_admin_upgrade() public {{
+        address replacement = address(new LowkeyProxyReplacement());
+        bytes32 routeChallenge = keccak256(
+            abi.encodePacked(address(this), replacement, block.number, block.timestamp)
+        );
+        vm.prank(ATTACKER);
+        (bool routeBeforeSucceeded, bytes memory routeBeforeData) =
+            PROXY.staticcall(abi.encodeWithSignature("lowkeyProxyMarker(bytes32)", routeChallenge));
+        bool markerWasAlreadyReachable = routeBeforeSucceeded
+            && routeBeforeData.length == 32
+            && abi.decode(routeBeforeData, (bytes32))
+                == keccak256(abi.encodePacked("LOWKEY_PROXY_ROUTE_PROBE", routeChallenge, PROXY));
+
+        bytes memory data = {encoded_call};
+        bytes32 beforeRaw = vm.load(PROXY, IMPLEMENTATION_SLOT);
+        address beforeImplementation = address(uint160(uint256(beforeRaw)));
+        require(beforeImplementation != address(0), "no EIP1967 implementation slot");
+
+        vm.prank(ATTACKER);
+        (bool success, bytes memory returndata) = ADMIN.call(data);
+
+        bytes32 afterRaw = vm.load(PROXY, IMPLEMENTATION_SLOT);
+        address afterImplementation = address(uint160(uint256(afterRaw)));
+        bool changed = afterRaw != beforeRaw;
+        bool candidateInstalled = changed
+            && afterImplementation == replacement
+            && replacement.code.length > 0;
+
+        vm.prank(ATTACKER);
+        (bool routeCallSucceeded, bytes memory routeData) =
+            PROXY.staticcall(abi.encodeWithSignature("lowkeyProxyMarker(bytes32)", routeChallenge));
+        bool routeConfirmed = !markerWasAlreadyReachable
+            && routeCallSucceeded
+            && routeData.length == 32
+            && abi.decode(routeData, (bytes32))
+                == keccak256(abi.encodePacked("LOWKEY_PROXY_ROUTE_PROBE", routeChallenge, PROXY));
+
+        console2.log("LOWKEY_BREAK_FAMILY", "proxy");
+        console2.log("UPGRADE_CALL_SUCCESS", success);
+        console2.log("IMPLEMENTATION_CHANGED", changed);
+        console2.log("CANDIDATE_IMPLEMENTATION_INSTALLED", candidateInstalled);
+        console2.log("DELEGATECALL_ROUTE_CONFIRMED", routeConfirmed);
+        console2.log("ROUTE_MARKER_PREEXISTED", markerWasAlreadyReachable);
+        console2.log("BEFORE_IMPLEMENTATION", beforeImplementation);
+        console2.log("AFTER_IMPLEMENTATION", afterImplementation);
+        console2.log("RETURNDATA_LENGTH", returndata.length);
+        if (!success) console2.logBytes(returndata);
+        console2.log("LOWKEY_BREAK", success && candidateInstalled && routeConfirmed);
+    }}
+}}
+"""
 
 
 def _render_access_test(target: Target, signature: str, calldata: str, value: str, break_on_success: bool = True):
@@ -2972,25 +3069,40 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         )
     elif family == "proxy":
         input_types = [str(item.get("type") or "").lower() for item in (fn.get("inputs") or [])]
-        if name.lower() not in {"upgradeto", "upgradetoandcall"} or not input_types or input_types[0] != "address":
+        if opts.get("proxy_address"):
+            if name.lower() == "upgrade" and input_types == ["address", "address"]:
+                body = _render_proxy_admin_upgrade_test(target, opts["proxy_address"], signature)
+                values = [opts["proxy_address"], "LOWKEY_REPLACEMENT_IMPLEMENTATION"]
+                calldata = "ABI_ENCODED_IN_SOLIDITY_HARNESS"
+            elif name.lower() == "upgradeandcall" and input_types == ["address", "address", "bytes"]:
+                body = _render_proxy_admin_upgrade_test(target, opts["proxy_address"], signature)
+                values = [opts["proxy_address"], "LOWKEY_REPLACEMENT_IMPLEMENTATION", "0x"]
+                calldata = "ABI_ENCODED_IN_SOLIDITY_HARNESS"
+            else:
+                return AttackResult(
+                    family, target.contract, target.address, signature, "BLOCKED",
+                    "ProxyAdmin mode supports only upgrade(address,address) or upgradeAndCall(address,address,bytes); pass the proxy with --proxy-address.",
+                    detail={"reason_code": "unsupported_proxy_admin_upgrade_shape"},
+                )
+        elif name.lower() not in {"upgradeto", "upgradetoandcall"} or not input_types or input_types[0] != "address":
             return AttackResult(
                 family, target.contract, target.address, signature, "BLOCKED",
                 "The executable proxy adapter currently supports standard upgradeTo(address) and upgradeToAndCall(address,bytes) entrypoints only.",
                 detail={"reason_code": "unsupported_proxy_upgrade_shape"},
             )
-        if name.lower() == "upgradeto" and len(input_types) != 1:
+        if not opts.get("proxy_address") and name.lower() == "upgradeto" and len(input_types) != 1:
             return AttackResult(
                 family, target.contract, target.address, signature, "BLOCKED",
                 "upgradeTo is supported only with the standard (address) ABI shape.",
                 detail={"reason_code": "unsupported_proxy_upgrade_shape"},
             )
-        if name.lower() == "upgradetoandcall" and (len(input_types) != 2 or input_types[1] != "bytes"):
+        if not opts.get("proxy_address") and name.lower() == "upgradetoandcall" and (len(input_types) != 2 or input_types[1] != "bytes"):
             return AttackResult(
                 family, target.contract, target.address, signature, "BLOCKED",
                 "upgradeToAndCall is supported only with the standard (address,bytes) ABI shape.",
                 detail={"reason_code": "unsupported_proxy_upgrade_shape"},
             )
-        if name.lower() == "upgradetoandcall":
+        if not opts.get("proxy_address") and name.lower() == "upgradetoandcall":
             # Empty migration calldata avoids inventing an initializer selector or
             # random payload. The probe tests authorization and implementation routing.
             calldata = (
@@ -3000,7 +3112,8 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
                 + f"{0:064x}"
             )
             values = [ABI_ADDRESS_SENTINEL, "0x"]
-        body = _render_proxy_upgrade_test(target, signature, calldata, value)
+        if not opts.get("proxy_address"):
+            body = _render_proxy_upgrade_test(target, signature, calldata, value)
     elif family in {"callback", "signature", "dos", "oracle", "economic", "erc20", "storage"}:
         # Generic success is only an observation. These families need a
         # protocol-specific invariant before Lowkey may call it a BREAK.
@@ -3050,6 +3163,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     evidence = {
         "family": family,
         "target": asdict(target),
+        "proxy_address": opts.get("proxy_address") if family == "proxy" else None,
         "function": signature,
         "values": values,
         "calldata": calldata,
@@ -3086,6 +3200,9 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     result.detail["harness_archive"] = archive_path
     result.detail["forge_returncode"] = completed.returncode
     result.detail["fidelity"] = fidelity
+    if family == "proxy" and opts.get("proxy_address"):
+        result.detail["proxy_address"] = opts["proxy_address"]
+        result.detail["authority_target"] = target.address
 
     # Generated harnesses are always disposable in the project test tree. The
     # archived copy under .audit/break/harnesses remains available for review.
@@ -3939,24 +4056,26 @@ def _select_functions(functions: list[dict[str, Any]], opts: dict[str, Any]) -> 
     funcs = _ordered_functions([fn for fn in functions if _is_state_changing(fn)])
     proxy_only = str(opts.get("family") or "").lower() == "proxy"
     if proxy_only:
-        funcs = [
-            fn for fn in funcs
-            if str(fn.get("name") or "").lower() in {"upgradeto", "upgradetoandcall"}
-        ]
+        allowed = {"upgrade", "upgradeandcall"} if opts.get("proxy_address") else {"upgradeto", "upgradetoandcall"}
+        funcs = [fn for fn in funcs if str(fn.get("name") or "").lower() in allowed]
     query = opts.get("function")
     if query:
         matched = [fn for fn in funcs if _function_matches(fn, query)]
         if not matched and "(" not in str(query):
             matched = [fn for fn in funcs if str(fn.get("name") or "").lower() == str(query).lower()]
         if not matched:
+            if proxy_only and opts.get("proxy_address"):
+                raise ValueError(
+                    "No supported ProxyAdmin method matched. Expected upgrade(address,address) "
+                    "or upgradeAndCall(address,address,bytes)."
+                )
             if proxy_only:
                 raise ValueError(
                     "No supported standard proxy upgrade function matched. "
-                    "The current executable adapter targets upgradeTo(address) and upgradeToAndCall(address,bytes)."
+                    "The current executable UUPS adapter targets upgradeTo(address) and upgradeToAndCall(address,bytes)."
                 )
             raise ValueError(f"No state-changing function matched '{query}'.")
         return matched
-    # Start with the most attack-relevant surface, but expand outward in rounds.
     return funcs
 
 
@@ -3979,6 +4098,8 @@ def _print_banner(host, targets: list[Target], opts: dict[str, Any], rpc: str | 
         print(f"Scope   : FINDING PATTERN {opts['pattern']}")
     else:
         print("Scope   : CURRENT TARGET")
+    if opts.get("proxy_address"):
+        print(f"Proxy   : {opts['proxy_address']}")
     mode_label = "INDEFINITE / STOP ON BREAK" if opts.get("until_found") else f"ROUND-LIMITED ({opts.get('max_rounds', 1)})"
     print(f"Mode    : {mode_label}")
     features = _language_features(_root(host), project_info)

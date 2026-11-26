@@ -102,6 +102,80 @@ contract UUPSProxyFixture {
         }
     }
 }
+
+interface ITransparentProxyAdminUpgrade {
+    function upgradeToAndCall(address implementation, bytes calldata data) external payable;
+}
+
+contract VulnerableProxyAdmin {
+    address private immutable _owner;
+    constructor(address initialOwner) { _owner = initialOwner; }
+    function owner() external view returns (address) { return _owner; }
+    function UPGRADE_INTERFACE_VERSION() external pure returns (string memory) { return "5.0.0"; }
+    function upgradeAndCall(address proxy, address implementation, bytes calldata data) external payable {
+        ITransparentProxyAdminUpgrade(proxy).upgradeToAndCall{value: msg.value}(implementation, data);
+    }
+}
+
+contract SecureProxyAdmin {
+    address private immutable _owner;
+    constructor(address initialOwner) { _owner = initialOwner; }
+    function owner() external view returns (address) { return _owner; }
+    function UPGRADE_INTERFACE_VERSION() external pure returns (string memory) { return "5.0.0"; }
+    function upgradeAndCall(address proxy, address implementation, bytes calldata data) external payable {
+        require(msg.sender == _owner, "ONLY_PROXY_ADMIN_OWNER");
+        ITransparentProxyAdminUpgrade(proxy).upgradeToAndCall{value: msg.value}(implementation, data);
+    }
+}
+
+contract TransparentProxyFixture {
+    address private immutable _admin;
+    bytes32 private constant IMPLEMENTATION_SLOT =
+        0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+    bytes4 private constant UPGRADE_TO_AND_CALL =
+        bytes4(keccak256("upgradeToAndCall(address,bytes)"));
+
+    constructor(address implementation_, address admin_) {
+        _admin = admin_;
+        bytes32 slot = IMPLEMENTATION_SLOT;
+        assembly { sstore(slot, implementation_) }
+    }
+
+    fallback() external payable {
+        if (msg.sender == _admin) {
+            require(msg.sig == UPGRADE_TO_AND_CALL, "ADMIN_SELECTOR_ONLY");
+            (address nextImplementation, bytes memory data) =
+                abi.decode(msg.data[4:], (address, bytes));
+            require(nextImplementation.code.length > 0, "NO_IMPLEMENTATION_CODE");
+            bytes32 slot = IMPLEMENTATION_SLOT;
+            assembly { sstore(slot, nextImplementation) }
+            if (data.length > 0) {
+                (bool ok, bytes memory returned) = nextImplementation.delegatecall(data);
+                if (!ok) {
+                    assembly { revert(add(returned, 32), mload(returned)) }
+                }
+            }
+            return;
+        }
+        _delegate();
+    }
+
+    receive() external payable { _delegate(); }
+
+    function _delegate() internal {
+        bytes32 slot = IMPLEMENTATION_SLOT;
+        assembly {
+            let implementation_ := sload(slot)
+            calldatacopy(0, 0, calldatasize())
+            let ok := delegatecall(gas(), implementation_, 0, calldatasize(), 0, 0)
+            returndatacopy(0, 0, returndatasize())
+            switch ok
+            case 0 { revert(0, returndatasize()) }
+            default { return(0, returndatasize()) }
+        }
+    }
+}
+
 """
 
 
@@ -254,6 +328,94 @@ def campaign_result(
     }
 
 
+
+def proxy_admin_campaign_result(
+    lk: str,
+    root: Path,
+    env: dict[str, str],
+    admin_contract: str,
+    admin_address: str,
+    proxy_address: str,
+    expected_status: str,
+    evidence_root: Path,
+) -> dict[str, Any]:
+    run([lk, "target", "reset"], root, env)
+    run([lk, "target", admin_contract, admin_address], root, env)
+    runs_dir = root / ".audit" / "break" / "runs"
+    if runs_dir.exists():
+        shutil.rmtree(runs_dir)
+    output = run(
+        [lk, "break", "--family", "proxy", "--proxy-address", proxy_address,
+         "--function", "upgradeAndCall", "--rounds", "1"],
+        root, env, timeout=360,
+    )
+    reports = sorted(runs_dir.glob("*_campaign_*.json")) if runs_dir.is_dir() else []
+    if not reports:
+        raise AssertionError(f"lk break wrote no ProxyAdmin campaign report for {admin_contract}.")
+    report_path = reports[-1]
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    results = report.get("results") or []
+    if len(results) != 1:
+        raise AssertionError(f"Expected one ProxyAdmin result for {admin_contract}; got {len(results)}.")
+    result = results[0]
+    detail = result.get("detail") or {}
+    probe = detail.get("proxy_upgrade_probe") or {}
+    expected_break = expected_status == "BREAK"
+    if result.get("status") != expected_status:
+        raise AssertionError(
+            f"{admin_contract}: expected {expected_status}, got {result.get('status')}."
+            + json.dumps(result, indent=2) + "\n" + output.stdout[-16000:]
+        )
+    if str(detail.get("proxy_address") or "").lower() != proxy_address.lower():
+        raise AssertionError(f"{admin_contract}: explicit proxy address is missing from evidence.")
+    required = {
+        "upgrade_call_success", "implementation_changed",
+        "candidate_implementation_installed", "delegatecall_route_confirmed",
+    }
+    missing = required - set(probe)
+    if missing:
+        raise AssertionError(f"{admin_contract}: missing ProxyAdmin telemetry: {sorted(missing)}")
+    observed_break = all(probe.get(name) is True for name in required)
+    if observed_break != expected_break or bool(result.get("break_condition")) != expected_break:
+        raise AssertionError(
+            f"{admin_contract}: attack/control evidence mismatch: "
+            + json.dumps({"probe": probe, "result": result}, indent=2)
+        )
+    harness_archive = detail.get("harness_archive")
+    if not harness_archive or not Path(harness_archive).is_file():
+        raise AssertionError(f"{admin_contract}: archived harness is missing.")
+    harness = Path(harness_archive).read_text(encoding="utf-8", errors="replace")
+    baseline_index = harness.find("markerWasAlreadyReachable")
+    upgrade_index = harness.find("ADMIN.call")
+    if baseline_index < 0 or upgrade_index < 0 or baseline_index > upgrade_index:
+        raise AssertionError(f"{admin_contract}: route baseline was not measured before the upgrade.")
+    destination = evidence_root / admin_contract
+    destination.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(report_path, destination / "campaign.json")
+    archived_copy = destination / Path(harness_archive).name
+    shutil.copy2(harness_archive, archived_copy)
+    (destination / "cli-output.txt").write_text(
+        output.stdout + (("\n" + output.stderr) if output.stderr else ""),
+        encoding="utf-8",
+    )
+    print(
+        f"PASS: {admin_contract} -> {expected_status}; "
+        f"upgrade={probe['upgrade_call_success']} slot={probe['implementation_changed']} "
+        f"route={probe['delegatecall_route_confirmed']}"
+    )
+    return {
+        "proxy_admin_contract": admin_contract,
+        "proxy_admin": admin_address,
+        "proxy": proxy_address,
+        "expected_status": expected_status,
+        "observed_status": result.get("status"),
+        "break_condition": result.get("break_condition"),
+        "probe": probe,
+        "harness_archive": str(archived_copy),
+        "evidence_path": str(destination),
+    }
+
+
 def rpc_storage(cast: str, root: Path, env: dict[str, str], proxy: str) -> str:
     raw = run(
         [cast, "storage", proxy, IMPLEMENTATION_SLOT, "--rpc-url", RPC],
@@ -339,6 +501,16 @@ def main() -> int:
             secure_impl = deploy(forge, root, env, "SecureUUPSImplementation")
             secure_proxy = deploy(forge, root, env, "UUPSProxyFixture", secure_impl)
 
+            deployer = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+            vulnerable_admin = deploy(forge, root, env, "VulnerableProxyAdmin", deployer)
+            vulnerable_transparent_proxy = deploy(
+                forge, root, env, "TransparentProxyFixture", vulnerable_impl, vulnerable_admin,
+            )
+            secure_admin = deploy(forge, root, env, "SecureProxyAdmin", deployer)
+            secure_transparent_proxy = deploy(
+                forge, root, env, "TransparentProxyFixture", secure_impl, secure_admin,
+            )
+
             cases = [
                 campaign_result(
                     lk, root, env, "VulnerableUUPSImplementation", vulnerable_proxy,
@@ -348,25 +520,32 @@ def main() -> int:
                     lk, root, env, "SecureUUPSImplementation", secure_proxy,
                     "OBSERVED", evidence_root,
                 ),
+                proxy_admin_campaign_result(
+                    lk, root, env, "VulnerableProxyAdmin", vulnerable_admin,
+                    vulnerable_transparent_proxy, "BREAK", evidence_root,
+                ),
+                proxy_admin_campaign_result(
+                    lk, root, env, "SecureProxyAdmin", secure_admin,
+                    secure_transparent_proxy, "OBSERVED", evidence_root,
+                ),
             ]
 
-            # Forge runs its adversarial test against a fork. Confirm that neither
-            # the vulnerable nor control probe mutated the source Anvil deployment.
-            vulnerable_slot_after = rpc_storage(cast, root, env, vulnerable_proxy)
-            secure_slot_after = rpc_storage(cast, root, env, secure_proxy)
-            if vulnerable_slot_after != vulnerable_impl.lower():
-                raise AssertionError(
-                    "The vulnerable proxy's upstream Anvil implementation slot changed; "
-                    "the probe escaped its fork: " + vulnerable_slot_after
-                )
-            if secure_slot_after != secure_impl.lower():
-                raise AssertionError(
-                    "The secure proxy's upstream Anvil implementation slot changed; "
-                    "the probe escaped its fork: " + secure_slot_after
-                )
+            source_slots = {
+                "vulnerable_uups": (vulnerable_proxy, vulnerable_impl),
+                "secure_uups": (secure_proxy, secure_impl),
+                "vulnerable_proxy_admin": (vulnerable_transparent_proxy, vulnerable_impl),
+                "secure_proxy_admin": (secure_transparent_proxy, secure_impl),
+            }
+            for label, (proxy_address, expected_implementation) in source_slots.items():
+                actual = rpc_storage(cast, root, env, proxy_address)
+                if actual != expected_implementation.lower():
+                    raise AssertionError(
+                        f"{label}: upstream Anvil implementation slot changed or mismatched; "
+                        f"expected={expected_implementation.lower()} actual={actual}"
+                    )
 
             report = {
-                "gate": "Lowkey UUPS proxy break adapter",
+                "gate": "Lowkey UUPS and ProxyAdmin proxy break adapters",
                 "status": "PASS",
                 "chain_id": chain_id,
                 "source_sha": expected_git_sha,
@@ -375,7 +554,7 @@ def main() -> int:
                 "source_anvil_unchanged": True,
                 "scope": (
                     "Local Anvil deployments; Lowkey attack harness executes on Forge forks. "
-                    "Vulnerable UUPS route must break; authorized control must reject the attacker."
+                    "Vulnerable UUPS and ProxyAdmin routes must break; owner-gated controls must reject the attacker."
                 ),
             }
             (evidence_root / "report.json").write_text(

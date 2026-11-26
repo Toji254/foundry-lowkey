@@ -118,6 +118,15 @@ For a Foundry project with an Anvil node and an ABI exposing a standard UUPS upg
 lk break --family proxy --function upgradeTo
 ```
 
-The harness forks the configured Anvil RPC, deploys a marker implementation, calls the selected upgrade function as an unprivileged actor and checks the implementation slot plus an actual marker call through the target. It does not send transactions to the fork's upstream chain or to a production RPC. The automated Anvil acceptance deploys a deliberately vulnerable UUPS implementation and a separate owner-gated implementation as a negative control; Lowkey must identify the former and observe rejection on the latter. Both source Anvil implementation slots are checked after the Forge runs to prove that the attack stayed inside the fork. The acceptance command is `python3 scripts/proxy-break-acceptance-e2e.py` (run after installing Foundry/Lowkey and starting a disposable Anvil node).
+For an OpenZeppelin-style ProxyAdmin, select the **ProxyAdmin contract** as the Lowkey target and pass the controlled proxy separately:
 
-This adapter does **not** currently test a ProxyAdmin contract's `upgrade(proxy,implementation)`, immutable-admin behavior, Beacon upgrades, Diamond cuts, storage migration or reinitializer takeover. Unsupported ABI shapes are reported as blocked rather than silently treated as generic proxy checks.
+```bash
+lk target ProxyAdmin 0xProxyAdmin
+lk break --family proxy --proxy-address 0xTransparentProxy --function upgradeAndCall
+```
+
+The first adapter supports UUPS `upgradeTo(address)` / `upgradeToAndCall(address,bytes)` entrypoints and ProxyAdmin v4/v5-style `upgrade(address,address)` / `upgradeAndCall(address,address,bytes)` shapes. The ProxyAdmin harness calls the admin contract as an unprivileged actor, reads the EIP-1967 implementation slot from the separate proxy address, and requires a challenge-specific marker call through the proxy after the change. It will not count an admin call or slot write alone as a BREAK. Unsupported ABI shapes are reported as blocked rather than silently treated as generic proxy checks.
+
+All generated attacks execute on Forge forks of the configured Anvil state; they do not send transactions to the fork's upstream chain or to a production RPC. The automated Anvil acceptance deploys deliberately vulnerable and owner-gated fixture pairs, checks the expected BREAK/OBSERVED result, and verifies that source Anvil implementation slots remain unchanged. Run it with `python3 scripts/proxy-break-acceptance-e2e.py` after installing Foundry/Lowkey and starting a disposable Anvil node.
+
+Beacon upgrades, Diamond cuts, reinitializer replay, custom upgrade routes and full state-migration invariants remain outside this first executable adapter.

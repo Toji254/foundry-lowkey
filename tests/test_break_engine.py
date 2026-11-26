@@ -2349,5 +2349,40 @@ LOWKEY_BREAK true
         self.assertEqual(result.status, "BREAK")
         self.assertTrue(result.break_condition)
 
+
+class ProxyAdminBreakAdapterTests(unittest.TestCase):
+    def test_proxy_address_option_is_validated_and_normalized(self):
+        proxy = "0x" + "AB" * 20
+        opts = break_engine._parse_args([
+            "--family", "proxy", "--proxy-address", proxy, "--function", "upgradeAndCall",
+        ])
+        self.assertEqual(opts["proxy_address"], proxy.lower())
+        with self.assertRaisesRegex(ValueError, "20-byte"):
+            break_engine._parse_args(["--family", "proxy", "--proxy-address", "0x1234"])
+        with self.assertRaisesRegex(ValueError, "only be used"):
+            break_engine._parse_args(["--proxy-address", proxy])
+
+    def test_proxy_admin_mode_selects_only_standard_admin_upgrade_functions(self):
+        selected = break_engine._select_functions([
+            {"type": "function", "name": "upgradeTo", "inputs": [{"type": "address"}], "stateMutability": "nonpayable"},
+            {"type": "function", "name": "upgrade", "inputs": [{"type": "address"}, {"type": "address"}], "stateMutability": "nonpayable"},
+            {"type": "function", "name": "upgradeAndCall", "inputs": [{"type": "address"}, {"type": "address"}, {"type": "bytes"}], "stateMutability": "payable"},
+            {"type": "function", "name": "withdraw", "inputs": [], "stateMutability": "nonpayable"},
+        ], {"family": "proxy", "proxy_address": "0x" + "11" * 20})
+        self.assertEqual([item["name"] for item in selected], ["upgrade", "upgradeAndCall"])
+
+    def test_proxy_admin_harness_inspects_proxy_slot_and_calls_admin_contract(self):
+        admin = break_engine.Target("ProxyAdmin", "0x" + "11" * 20)
+        proxy = "0x" + "22" * 20
+        body = break_engine._render_proxy_admin_upgrade_test(
+            admin, proxy, "upgradeAndCall(address,address,bytes)"
+        )
+        self.assertIn("address constant ADMIN", body)
+        self.assertIn("address constant PROXY", body)
+        self.assertIn("ADMIN.call(data)", body)
+        self.assertIn("vm.load(PROXY, IMPLEMENTATION_SLOT)", body)
+        self.assertIn("PROXY.staticcall", body)
+        self.assertIn('abi.encodeWithSignature("upgradeAndCall(address,address,bytes)", PROXY, replacement, bytes(""))', body)
+
 if __name__ == "__main__":
     unittest.main()
