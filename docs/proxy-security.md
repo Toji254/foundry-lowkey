@@ -18,7 +18,7 @@ lk break --family proxy --function upgradeTo
 - `plan` creates architecture-specific attack hypotheses. Every scenario is `NOT_EXECUTED`.
 - `history` scans a bounded block range for standard EIP-1967 `Upgraded`, `BeaconUpgraded` and `AdminChanged` events, then reconciles the latest observed events with current slots.
 - `validate` compares compiler `storageLayout` objects from V1 and V2 artifacts.
-- `lk break --family proxy` runs a narrow Foundry fork experiment for standard `upgradeTo(address)` and `upgradeToAndCall(address,bytes)` ABI shapes. It only reports a candidate break if an unprivileged local-fork caller changes the EIP-1967 implementation slot to Lowkey's test implementation and the test implementation is reached through the proxy.
+- `lk break --family proxy` runs bounded Foundry fork experiments for standard UUPS `upgradeTo(address)` / `upgradeToAndCall(address,bytes)` shapes and, when `--proxy-address` is supplied, OpenZeppelin-style ProxyAdmin `upgrade(address,address)` / `upgradeAndCall(address,address,bytes)` shapes. Candidate telemetry requires an unprivileged local-fork caller to change the EIP-1967 implementation slot to Lowkey's test implementation and reach its marker through the proxy. A candidate is still downgraded to OBSERVED unless a separate sequential-control and fidelity gate passes.
 - `simulate` deliberately fails closed until a deployment-specific adapter can establish the exact upgrade path, candidate implementation, initialization calldata, privileged caller and expected protocol invariants.
 
 The no-subcommand form `lk proxy` is equivalent to `lk proxy inspect`. Existing `lk implementation` and `lk admin` remain available.
@@ -91,7 +91,7 @@ The current implementation does not yet provide:
 - full ERC-7201 namespace compatibility proof;
 - a generic broadcast, deploy or upgrade workflow;
 - generic fork upgrade simulation;
-- broad executable proxy exploit campaigns: the first local adapter only probes standard UUPS-style `upgradeTo(address)` / `upgradeToAndCall(address,bytes)` shapes; Transparent ProxyAdmin contracts, Beacon upgrades, Diamond cuts, initializer replay and custom upgrade routes remain unimplemented.
+- broad executable proxy exploit campaigns: the current local adapters cover standard UUPS and ProxyAdmin v4/v5 ABI routes only; Beacon upgrades, Diamond cuts, initializer/reinitializer replay and custom upgrade routes remain unimplemented.
 
 These stay blocked/partial until there are dedicated Solidity fixtures, target-specific adapters, paired controls, trace-backed state assertions, seeded mutations and CI acceptance. A source pattern, ABI method name, loupe response or storage comparison is never automatically reported as a vulnerability.
 
