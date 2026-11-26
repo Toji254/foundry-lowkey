@@ -1,3 +1,4 @@
+import io
 import json
 import pathlib
 import tempfile
@@ -15,6 +16,7 @@ if str(LOWKEY) not in sys.path:
 
 from source_index import build_source_index
 from source_link import main
+import source_explorer
 from source_explorer import (
     build_explorer_model,
     create_explorer_server,
@@ -228,6 +230,38 @@ class ProtocolExplorerTests(unittest.TestCase):
         document = output.read_text(encoding="utf-8")
         self.assertIn("PROTOCOL GRAPH", document)
         self.assertIn("Imported", document)
+
+    def test_zip_import_checks_actual_decompressed_length(self):
+        class FakeInfo:
+            filename = "src/Mismatch.sol"
+            external_attr = 0
+            file_size = 3
+
+            @staticmethod
+            def is_dir():
+                return False
+
+        class FakeZip:
+            def __init__(self, _path):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            @staticmethod
+            def infolist():
+                return [FakeInfo()]
+
+            @staticmethod
+            def open(_info):
+                return io.BytesIO(b"longer than metadata")
+
+        with unittest.mock.patch.object(source_explorer.zipfile, "ZipFile", FakeZip):
+            with self.assertRaisesRegex(ValueError, "inconsistent ZIP size metadata"):
+                extract_source_archive(self.root / "unused.zip", self.root / "mismatch")
 
     def test_github_url_validation_is_strict(self):
         self.assertEqual(
