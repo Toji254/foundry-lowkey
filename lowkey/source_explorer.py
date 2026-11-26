@@ -1523,7 +1523,8 @@ def _safe_upload_path(value: str, *, ignore_unsupported: bool = False) -> PurePo
         raise ValueError(f"Unsafe source path: {value!r}")
     if re.match(r"^[A-Za-z]:", normalised):
         raise ValueError(f"Drive-qualified source path is not allowed: {value!r}")
-    if any(part in IGNORED_PARTS for part in candidate.parts):
+    ignored = {part.casefold() for part in IGNORED_PARTS}
+    if any(part.casefold() in ignored for part in candidate.parts):
         if ignore_unsupported:
             return None
         raise ValueError(f"Build or VCS directory cannot be imported: {value!r}")
@@ -1732,7 +1733,11 @@ def create_explorer_server(
                 self.check_origin()
                 if self.path == "/api/import":
                     payload = json.loads(self.read_body().decode("utf-8"))
-                    files = payload.get("files") if isinstance(payload, dict) else None
+                    if not isinstance(payload, dict):
+                        raise ValueError("Import request must be a JSON object with a files array.")
+                    files = payload.get("files")
+                    if not isinstance(files, list):
+                        raise ValueError("Import request is missing its files array.")
                     with tempfile.TemporaryDirectory(prefix="lowkey-upload-") as temporary:
                         source_root = write_uploaded_files(files, temporary)
                         graph = _build_imported_graph(source_root, str(payload.get("name") or "Uploaded Solidity workspace"))
@@ -1750,6 +1755,8 @@ def create_explorer_server(
                     self.send_json(200, {"graph": graph}); return
                 if self.path == "/api/github":
                     payload = json.loads(self.read_body(64 * 1024).decode("utf-8"))
+                    if not isinstance(payload, dict):
+                        raise ValueError("GitHub import request must be a JSON object.")
                     url = validate_github_url(payload.get("url", ""))
                     ref = str(payload.get("ref") or "").strip() or None
                     repo_name = Path(urllib.parse.urlsplit(url).path).stem
