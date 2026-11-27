@@ -17072,17 +17072,15 @@ def _review_project_lab_script(config, root, script, rpc, accounts, key, script_
         version = run_foundry(["--version"], capture=True)
         if getattr(version, "code", 1) != 0:
             return fail("Error: could not establish the Foundry toolchain version; deployment blocked.")
-        session = config.get("_active_network_session") if isinstance(config, dict) else None
-        if not isinstance(session, dict):
-            session = {}
-        info = anvil_rpc_info(config) or {}
-        live_chain_id = info.get("chain_id")
-        if live_chain_id is None:
+        identity = _current_deployment_network_identity(config, root, rpc)
+        if not isinstance(identity, dict) or identity.get("reuse_permitted") is not True:
+            return fail(
+                "Error: native Foundry deployment requires a healthy, process-owned Lowkey managed "
+                "Anvil session whose persisted identity matches the selected RPC. Deployment blocked."
+            )
+        live_chain_id = identity.get("chain_id")
+        if isinstance(live_chain_id, bool) or live_chain_id is None or int(live_chain_id) < 1:
             return fail("Error: could not establish the live local Anvil chain ID; deployment blocked.")
-        identity = dict(session)
-        if session.get("chain_id") is not None and str(session.get("chain_id")) != str(live_chain_id):
-            return fail("Error: managed session chain ID does not match the selected local RPC; deployment blocked.")
-        identity["chain_id"] = live_chain_id
         config_paths = [Path(root) / "foundry.toml", Path(root) / ".env"]
         foundry_text = _foundry_project_config_text(root)
         for raw_value in re.findall(
@@ -17285,11 +17283,18 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
                     item["name"]: str(os.environ.get(item["name"], ""))
                     for item in active_review.environment_fingerprints
                 }
-                active_session = (
-                    config.get("_active_network_session")
-                    if isinstance(config, dict) and isinstance(config.get("_active_network_session"), dict)
-                    else {"chain_id": (anvil_rpc_info(config) or {}).get("chain_id")}
-                )
+                active_session = _current_deployment_network_identity(config, root, rpc)
+                if not isinstance(active_session, dict) or active_session.get("reuse_permitted") is not True:
+                    deployment_review_engine.persist_foundry_script_review(
+                        active_review,
+                        root,
+                        state="STALE",
+                        details={"reason": "managed network identity is no longer healthy and process-owned"},
+                    )
+                    return fail(
+                        "Error: managed network identity is no longer healthy and process-owned; "
+                        "no broadcast transaction was sent."
+                    )
                 valid, reason = deployment_review_engine.verify_foundry_script_review_current(
                     active_review,
                     root,

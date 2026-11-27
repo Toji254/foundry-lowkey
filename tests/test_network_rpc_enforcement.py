@@ -516,3 +516,105 @@ def test_trace_pins_cast_to_resolved_managed_network_without_override():
     assert cast.call_args.args[0] == ["run", tx_hash, "--rpc-url", endpoint]
     rpc.assert_called_once_with(endpoint, "eth_getTransactionByHash", [tx_hash])
 
+def test_native_review_resolves_managed_identity_from_persistent_registry_context():
+    import tempfile
+    from pathlib import Path
+
+    rpc = "http://127.0.0.1:18555"
+    target_account = "0x" + "11" * 20
+    identity = {
+        "project_id": "project-identity",
+        "project_root": "/tmp/example-project",
+        "network_session_id": "session-identity",
+        "session_kind": "managed-anvil",
+        "reuse_permitted": True,
+        "chain_id": 31337,
+        "genesis_hash": "0x" + "ab" * 32,
+        "identity_block_hash": "0x" + "ab" * 32,
+        "identity_block_number": 0,
+        "rpc_fingerprint": "fingerprint",
+        "rpc_origin": "local",
+    }
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        script = root / "script" / "Deploy.s.sol"
+        script.parent.mkdir(parents=True)
+        script.write_text(
+            "contract Deploy { function run() external {} }",
+            encoding="utf-8",
+        )
+        (root / "foundry.toml").write_text(
+            '[profile.default]\nsrc = "src"\n',
+            encoding="utf-8",
+        )
+        config = {}
+        assert "_active_network_session" not in config
+        with patch.object(
+            lk, "_current_deployment_network_identity", return_value=identity
+        ) as resolve_identity, patch.object(
+            lk, "run_foundry",
+            side_effect=[
+                lk.CommandResult("forge 1.0.0", 0),
+                lk.CommandResult("forge 1.0.0", 0),
+            ],
+        ), patch.dict("os.environ", {"LOWKEY_NONINTERACTIVE_DEPLOY": "1"}), patch(
+            "builtins.print"
+        ):
+            result = lk._review_project_lab_script(
+                config,
+                root,
+                script,
+                rpc,
+                [target_account],
+                None,
+                {},
+                [],
+            )
+
+    assert result == 0
+    resolve_identity.assert_called_once_with(config, root, rpc)
+    review = config["_lowkey_active_foundry_script_review"]
+    assert review.network_identity["kind"] == "managed-anvil"
+    assert review.network_identity["network_session_id"] == "session-identity"
+    assert review.network_identity["chain_id"] == 31337
+
+
+def test_native_review_blocks_unmanaged_or_unowned_session_before_review():
+    import tempfile
+    from pathlib import Path
+
+    rpc = "http://127.0.0.1:18556"
+    identity = {
+        "project_id": "project-identity",
+        "network_session_id": "invocation-identity",
+        "session_kind": "unmanaged-invocation",
+        "reuse_permitted": False,
+        "chain_id": 31337,
+        "genesis_hash": "0x" + "ab" * 32,
+        "identity_block_hash": "0x" + "ab" * 32,
+    }
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        script = root / "Deploy.s.sol"
+        script.write_text("contract Deploy {}", encoding="utf-8")
+        config = {}
+        with patch.object(
+            lk, "_current_deployment_network_identity", return_value=identity
+        ) as resolve_identity, patch.object(
+            lk, "run_foundry", return_value=lk.CommandResult("forge 1.0.0", 0)
+        ), patch("builtins.print"):
+            result = lk._review_project_lab_script(
+                config,
+                root,
+                script,
+                rpc,
+                ["0x" + "22" * 20],
+                None,
+                {},
+                [],
+            )
+
+    assert result != 0
+    resolve_identity.assert_called_once_with(config, root, rpc)
+    assert "_lowkey_active_foundry_script_review" not in config
+
