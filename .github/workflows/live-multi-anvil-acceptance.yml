@@ -1,0 +1,63 @@
+name: Live multi-Anvil network isolation
+
+on:
+  push:
+    branches: [integration-test-drive]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-multi-anvil:
+    name: Live two-session Anvil isolation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HOME: ${{ runner.temp }}/lowkey-network-acceptance-home
+      XDG_CONFIG_HOME: ${{ runner.temp }}/lowkey-network-acceptance-home/.config
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          check-latest: true
+
+      - name: Prepare isolated test home
+        run: mkdir -p "$HOME" "$XDG_CONFIG_HOME"
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.9.0
+          cache: false
+
+      - name: Verify pinned Foundry and expose toolchain
+        run: |
+          set -euo pipefail
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.foundry/bin:$PATH"
+          python3 scripts/verify_foundry_toolchain.py 1.9.0
+          anvil --version
+          cast --version
+
+      - name: Install Lowkey into isolated test home
+        run: bash install.sh
+
+      - name: Run live multi-Anvil identity and transaction isolation
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/multi-anvil-network-acceptance-e2e.py
+          python3 scripts/multi-anvil-network-acceptance-e2e.py
+
+      - name: Upload live network evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-multi-anvil-acceptance-${{ github.run_number }}
+          path: .audit/network-multi-anvil-acceptance/
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 21
