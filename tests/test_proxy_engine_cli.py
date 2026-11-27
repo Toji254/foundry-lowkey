@@ -1,5 +1,6 @@
 import contextlib
 import importlib.util
+import json
 import io
 import pathlib
 import sys
@@ -363,6 +364,134 @@ class ProxyEngineCliTests(unittest.TestCase):
                 os.chdir(old_cwd)
             self.assertEqual(code, 0)
             self.assertTrue(Path(captured["args"][captured["args"].index("--root") + 1]).samefile(root))
+
+
+    def test_proxy_inspect_rejects_remembered_target_after_foreign_rpc_detaches_context(self):
+        address = "0x" + "11" * 20
+        endpoint = "http://127.0.0.1:9545"
+        config = {
+            "target": address,
+            "_active_network_session": {
+                "id": "managed-session-a",
+                "rpc": "http://127.0.0.1:8545",
+                "actors": {"lab-deployer": "0x" + "22" * 20},
+            },
+        }
+        output = io.StringIO()
+        with patch.object(lk, "project_fixture_rpc_info", return_value=None), patch.object(
+            lk.proxy_engine, "inspect_proxy"
+        ) as inspect, contextlib.redirect_stdout(output):
+            code = lk.proxy_engine.run_cli(
+                config,
+                ["inspect", "--rpc-url", endpoint],
+                rpc_resolver=lk.effective_rpc,
+                root_resolver=lambda: None,
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("pass the target address explicitly", output.getvalue().lower())
+        inspect.assert_not_called()
+        self.assertTrue(config.get("_explicit_rpc_unscoped"))
+        self.assertNotIn("_active_network_session", config)
+
+    def test_proxy_inspect_allows_explicit_target_with_foreign_rpc(self):
+        remembered = "0x" + "11" * 20
+        explicit_target = "0x" + "33" * 20
+        endpoint = "http://127.0.0.1:9545"
+        config = {
+            "target": remembered,
+            "_active_network_session": {
+                "id": "managed-session-a",
+                "rpc": "http://127.0.0.1:8545",
+                "actors": {"lab-deployer": "0x" + "22" * 20},
+            },
+        }
+        report = {"status": "OBSERVED", "target": explicit_target}
+        output = io.StringIO()
+        with patch.object(lk, "project_fixture_rpc_info", return_value=None), patch.object(
+            lk.proxy_engine, "inspect_proxy", return_value=report
+        ) as inspect, patch.object(lk.proxy_engine, "_save_report", return_value=None), contextlib.redirect_stdout(output):
+            code = lk.proxy_engine.run_cli(
+                config,
+                ["inspect", explicit_target, "--rpc-url", endpoint, "--json"],
+                rpc_resolver=lk.effective_rpc,
+                abi_resolver=lambda address, _config: [],
+                root_resolver=lambda: None,
+            )
+        self.assertEqual(code, 0)
+        inspect.assert_called_once_with(endpoint, explicit_target, requested_block=None, abi=[])
+        self.assertTrue(config.get("_explicit_rpc_unscoped"))
+        self.assertEqual(json.loads(output.getvalue())["target"], explicit_target)
+
+    def test_proxy_history_resolves_explicit_rpc_and_rejects_implicit_foreign_target(self):
+        import json
+        address = "0x" + "11" * 20
+        endpoint = "http://127.0.0.1:9545"
+        config = {
+            "target": address,
+            "_active_network_session": {
+                "id": "managed-session-a",
+                "rpc": "http://127.0.0.1:8545",
+                "actors": {"lab-deployer": "0x" + "22" * 20},
+            },
+        }
+        output = io.StringIO()
+        with patch.object(lk, "project_fixture_rpc_info", return_value=None), patch.object(
+            lk.proxy_engine, "proxy_upgrade_history"
+        ) as history, contextlib.redirect_stdout(output):
+            code = lk.proxy_engine.run_cli(
+                config,
+                ["history", "--from-block", "10", "--rpc-url", endpoint],
+                rpc_resolver=lk.effective_rpc,
+                root_resolver=lambda: None,
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("pass the target address explicitly", output.getvalue().lower())
+        history.assert_not_called()
+        self.assertTrue(config.get("_explicit_rpc_unscoped"))
+
+    def test_proxy_campaign_validates_explicit_rpc_with_central_resolver(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        endpoint = "http://127.0.0.1:9545"
+        target = "0x" + "44" * 20
+        captured = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "campaign.json").write_text(json.dumps({
+                "family": "proxy",
+                "target_address": target,
+                "same_calls_id": "foreign-rpc-pair",
+                "control": {"argv": ["forge", "test"]},
+                "attack": {"argv": ["forge", "test"]},
+            }), encoding="utf-8")
+
+            def control(args):
+                captured["args"] = list(args)
+                return 0
+
+            config = {
+                "_active_network_session": {
+                    "id": "managed-session-a",
+                    "rpc": "http://127.0.0.1:8545",
+                    "actors": {},
+                },
+            }
+            with patch.object(lk, "project_fixture_rpc_info", return_value=None), patch.dict(
+                sys.modules, {"godmode": SimpleNamespace(control=control)}
+            ):
+                code = lk.proxy_engine.run_cli(
+                    config,
+                    ["campaign", "--manifest", "campaign.json", "--freeze", "--rpc-url", endpoint],
+                    rpc_resolver=lk.effective_rpc,
+                    root_resolver=lambda: root,
+                )
+        self.assertEqual(code, 0)
+        self.assertTrue(config.get("_explicit_rpc_unscoped"))
+        self.assertIn("--rpc-url", captured["args"])
+        self.assertEqual(captured["args"][captured["args"].index("--rpc-url") + 1], endpoint)
 
 if __name__ == "__main__":
     unittest.main()

@@ -2462,13 +2462,26 @@ def _run_proxy_campaign_cli(
         if not isinstance(manifest.get("control"), dict) or not isinstance(manifest.get("attack"), dict):
             raise ProxyError("Proxy campaign requires both control and attack execution entries.")
 
-        rpc = values.get("--rpc-url")
-        if not rpc and callable(rpc_resolver):
+        explicit_rpc = values.get("--rpc-url")
+        rpc = explicit_rpc
+        if callable(rpc_resolver):
             try:
-                rpc = rpc_resolver(config, explicit_rpc=None, target=target)
+                resolved_rpc = rpc_resolver(config, explicit_rpc=explicit_rpc, target=target)
             except TypeError:
-                rpc = rpc_resolver(config)
-        if not rpc:
+                if explicit_rpc:
+                    raise ProxyError(
+                        "The RPC resolver cannot validate an explicit --rpc-url against the selected network identity."
+                    )
+                resolved_rpc = rpc_resolver(config)
+            except Exception as exc:
+                raise ProxyError(f"RPC identity resolution failed: {exc}") from exc
+            if explicit_rpc and not resolved_rpc:
+                raise ProxyError(
+                    "The explicit --rpc-url could not be validated or resolved for this campaign."
+                )
+            if resolved_rpc:
+                rpc = resolved_rpc
+        elif not rpc:
             rpc = config.get("rpc_url") or config.get("rpc")
 
         output_name = values.get("--output") or (
@@ -2607,7 +2620,7 @@ def run_cli(
             config, positional, values, flags,
             rpc_resolver=rpc_resolver, root_resolver=root_resolver,
         )
-    address = next((item for item in positional if is_address(item)), None) or config.get("target")
+    explicit_address = next((item for item in positional if is_address(item)), None)
     if action in {"validate", "diff"}:
         reference = values.get("--reference")
         candidate = values.get("--candidate")
@@ -2655,9 +2668,50 @@ def run_cli(
         ))
         return 0 if result["status"] == "COMPATIBLE_CANDIDATE" else 1
 
+    explicit_rpc = values.get("--rpc-url")
+    target_hint = explicit_address or config.get("target")
+    rpc = None
+    if callable(rpc_resolver):
+        try:
+            rpc = rpc_resolver(config, explicit_rpc=explicit_rpc, target=target_hint)
+        except TypeError:
+            # A legacy resolver cannot attest an explicit override's network
+            # identity. Never bypass the identity check just to keep that URL.
+            if explicit_rpc:
+                print("LOWKEY BLOCKED: RPC resolver cannot validate the explicit --rpc-url against the selected network identity.")
+                return 2
+            try:
+                rpc = rpc_resolver(config)
+            except Exception as exc:
+                print("LOWKEY BLOCKED: RPC identity resolution failed: " + str(exc))
+                return 2
+        except Exception as exc:
+            print("LOWKEY BLOCKED: RPC identity resolution failed: " + str(exc))
+            return 2
+    elif explicit_rpc:
+        # Standalone callers without an injected resolver may explicitly choose
+        # their RPC. The public lk CLI always supplies the central resolver.
+        rpc = explicit_rpc
+
+    # effective_rpc marks a known cross-network override as unscoped and clears
+    # the selected network/actor context. A remembered target is not portable
+    # across that boundary; the caller must supply the address for this command.
+    address = explicit_address
+    if address is None and not (explicit_rpc and config.get("_explicit_rpc_unscoped")):
+        address = config.get("target")
     if not is_address(address):
-        print("LOWKEY ERROR: Set a target with 'lk target <address>' or pass a proxy address.")
+        if explicit_rpc and config.get("_explicit_rpc_unscoped") and not explicit_address:
+            print("LOWKEY BLOCKED: Explicit --rpc-url detached the remembered target. Pass the target address explicitly with 'lk proxy <action> <address>'.")
+        else:
+            print("LOWKEY ERROR: Set a target with 'lk target <address>' or pass a proxy address.")
         return 2
+    if not rpc:
+        if explicit_rpc:
+            print("LOWKEY BLOCKED: The explicit --rpc-url could not be validated or resolved for this command.")
+        else:
+            print("LOWKEY BLOCKED: No RPC is configured. Set one with 'lk rpc set <url>' or pass --rpc-url.")
+        return 2
+
     if action == "history":
         if "--from-block" not in values:
             print("Usage: lk proxy history <address> --from-block N [--to-block N] [--json]")
@@ -2668,17 +2722,8 @@ def run_cli(
         except ValueError:
             print("LOWKEY ERROR: --from-block/--to-block must be integers or 0x-prefixed block numbers.")
             return 2
-        history_rpc = values.get("--rpc-url")
-        if not history_rpc and callable(rpc_resolver):
-            try:
-                history_rpc = rpc_resolver(config, explicit_rpc=None, target=address)
-            except TypeError:
-                history_rpc = rpc_resolver(config)
-        if not history_rpc:
-            print("LOWKEY BLOCKED: No RPC is configured. Pass --rpc-url or set 'lk rpc'.")
-            return 2
         try:
-            history = proxy_upgrade_history(history_rpc, address, from_block, to_block)
+            history = proxy_upgrade_history(rpc, address, from_block, to_block)
         except ProxyError as exc:
             print("LOWKEY BLOCKED: " + str(exc))
             return 2
@@ -2713,17 +2758,6 @@ def run_cli(
             if path:
                 print("EVIDENCE     " + str(path))
         return 0
-    explicit_rpc = values.get("--rpc-url")
-    rpc = None
-    if callable(rpc_resolver):
-        try:
-            rpc = rpc_resolver(config, explicit_rpc=explicit_rpc, target=address)
-        except TypeError:
-            rpc = rpc_resolver(config)
-    rpc = explicit_rpc or rpc
-    if not rpc:
-        print("LOWKEY BLOCKED: No RPC is configured. Set one with 'lk rpc set <url>' or pass --rpc-url.")
-        return 2
     try:
         requested_block = int(values["--block"], 0) if "--block" in values else None
     except ValueError:
