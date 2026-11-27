@@ -39,9 +39,10 @@ EDGE_LABELS = {
     "IMPORTS": "IMPORTS", "INHERITS": "INHERITS", "USES_LIBRARY": "USES LIBRARY",
     "ASSET_FLOW": "ASSET FLOW", "EMITS": "EMITS", "REVERTS": "REVERTS",
     "RUNTIME_CALL_OBSERVED": "RUNTIME CALL OBSERVED",
+    "VIRTUAL_DISPATCH_CANDIDATE": "VIRTUAL DISPATCH CANDIDATE",
     "DECLARES": "CONTAINS",
 }
-CALL_KINDS = {"CALLS", "LIBRARY_CALL", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES"}
+CALL_KINDS = {"CALLS", "LIBRARY_CALL", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES", "VIRTUAL_DISPATCH_CANDIDATE"}
 STATE_KINDS = {
     "READS", "READS_CONSTANT", "READS_IMMUTABLE", "WRITES", "DELETES",
     "MUTATES", "TRANSIENT_READS", "TRANSIENT_WRITES", "TRANSIENT_DELETES",
@@ -507,12 +508,114 @@ def _attach_compiler_dispatch_facts(
         if kind == "OVERRIDES":
             added_override_edges += 1
 
+    virtual_dispatch_candidates = 0
+    for raw_edge in compiler.get("edges") or []:
+        if not isinstance(raw_edge, dict) or raw_edge.get("kind") != "compiler_call_candidate":
+            continue
+        caller_ast = compiler_function_by_id.get(str(raw_edge.get("source")), {})
+        lexical_ast = compiler_function_by_id.get(str(raw_edge.get("target")), {})
+        if not caller_ast or not lexical_ast:
+            continue
+        if not (lexical_ast.get("is_virtual") or lexical_ast.get("base_function_ids")):
+            continue
+        caller_contract = contracts.get(str(caller_ast.get("contract") or ""))
+        if not caller_contract:
+            continue
+        caller_ui = compiler_function_to_ui.get(str(caller_ast.get("id")))
+        lexical_ui = compiler_function_to_ui.get(str(lexical_ast.get("id")))
+        if not caller_ui or not lexical_ui:
+            continue
+        source_path = str(caller_ast.get("source") or "")
+        line = source_line(source_path, raw_edge.get("source_span"))
+        # Enrich only an existing Lowkey virtual/unresolved call at this exact
+        # source site. SUPER calls have their own C3 semantics and are excluded.
+        lexical_call = next((
+            edge for edge in edges
+            if edge.get("source") == caller_ui
+            and edge.get("target") == lexical_ui
+            and edge.get("kind") in {"CALLS", "LIBRARY_CALL"}
+            and edge.get("file") == source_path
+            and edge.get("line") == line
+            and edge.get("implementation_resolution") == "UNRESOLVED"
+            and (edge.get("details") or {}).get("dispatch") == "VIRTUAL"
+        ), None)
+        if lexical_call is None:
+            continue
+
+        signature = str(lexical_ast.get("signature") or "")
+        c3_chain = caller_contract.get("linearized_base_contracts") or []
+        candidate_ast = None
+        for contract_id in c3_chain:
+            candidate_ast = next((
+                item for item in functions
+                if str(item.get("contract") or "") == str(contract_id)
+                and str(item.get("signature") or "") == signature
+                and item.get("implemented") is True
+            ), None)
+            if candidate_ast:
+                break
+        if not candidate_ast or str(candidate_ast.get("id")) == str(lexical_ast.get("id")):
+            continue
+        candidate_ui = compiler_function_to_ui.get(str(candidate_ast.get("id")))
+        if not candidate_ui or candidate_ui == caller_ui:
+            continue
+
+        digest = hashlib.sha256(
+            f"{caller_ui}|{candidate_ui}|{source_path}|{raw_edge.get('source_span')}|C3".encode("utf-8")
+        ).hexdigest()[:24]
+        edge_id = "compiler-c3-dispatch:" + digest
+        if any(edge.get("id") == edge_id for edge in edges):
+            continue
+        edges.append({
+            "id": edge_id,
+            "source": caller_ui,
+            "target": candidate_ui,
+            "kind": "VIRTUAL_DISPATCH_CANDIDATE",
+            "source_kind": "compiler_c3_virtual_dispatch_candidate",
+            "label": EDGE_LABELS["VIRTUAL_DISPATCH_CANDIDATE"],
+            "resolution": "C3_CONTEXT_CANDIDATE",
+            "evidence": "COMPILER_AST",
+            "file": source_path,
+            "line": line,
+            "detail": (
+                "The Solidity compiler's C3 linearization identifies this as the most-derived "
+                "implemented declaration in the caller contract's static inheritance context. "
+                "The original virtual call remains unresolved: a more-derived runtime type may "
+                "override it, and this is not deployed implementation or proxy evidence."
+            ),
+            "via": [],
+            "access_path": "",
+            "status": "C3_CONTEXT_CANDIDATE",
+            "asset": "",
+            "direction": "",
+            "recipient": "",
+            "amount": "",
+            "method": "",
+            "receiver": "",
+            "implementation_resolution": "C3_CONTEXT_CANDIDATE",
+            "call_kind": "compiler_c3_dispatch",
+            "source_excerpt": _source_excerpt(root, source_path, line) if line else "",
+            "details": {
+                "compiler_ast_reference": raw_edge.get("source_span"),
+                "compiler_ast_evidence": "COMPILER_AST",
+                "lexical_target": lexical_ui,
+                "c3_context_candidate": candidate_ui,
+                "c3_context_contract": candidate_ast.get("contract"),
+                "c3_linearized_contracts": list(c3_chain),
+                "runtime_dispatch_status": "UNRESOLVED",
+            },
+        })
+        nodes_by_id[caller_ui]["outgoing"] += 1
+        nodes_by_id[candidate_ui]["incoming"] += 1
+        virtual_dispatch_candidates += 1
+
     return {
         "status": "AST_OBSERVED",
         "accepted_builds": compiler.get("accepted_builds", 0),
         "compiler_versions": compiler.get("compiler_versions") or [],
         "c3_contracts": c3_count,
         "override_edges": added_override_edges,
+        "virtual_dispatch_candidates": virtual_dispatch_candidates,
         "limitations": compiler.get("limitations") or [],
     }
 
@@ -936,7 +1039,7 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
 .source-line.selected .source-line-number{color:#8bdcf9}
 .graph-toolbar{display:flex;align-items:center;gap:6px;padding:7px 11px;border-bottom:1px solid #1d314b;background:#0b1728cc}.toolbar-label{font-size:10px;color:#849bb5;font-weight:800;letter-spacing:.1em}.toolbar-spacer{flex:1}.rel-filter{border:1px solid var(--line);background:#0f1d31;color:#b9c9dc;border-radius:7px;padding:7px 8px;max-width:160px}
 .graph-stage{position:relative;min-height:0;overflow:hidden;background-image:radial-gradient(#24405f66 1px,transparent 1px);background-size:22px 22px}#graph{width:100%;height:100%;display:block;touch-action:none;cursor:grab}#graph.dragging{cursor:grabbing}
-.edge{fill:none;stroke:#607f9f;stroke-width:2;opacity:.76;marker-end:url(#arrow);transition:opacity .18s,stroke-width .18s}.edge.CALLS{stroke:#54c6a0}.edge.LIBRARY_CALL,.edge.USES_LIBRARY{stroke:#64c69d}.edge.EXTERNAL_CALL{stroke:#e6a66a;stroke-dasharray:3 4}.edge.APPLIES_MODIFIER{stroke:#9d9fea}.edge.OVERRIDES,.edge.INHERITS,.edge.USES_TYPE{stroke:#a68ef0}.edge.READS,.edge.WRITES,.edge.DELETES{stroke:#64bbd9}.edge.ASSET_FLOW{stroke:#d68ae3;stroke-width:2.5;stroke-dasharray:8 6;animation:flowMotion 1.45s linear infinite}@keyframes flowMotion{to{stroke-dashoffset:-28}}@media(prefers-reduced-motion:reduce){.edge.ASSET_FLOW{animation:none}}.edge.IMPORTS{stroke:#6a829d;stroke-dasharray:5 6}.edge.RUNTIME_CALL_OBSERVED{stroke:#e8b85d;stroke-width:2.5;stroke-dasharray:2 5}.edge.CONTAINS{stroke:#314a63;stroke-width:1.1;stroke-dasharray:3 5;marker-end:none;opacity:.45}.edge.hot{opacity:1;stroke-width:3.5}.edge.ASSERTED_BINDING{stroke:#c58ada;stroke-dasharray:7 5;opacity:.98}.edge.dimmed{opacity:.12;marker-end:none;animation:none}.edge-label{font-size:10px;fill:#aebed1;paint-order:stroke;stroke:#091321;stroke-width:4px;pointer-events:none}.edge-label.dimmed{opacity:.12}
+.edge{fill:none;stroke:#607f9f;stroke-width:2;opacity:.76;marker-end:url(#arrow);transition:opacity .18s,stroke-width .18s}.edge.CALLS{stroke:#54c6a0}.edge.LIBRARY_CALL,.edge.USES_LIBRARY{stroke:#64c69d}.edge.EXTERNAL_CALL{stroke:#e6a66a;stroke-dasharray:3 4}.edge.APPLIES_MODIFIER{stroke:#9d9fea}.edge.OVERRIDES,.edge.INHERITS,.edge.USES_TYPE{stroke:#a68ef0}.edge.READS,.edge.WRITES,.edge.DELETES{stroke:#64bbd9}.edge.ASSET_FLOW{stroke:#d68ae3;stroke-width:2.5;stroke-dasharray:8 6;animation:flowMotion 1.45s linear infinite}@keyframes flowMotion{to{stroke-dashoffset:-28}}@media(prefers-reduced-motion:reduce){.edge.ASSET_FLOW{animation:none}}.edge.IMPORTS{stroke:#6a829d;stroke-dasharray:5 6}.edge.RUNTIME_CALL_OBSERVED{stroke:#e8b85d;stroke-width:2.5;stroke-dasharray:2 5}.edge.VIRTUAL_DISPATCH_CANDIDATE{stroke:#bd9cff;stroke-width:2.6;stroke-dasharray:5 4}.edge.CONTAINS{stroke:#314a63;stroke-width:1.1;stroke-dasharray:3 5;marker-end:none;opacity:.45}.edge.hot{opacity:1;stroke-width:3.5}.edge.ASSERTED_BINDING{stroke:#c58ada;stroke-dasharray:7 5;opacity:.98}.edge.dimmed{opacity:.12;marker-end:none;animation:none}.edge-label{font-size:10px;fill:#aebed1;paint-order:stroke;stroke:#091321;stroke-width:4px;pointer-events:none}.edge-label.dimmed{opacity:.12}
 .graph-node{cursor:pointer}.graph-node rect{fill:#14243b;stroke:#55708e;stroke-width:1.5;rx:10;filter:drop-shadow(0 7px 12px #0005)}.graph-node.declaration rect{fill:#112e48;stroke:#399bd0}.graph-node.interface rect{fill:#281f45;stroke:#a88af0}.graph-node.library rect{fill:#143c33;stroke:#57c69c}.graph-node.function rect,.graph-node.modifier rect{fill:#192944;stroke:#7fa6d3}.graph-node.state rect{fill:#19372e;stroke:#64b68e}.graph-node.asset rect{fill:#35213d;stroke:#c58ada}.graph-node.external rect,.graph-node.unresolved_state rect{fill:#38291f;stroke:#d6a55e}.graph-node.group rect{fill:#142b43;stroke:#3e86ae;stroke-width:2}.graph-node.selected rect{stroke:#59ddff;stroke-width:3;filter:drop-shadow(0 0 13px #42c9f888)}.graph-node.dimmed{opacity:.2;filter:saturate(.35)}.graph-node.focused rect{stroke-width:2.3}.graph-node:hover rect{stroke:#9deaff;stroke-width:2.5}.graph-node text{pointer-events:none}.node-title{font-size:14px;font-weight:800;fill:#eff7ff}.node-subtitle{font-size:10px;fill:#9eb3cc}
 .graph-empty{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none}.graph-empty span{max-width:420px;text-align:center;color:#9cb0c9;background:#0d1c30e8;border:1px solid #284563;border-radius:12px;padding:16px}
 #minimap{position:absolute;right:12px;bottom:12px;width:154px;height:95px;border:1px solid #36516e;border-radius:8px;background:#091626dd;pointer-events:auto;cursor:crosshair;touch-action:manipulation}.graph-hint{position:absolute;left:13px;bottom:13px;color:#7f96b2;font-size:10px;background:#081523cc;border:1px solid #253e5c;border-radius:6px;padding:5px 8px;pointer-events:none}
@@ -1368,6 +1471,7 @@ function visibleEdge(e){
   const edgeFilters={};document.querySelectorAll("[data-edge]").forEach(function(x){edgeFilters[x.dataset.edge]=x.checked});
   let family=e.kind;
   if(e.kind==="ASSERTED_BINDING")family="EXTERNAL_CALL";
+  else if(e.kind==="VIRTUAL_DISPATCH_CANDIDATE")family="CALLS";
   else if(e.kind==="LIBRARY_CALL"||e.kind==="USES_LIBRARY")family="USES_LIBRARY";
   else if(["READS_CONSTANT","READS_IMMUTABLE","TRANSIENT_READS"].includes(e.kind))family="READS";
   else if(["WRITES","DELETES","MUTATES","TRANSIENT_WRITES","TRANSIENT_DELETES","INITIALIZES","UNRESOLVED_STORAGE","UNRESOLVED_MUTATION"].includes(e.kind))family="WRITES";
@@ -1470,7 +1574,7 @@ function functionProjection(contractId,focusFunction){
   while(queue.length){
     const current=queue.shift();
     MODEL.edges.forEach(function(e){
-      if(e.source!==current||!["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES"].includes(e.kind)||!visibleEdge(e))return;
+      if(e.source!==current||!["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES","VIRTUAL_DISPATCH_CANDIDATE"].includes(e.kind)||!visibleEdge(e))return;
       callEdges.push(e);
       const target=node(e.target);
       if(target&&["function","modifier"].includes(target.type)&&!distance.has(target.id)){
@@ -1552,7 +1656,7 @@ function functionContextForNode(selected){
   if(!selected)return null;
   if(selected.type==="function"||selected.type==="modifier")return selected.id;
   const edgeKinds=[
-    "CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES",
+    "CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES","VIRTUAL_DISPATCH_CANDIDATE",
     "READS","READS_CONSTANT","READS_IMMUTABLE","TRANSIENT_READS",
     "WRITES","DELETES","MUTATES","TRANSIENT_WRITES","TRANSIENT_DELETES",
     "INITIALIZES","ALIASES_STORAGE","UNRESOLVED_STORAGE","UNRESOLVED_MUTATION",
@@ -1685,7 +1789,7 @@ function layoutProjection(projection,rootId){
     while(queue.length){
       const current=queue.shift(),level=levels.get(current);
       edges.forEach(function(e){
-        if(e.source===current&&["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES","INHERITS","USES_LIBRARY","USES_TYPE","CONTAINS"].includes(e.kind)&&!levels.has(e.target)&&node(e.target)){
+        if(e.source===current&&["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES","VIRTUAL_DISPATCH_CANDIDATE","INHERITS","USES_LIBRARY","USES_TYPE","CONTAINS"].includes(e.kind)&&!levels.has(e.target)&&node(e.target)){
           levels.set(e.target,level+1);queue.push(e.target);
         }else if(e.kind==="CONTAINS"&&e.target===current&&!levels.has(e.source)&&node(e.source)){
           levels.set(e.source,level+1);queue.push(e.source);
@@ -1955,6 +2059,7 @@ function showEdgeDetails(e){
     const implementation=add(root,"div","coverage "+(e.implementation_resolution==="DIRECT"?"ok":"warn"),"Implementation resolution: "+e.implementation_resolution);
     if(e.implementation_resolution==="ASSUMED")add(implementation,"p","","ASSERTED ASSUMPTION — manually associated only; not proof of a deployed implementation or runtime target.");
     else if(e.implementation_resolution==="UNRESOLVED")add(implementation,"p","","The declared interface method is known, but the deployed implementation is not established by this source edge.");
+    else if(e.implementation_resolution==="C3_CONTEXT_CANDIDATE")add(implementation,"p","","This is the most-derived implemented declaration in the caller contract's compiler C3 context only. The original virtual call remains unresolved because a more-derived runtime type may override it; this is not deployed implementation or proxy evidence.");
     else add(implementation,"p","","Compiler/source analysis identifies this static declaration relationship; it does not prove deployed runtime behaviour.");
   }
   if(e.asset||e.direction||e.recipient||e.amount){
@@ -2394,7 +2499,7 @@ function renderInspector(){
     });
   }else if(selectedTab==="calls"){
     const functionIds=new Set(functions.map(function(fn){return fn.id}));
-    const callKinds=["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES","USES_LIBRARY","USES_TYPE","INHERITS"];
+    const callKinds=["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES","VIRTUAL_DISPATCH_CANDIDATE","USES_LIBRARY","USES_TYPE","INHERITS"];
     const outgoing=MODEL.edges.filter(function(e){return functionIds.has(e.source)&&callKinds.includes(e.kind)}).concat(
       manualBindingEdges(MODEL.edges).filter(function(e){return functionIds.has(e.source)})
     );
@@ -2445,7 +2550,7 @@ function renderFlow(){
     document.getElementById("flow-note").textContent="Select an individual function to follow all reachable helpers and state / asset effects";
     return;
   }
-  const callKinds=["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES"];
+  const callKinds=["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES","VIRTUAL_DISPATCH_CANDIDATE"];
   const queue=[functionId],visited=new Set(queue),callEdges=[];
   while(queue.length){
     const current=queue.shift();
