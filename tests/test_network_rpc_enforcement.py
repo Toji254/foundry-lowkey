@@ -131,6 +131,53 @@ def test_explicit_rpc_override_is_not_replaced_by_managed_selection(tmp_path):
         assert lk.effective_rpc({}, explicit_rpc=endpoint) == endpoint
 
 
+def test_explicit_rpc_override_uses_persisted_session_when_cache_is_empty(tmp_path):
+    managed_rpc = "http://127.0.0.1:8545"
+    foreign_rpc = "http://127.0.0.1:9545"
+    manager = __import__("unittest").mock.Mock()
+    manager.list.return_value = [{
+        "id": "managed-session-a",
+        "name": "dev",
+        "rpc": managed_rpc,
+        "status": "running",
+    }]
+    manager.active.return_value = {
+        "id": "managed-session-a",
+        "name": "dev",
+        "rpc": managed_rpc,
+    }
+    config = {
+        "target": "0x" + "a" * 40,
+        "actor": "anvil-1",
+        "wallets": {},
+    }
+    with (
+        patch.object(lk, "project_fixture_rpc_info", return_value=None),
+        patch.object(lk.audit_context, "foundry_project_root", return_value=str(tmp_path)),
+        patch.object(lk, "NetworkManager", return_value=manager),
+    ):
+        assert lk.effective_rpc(config, explicit_rpc=foreign_rpc) == foreign_rpc
+    manager.list.assert_called_once()
+    manager.active.assert_called_once()
+    assert config["_explicit_rpc_unscoped"] is True
+
+
+def test_explicit_rpc_override_matching_persisted_session_keeps_manual_context(tmp_path):
+    managed_rpc = "http://127.0.0.1:8545"
+    manager = __import__("unittest").mock.Mock()
+    manager.list.return_value = [{"id": "managed-session-a", "rpc": managed_rpc}]
+    manager.active.return_value = {"id": "managed-session-a", "rpc": managed_rpc}
+    config = {"target": "0x" + "a" * 40, "actor": "anvil-1", "wallets": {}}
+    with (
+        patch.object(lk, "project_fixture_rpc_info", return_value=None),
+        patch.object(lk.audit_context, "foundry_project_root", return_value=str(tmp_path)),
+        patch.object(lk, "NetworkManager", return_value=manager),
+    ):
+        assert lk.effective_rpc(config, explicit_rpc="HTTP://127.0.0.1:8545/") == "HTTP://127.0.0.1:8545/"
+    assert "_explicit_rpc_unscoped" not in config
+    manager.active.assert_called_once()
+
+
 def test_explicit_rpc_override_to_another_network_detaches_session_actor_and_identity():
     session = {
         "id": "managed-session-a",

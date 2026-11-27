@@ -792,9 +792,36 @@ def _explicit_rpc_matches_selected_identity(config, explicit_rpc):
     if isinstance(session, dict) and session.get("rpc"):
         return shared_context.same_rpc_endpoint(explicit_rpc, session.get("rpc"))
 
+    # A fresh CLI process may not yet have populated the in-memory active
+    # session cache. When it carries an implicit target or actor, recover the
+    # selected identity from the project's persistent managed-session registry
+    # before treating an explicit endpoint as an unrelated manual choice.
     try:
-        root = audit_context.foundry_project_root()
-        state = audit_context.load(root)
+        root = Path(audit_context.foundry_project_root()).expanduser().resolve()
+    except Exception:
+        root = None
+
+    if root is not None and isinstance(config, dict) and (config.get("target") or config.get("actor")):
+        try:
+            manager = NetworkManager(root, tool_path("anvil") or "anvil")
+            registered_sessions = manager.list()
+            if registered_sessions:
+                selected_session = manager.active()
+                if not selected_session:
+                    # A project with managed sessions but no selected healthy
+                    # session has no implicit target/actor identity to borrow.
+                    return False
+                managed_rpc = selected_session.get("rpc")
+                if not managed_rpc:
+                    return False
+                return shared_context.same_rpc_endpoint(explicit_rpc, managed_rpc)
+        except Exception:
+            # An unreadable or malformed managed registry cannot establish
+            # endpoint identity. Detach context rather than borrowing it.
+            return False
+
+    try:
+        state = audit_context.load(root) if root is not None else {}
         project_rpc = state.get("rpc") if isinstance(state, dict) else None
         if project_rpc:
             return shared_context.same_rpc_endpoint(explicit_rpc, project_rpc)
