@@ -188,6 +188,8 @@ class ProtocolExplorerTests(unittest.TestCase):
         self.assertIn('id="source-drawer"', document)
         self.assertIn("Open full Solidity source", document)
         self.assertIn("function renderSourceWindow(source)", document)
+        self.assertIn("NESTED TYPES & DECLARATIONS", document)
+        self.assertIn("function renderTypeInspector(parent,selected)", document)
         self.assertIn("INHERITANCE / C3 LINEARIZATION", document)
         self.assertIn("COMPILER DISPATCH FACTS", document)
         self.assertIn("INTERFACE IMPLEMENTATION BINDING", document)
@@ -232,6 +234,78 @@ class ProtocolExplorerTests(unittest.TestCase):
         self.assertTrue(functions["inspect"]["entrypoint"])
         self.assertFalse(functions["constructor"]["entrypoint"])
         self.assertIsNone(functions["constructor"]["entrypoint_kind"])
+
+    def test_nested_struct_enum_udvt_parameter_return_and_state_types_are_navigable(self):
+        source = """
+        pragma solidity ^0.8.20;
+        type Wad is uint256;
+        contract TypeInspector {
+            struct Inner { Wad amount; }
+            struct Outer { Inner inner; }
+            enum Status { Pending, Complete }
+            struct Receipt { Status status; Outer data; }
+            Outer private cached;
+            function submit(Outer calldata request) external returns (Receipt memory result) {
+                return result;
+            }
+        }
+        """
+        (self.root / "src" / "Types.sol").write_text(source, encoding="utf-8")
+        index = build_source_index(self.root, use_cache=False)
+        model = build_explorer_model(index, root=self.root)
+
+        by_name = {
+            (item["kind"], item["name"], item.get("contract") or ""): item
+            for item in model["nodes"]
+        }
+        wad = by_name[("user_defined_value_type", "Wad", "")]
+        inner = by_name[("struct", "Inner", "TypeInspector")]
+        outer = by_name[("struct", "Outer", "TypeInspector")]
+        status = by_name[("enum", "Status", "TypeInspector")]
+        receipt = by_name[("struct", "Receipt", "TypeInspector")]
+
+        def has_type_edge(source_node, target_node, **detail):
+            return any(
+                edge["kind"] == "USES_TYPE"
+                and edge["source"] == source_node["id"]
+                and edge["target"] == target_node["id"]
+                and all(edge["details"].get(key) == value for key, value in detail.items())
+                for edge in model["edges"]
+            )
+
+        inner_amount = next(
+            item for item in model["nodes"]
+            if item["kind"] == "struct_field" and item["name"] == "amount" and item.get("struct") == "Inner"
+        )
+        outer_inner = next(
+            item for item in model["nodes"]
+            if item["kind"] == "struct_field" and item["name"] == "inner" and item.get("struct") == "Outer"
+        )
+        receipt_status = next(
+            item for item in model["nodes"]
+            if item["kind"] == "struct_field" and item["name"] == "status" and item.get("struct") == "Receipt"
+        )
+        cached = next(
+            item for item in model["nodes"]
+            if item["kind"] == "state_variable" and item["name"] == "cached"
+        )
+        submit = next(
+            item for item in model["nodes"]
+            if item["kind"] == "function" and item.get("contract") == "TypeInspector" and item["name"] == "submit"
+        )
+
+        self.assertEqual(wad["underlying_type"], "uint256")
+        self.assertEqual(inner_amount["type_text"], "Wad")
+        self.assertEqual(outer_inner["type_text"], "Inner")
+        self.assertEqual(receipt_status["type_text"], "Status")
+        self.assertTrue(has_type_edge(inner_amount, wad))
+        self.assertTrue(has_type_edge(outer_inner, inner))
+        self.assertTrue(has_type_edge(receipt_status, status))
+        self.assertTrue(has_type_edge(cached, outer))
+        self.assertTrue(has_type_edge(submit, outer, parameter="request"))
+        self.assertTrue(has_type_edge(submit, receipt, return_index=1))
+        self.assertEqual(submit["return_parameters"][0]["declared_type"], "Receipt memory")
+        self.assertTrue(any(item["type"] == "enum_value" and item["name"] == "Complete" for item in model["nodes"]))
 
     def test_compiler_c3_linearization_and_override_facts_are_exposed_without_guessing(self):
         source = """
