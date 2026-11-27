@@ -1,6 +1,6 @@
 import importlib.util
 import pathlib
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("lowkeycast_rpc_enforcement", ROOT / "lowkey" / "lk.py")
@@ -23,7 +23,9 @@ def test_regular_cast_explicit_rpc_is_preserved():
     ) as cast:
         result = lk.run_cast(["chain-id", "--rpc-url", "http://127.0.0.1:9546"], {}, capture=True)
     assert str(result) == "31337"
-    resolver.assert_called_once_with({}, explicit_rpc="http://127.0.0.1:9546", target=None)
+    expected_resolution = call({}, explicit_rpc="http://127.0.0.1:9546", target=None)
+    assert resolver.call_count == 2
+    assert resolver.call_args_list == [expected_resolution, expected_resolution]
     command = cast.call_args.args[0]
     assert command[-2:] == ["--rpc-url", "http://127.0.0.1:9546"]
 
