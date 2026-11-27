@@ -587,6 +587,14 @@ def compiler_dependency_evidence(
                                 "source": "solc-ast:NewExpression",
                                 "line": source_line(source_text, node),
                                 "function": current_function,
+                                # Constructor-created children are deployed as
+                                # part of the parent constructor. Runtime
+                                # creation is an execution effect, not a
+                                # prerequisite deployment for the parent.
+                                "creation_phase": (
+                                    "deployment" if current_function == "constructor"
+                                    else "runtime" if current_function else "unknown"
+                                ),
                                 "requires_resolution": False, "auto_deploy": False,
                                 "factory_created": True,
                                 "evidence": {"build_info": build_name, "source_path": unit["path"]},

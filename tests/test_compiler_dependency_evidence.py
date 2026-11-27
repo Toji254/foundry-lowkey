@@ -55,7 +55,12 @@ class CompilerDependencyEvidenceTests(unittest.TestCase):
                                     "typeDescriptions": {"typeString": "contract IPriceSource"},
                                 }
                             ]},
-                            "body": {"nodeType": "Block", "statements": []},
+                            "body": {"nodeType": "Block", "statements": [
+                                {"nodeType": "ExpressionStatement", "expression": {
+                                    "nodeType": "NewExpression", "src": "0:1:0",
+                                    "typeName": {"nodeType": "UserDefinedTypeName", "referencedDeclaration": 4},
+                                }}
+                            ]},
                         },
                         {
                             "nodeType": "FunctionDefinition", "id": 23, "name": "createCache", "kind": "function",
@@ -151,9 +156,15 @@ class CompilerDependencyEvidenceTests(unittest.TestCase):
             self.assertEqual(compiler_report["library_cycles"], [])
 
             creations = [edge for edge in widget_edges if edge["kind"] == "creation-expression"]
-            self.assertEqual(len(creations), 1)
-            self.assertEqual(creations[0]["to"], "src/Helper.sol:CacheFactory")
-            self.assertFalse(creations[0]["auto_deploy"])
+            self.assertEqual(len(creations), 2)
+            self.assertEqual({edge["to"] for edge in creations}, {"src/Helper.sol:CacheFactory"})
+            creations_by_phase = {edge["creation_phase"]: edge for edge in creations}
+            self.assertEqual(set(creations_by_phase), {"deployment", "runtime"})
+            self.assertEqual(creations_by_phase["deployment"]["function"], "constructor")
+            self.assertEqual(creations_by_phase["runtime"]["function"], "createCache")
+            self.assertTrue(all(edge["factory_created"] for edge in creations))
+            self.assertTrue(all(edge["requires_resolution"] is False for edge in creations))
+            self.assertTrue(all(edge["auto_deploy"] is False for edge in creations))
 
             typed = [edge for edge in widget_edges if edge["kind"] == "state-contract-reference"]
             self.assertEqual(len(typed), 1)
@@ -211,8 +222,19 @@ class CompilerDependencyEvidenceTests(unittest.TestCase):
             self.assertEqual(compiler_report["unavailable_constructor_abi_count"], 0)
 
             constructor_edges = [edge for edge in widget_edges if edge.get("function") == "constructor"]
-            self.assertTrue(constructor_edges)
-            self.assertTrue(all(edge["requires_resolution"] for edge in constructor_edges))
+            constructor_parameter_edges = [
+                edge for edge in constructor_edges
+                if edge.get("kind") == "typed-parameter-reference"
+            ]
+            self.assertTrue(constructor_parameter_edges)
+            self.assertTrue(all(edge["requires_resolution"] for edge in constructor_parameter_edges))
+            constructor_creation_edges = [
+                edge for edge in constructor_edges
+                if edge.get("kind") == "creation-expression"
+            ]
+            self.assertEqual(len(constructor_creation_edges), 1)
+            self.assertEqual(constructor_creation_edges[0]["creation_phase"], "deployment")
+            self.assertFalse(constructor_creation_edges[0]["auto_deploy"])
             # An import is not itself an instruction to deploy its imported symbol.
             self.assertFalse(any(edge.get("kind") == "import" and edge.get("auto_deploy") for edge in edges))
 
