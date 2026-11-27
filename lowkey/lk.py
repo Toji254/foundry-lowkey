@@ -28721,7 +28721,16 @@ COMMAND_HELP = {
         related=["lk project", "lk deps", "lk import files", "lk scan", "lk recon"],
     ),
     "seams": _help_entry("Show audit hotspots where protocol boundaries and assumptions deserve extra scrutiny.", "lk seams", "lk seams", "Use it to decide where manual review should start.", related=["lk project", "lk risk", "lk walkthrough"]),
-    "deps": _help_entry("Show imports, inheritance, and source dependencies.", "lk deps [src]", "lk deps src", "Use it to separate application logic from libraries, interfaces, and dependency code.", related=["lk project", "lk layout"]),
+    "deps": _help_entry(
+        "Show imports, inheritance, and compiler-backed typed deployment dependencies; --json emits graph provenance and status.",
+        "lk deps [path] [--json]",
+        "lk deps src --json",
+        "Use it to separate application logic from libraries, interfaces, constructor values, and factory-created contracts without treating every address as a contract.",
+        options=[
+            ("--json", "Emit the complete source-matched dependency graph and typed deployment graph as JSON.", "lk deps src --json"),
+        ],
+        related=["lk project", "lk layout"],
+    ),
     "layout": _help_entry("Show compiled Solidity storage layout.", "lk layout <Contract>", "lk layout MyContract", "Use it when auditing mappings, packing, proxies, or storage collisions.", related=["lk mapping", "lk snapshot", "lk proof"]),
     "ids": _help_entry(
         "List contract-level identifiers that Lowkey recovered from transaction return values or decoded event fields. These are record IDs/keys, not transaction hashes.",

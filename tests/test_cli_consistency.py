@@ -48,6 +48,15 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertIn("lk walkthrough teaches execution behavior", rendered)
         self.assertIn("lk workflow tracks the five audit phases", rendered)
 
+    def test_deps_help_documents_json_typed_dependency_graph(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(lk._render_command_help(["deps"]), 0)
+        rendered = output.getvalue()
+        self.assertIn("lk deps [path] [--json]", rendered)
+        self.assertIn("--json", rendered)
+        self.assertIn("typed deployment graph", rendered.lower())
+
     def test_next_command_footer_keeps_lowkey_suggestions_separate_from_ai(self):
         native = [("lk functions", "List contract functions.")]
         with patch.object(lk, "_recommended_next_commands", return_value=native), \
