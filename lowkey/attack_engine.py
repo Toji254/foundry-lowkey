@@ -422,6 +422,10 @@ def _validate_reproof(
                     or re.fullmatch(r"[0-9a-f]{64}", oracle["feed_code_sha256"]) is None
                     or not isinstance(asset.get("token_code_sha256"), str)
                     or re.fullmatch(r"[0-9a-f]{64}", asset["token_code_sha256"]) is None
+                    or not isinstance(oracle.get("feed_identity_sha256"), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", oracle["feed_identity_sha256"]) is None
+                    or not isinstance(asset.get("token_identity_sha256"), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", asset["token_identity_sha256"]) is None
                 ):
                     raise AttackEngineError(
                         f"{label} portfolio asset {index} lacks a source-verified token/feed identity.",
@@ -430,6 +434,8 @@ def _validate_reproof(
                 if asset.get("kind") == "erc4626" and (
                     not isinstance(asset.get("asset_code_sha256"), str)
                     or re.fullmatch(r"[0-9a-f]{64}", asset["asset_code_sha256"]) is None
+                    or not isinstance(asset.get("asset_identity_sha256"), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", asset["asset_identity_sha256"]) is None
                 ):
                     raise AttackEngineError(
                         f"{label} ERC-4626 asset {index} lacks a source-verified underlying identity.",
@@ -481,6 +487,8 @@ def _validate_reproof(
                 or native_price.get("source_round_verified") is not True
                 or not isinstance(native_price.get("feed_code_sha256"), str)
                 or re.fullmatch(r"[0-9a-f]{64}", native_price["feed_code_sha256"]) is None
+                or not isinstance(native_price.get("feed_identity_sha256"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", native_price["feed_identity_sha256"]) is None
             ):
                 raise AttackEngineError(
                     f"{label} native/USD feed identity is not independently source-verified.",
