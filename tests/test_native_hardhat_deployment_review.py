@@ -44,7 +44,7 @@ def _fixture(root: Path):
     )
     (root / "package-lock.json").write_text('{"lockfileVersion":3}\n', encoding="utf-8")
     script = root / "scripts" / "Deploy.ts"
-    script.parent.mkdir()
+    script.parent.mkdir(parents=True, exist_ok=True)
     script.write_text("export default async function main() {}\n", encoding="utf-8")
     return script
 
