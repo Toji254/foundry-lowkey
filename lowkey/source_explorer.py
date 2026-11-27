@@ -420,6 +420,56 @@ def _attach_compiler_dispatch_facts(
                         added_override_edges += 1
                     break
             continue
+
+        # The lexical index deliberately leaves a placeholder when several
+        # inherited declarations share an override signature. A fresh compiler
+        # AST can resolve that ambiguity. Reuse the placeholder edge rather
+        # than leaving it first in the graph beside a second proven edge.
+        unresolved_candidate = next((
+            edge for edge in edges
+            if edge.get("source") == source_ui
+            and edge.get("kind") == kind
+            and edge.get("resolution") in {"UNRESOLVED", "AMBIGUOUS"}
+            and str(edge.get("target") or "").startswith("override:")
+        ), None) if kind == "OVERRIDES" else None
+        if unresolved_candidate is not None:
+            old_target = str(unresolved_candidate.get("target") or "")
+            old_node = nodes_by_id.get(old_target)
+            if old_node:
+                old_node["incoming"] = max(0, int(old_node.get("incoming") or 0) - 1)
+            nodes_by_id[target_ui]["incoming"] += 1
+            unresolved_candidate["target"] = target_ui
+            unresolved_candidate["resolution"] = "DIRECT"
+            unresolved_candidate["evidence"] = "COMPILER_AST"
+            unresolved_candidate["source_kind"] = raw_kind
+            unresolved_candidate["file"] = source_path
+            unresolved_candidate["line"] = line
+            unresolved_candidate["detail"] = (
+                "Solidity compiler AST identifies this declaration as a base-function override. "
+                "This is a static declaration relationship, not proof of a deployed runtime target."
+            )
+            unresolved_candidate["call_kind"] = "compiler_ast"
+            unresolved_candidate["source_excerpt"] = (
+                _source_excerpt(root, source_path, line) if line else ""
+            )
+            details = unresolved_candidate.setdefault("details", {})
+            if isinstance(details, dict):
+                details["compiler_ast_reference"] = raw_edge.get("source_span")
+                details["compiler_ast_evidence"] = "COMPILER_AST"
+                details["compiler_ast_edge_kind"] = raw_kind
+            edge_lookup.discard((source_ui, old_target, kind))
+            edge_lookup.add(key)
+            if (
+                old_target.startswith("override:")
+                and not any(
+                    edge.get("source") == old_target or edge.get("target") == old_target
+                    for edge in edges
+                )
+            ):
+                nodes_by_id.pop(old_target, None)
+            added_override_edges += 1
+            continue
+
         digest = hashlib.sha256(
             f"{kind}|{source_ui}|{target_ui}|{raw_edge.get('source_span')}".encode("utf-8")
         ).hexdigest()[:24]
