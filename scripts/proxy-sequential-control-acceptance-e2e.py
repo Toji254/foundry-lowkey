@@ -519,7 +519,7 @@ def main() -> int:
         )
         hybrid_manifest_name = "transparent-hybrid-control.json"
         (root / hybrid_manifest_name).write_text(
-            json.dumps(hybrid_manifest, indent=2, sort_keys=True) + "\\n",
+            json.dumps(hybrid_manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         hybrid_initial_slot = rpc_storage(cast, root, env, transparent_proxy, IMPLEMENTATION_SLOT)
