@@ -302,7 +302,7 @@ class TokenEconomicsTests(unittest.TestCase):
         token = result["tokens"][0]
         self.assertTrue(result["source_state_verified"])
         self.assertNotEqual(token["token_code_sha256"], token["token_identity_sha256"])
-        self.assertEqual(token["token_code_sha256"], token["token_code_sha256"])
+        self.assertRegex(token["token_identity_sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual(token["share_or_token_delta"], 1_500_000)
 
     def test_beacon_runtime_code_mismatch_is_refused(self):

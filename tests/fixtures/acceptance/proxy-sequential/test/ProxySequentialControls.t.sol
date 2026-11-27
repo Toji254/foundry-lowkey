@@ -71,7 +71,7 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
         vm.prank(owner);
         admin.setSecureMode(true);
         _lowkeyStartTrace(address(admin));
-        require(vm.load(address(admin), bytes32(0)) == bytes32(uint256(1)), "ADMIN_CONTROL_MODE_MISMATCH");
+        require(admin.secureMode(), "ADMIN_CONTROL_MODE_MISMATCH");
         // Make the transparent proxy's implementation slot part of the
         // observed pre-state even though the secure admin rejects before
         // forwarding the measured upgrade call.
@@ -87,7 +87,7 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
         vm.prank(owner);
         admin.setSecureMode(false);
         _lowkeyStartTrace(address(admin));
-        require(vm.load(address(admin), bytes32(0)) == bytes32(uint256(0)), "ADMIN_ATTACK_MODE_MISMATCH");
+        require(!admin.secureMode(), "ADMIN_ATTACK_MODE_MISMATCH");
         require(proxy.implementation() == originalImplementation, "ADMIN_ATTACK_PROXY_PRESTATE_MISMATCH");
         vm.prank(ATTACKER);
         bool attackCallSucceeded = actor.execute(address(admin), upgradeCall);
