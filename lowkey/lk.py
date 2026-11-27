@@ -28753,6 +28753,13 @@ COMMAND_HELP = {
         related=["lk calldata", "lk encode", "lk fn"],
     ),
     "disasm": _help_entry("Disassemble bytecode into EVM instructions.", "lk disasm [args...]", "lk disasm 0x...", "Use it when source or ABI evidence is unavailable.", related=["lk selectors", "lk tx"]),
+    "opcodes": _help_entry(
+        "Inspect fork-aware EVM opcode metadata or decode supplied bytecode without executing it.",
+        "lk opcodes --spec <OPCODE> [--fork <fork>] | lk opcodes --bytecode <0x...> [--fork <fork>]",
+        "lk opcodes --spec PUSH0 --fork shanghai --learn",
+        "Use it for explicit opcode/fork inspection. Static bytecode decoding is not a transaction execution trace or vulnerability verdict.",
+        related=["lk disasm", "lk trace", "lk tx"],
+    ),
     "txpool": _help_entry("Inspect the local transaction pool.", "lk txpool [args...]", "lk txpool status", "Use it when debugging pending local transactions.", related=["lk chain", "lk trace"]),
     "chisel": _help_entry(
         "Launch/use Foundry Chisel for tiny Solidity experiments.",
