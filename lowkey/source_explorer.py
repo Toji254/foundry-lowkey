@@ -94,7 +94,7 @@ def _node_type(raw: dict[str, Any]) -> str:
         return kind
     if kind in {"mapping", "state_variable", "function_pointer", "struct_field"}:
         return "state"
-    if kind in {"struct", "enum", "enum_value", "event", "custom_error", "file", "type"}:
+    if kind in {"struct", "enum", "enum_value", "user_defined_value_type", "event", "custom_error", "file", "type"}:
         return kind
     return "other"
 
@@ -491,7 +491,10 @@ def build_explorer_model(index: dict[str, Any], root: str | Path = ".") -> dict[
             "mutability": raw.get("mutability"),
             "signature": raw.get("signature"), "parameters": raw.get("parameters") or [],
             "storage_class": raw.get("storage_class") or raw.get("persistence"),
-            "type_text": raw.get("type") or "", "mapping_keys": raw.get("mapping_keys") or [],
+            "type_text": raw.get("type") or raw.get("underlying_type") or "",
+            "underlying_type": raw.get("underlying_type") or "",
+            "return_parameters": raw.get("return_parameters") or [],
+            "mapping_keys": raw.get("mapping_keys") or [],
             "mapping_value_type": raw.get("mapping_value_type") or "",
             "initializer": raw.get("initializer"), "bases": raw.get("bases") or [],
             "ancestors": raw.get("ancestors") or [], "using_libraries": raw.get("using_libraries") or [],
@@ -1913,6 +1916,64 @@ function renderSection(parent,title,items,empty){
   if(!items.length)add(list,"p","muted",empty||"No indexed items.");
   items.forEach(function(item){inspectorItem(list,item,item.location||item.kind)});return box;
 }
+function renderTypeInspector(parent,selected){
+  const usageEdges=MODEL.edges.filter(function(edge){return edge.kind==="USES_TYPE"&&edge.source===selected.id});
+  const usedByEdges=MODEL.edges.filter(function(edge){return edge.kind==="USES_TYPE"&&edge.target===selected.id});
+  const declaredEdges=MODEL.edges.filter(function(edge){return edge.kind==="DECLARES"&&edge.source===selected.id});
+  const declared=declaredEdges.map(function(edge){return {edge:edge,item:node(edge.target)}}).filter(function(row){return !!row.item});
+  const typeKinds=new Set(["struct","enum","enum_value","user_defined_value_type","type"]);
+  const children=declared.filter(function(row){return typeKinds.has(row.item.type)||row.item.kind==="struct_field"});
+  if(!usageEdges.length&&!usedByEdges.length&&!children.length&&!selected.underlying_type)return;
+  const section=add(parent,"div","inspector-section");
+  add(section,"div","section-head","NESTED TYPES & DECLARATIONS");
+  if(selected.type==="user_defined_value_type"||selected.underlying_type){
+    add(section,"p","inspect-item","Underlying type: "+(selected.underlying_type||selected.type_text||"not recorded"));
+  }
+  if(selected.type==="struct"){
+    const fields=children.filter(function(row){return row.item.kind==="struct_field"});
+    add(section,"div","section-head","STRUCT FIELDS · "+fields.length);
+    fields.forEach(function(row){
+      const field=row.item,button=add(section,"button","inspect-item","");
+      add(button,"strong","",field.name+" · "+(field.type_text||"type unknown"));
+      add(button,"small","",field.file+":"+field.line+" · "+field.evidence);
+      button.addEventListener("click",function(){openNode(field.id,true)});
+    });
+  }else if(selected.type==="enum"){
+    const values=children.filter(function(row){return row.item.type==="enum_value"});
+    add(section,"div","section-head","ENUM VALUES · "+values.length);
+    values.forEach(function(row){
+      const value=row.item,button=add(section,"button","inspect-item",value.name);
+      add(button,"small","",value.file+":"+value.line);
+      button.addEventListener("click",function(){openNode(value.id,true)});
+    });
+  }
+  if(usageEdges.length){
+    add(section,"div","section-head","REFERENCED TYPES · "+usageEdges.length);
+    usageEdges.forEach(function(edge){
+      const target=node(edge.target),details=edge.details||{};
+      let role="";
+      if(details.parameter)role="Parameter "+details.parameter;
+      else if(details.return_index)role="Return value "+details.return_index;
+      const button=add(section,"button","inspect-item","");
+      add(button,"strong","",(role?role+" → ":"")+((target&&target.label)||edge.target));
+      add(button,"small","",edge.resolution+" · "+edge.evidence+(edge.file?" · "+edge.file+":"+(edge.line||"?"):""));
+      button.addEventListener("click",function(){if(target)openNode(target.id,true)});
+    });
+  }
+  if(usedByEdges.length&&(selected.type==="struct"||selected.type==="enum"||selected.type==="user_defined_value_type")){
+    add(section,"div","section-head","DECLARATIONS USING THIS TYPE · "+usedByEdges.length);
+    usedByEdges.forEach(function(edge){
+      const source=node(edge.source);if(!source)return;
+      const button=add(section,"button","inspect-item","");
+      add(button,"strong","","Used by "+source.label);
+      add(button,"small","",edge.evidence+" · "+edge.file+":"+(edge.line||"?"));
+      button.addEventListener("click",function(){openNode(source.id,true)});
+    });
+  }
+  if(!children.length&&!usageEdges.length&&!usedByEdges.length&&selected.type!=="user_defined_value_type"){
+    add(section,"p","muted","No related user-defined declarations were resolved from the current source index.");
+  }
+}
 function renderInspector(){
   const root=document.getElementById("inspector");clear(root);
   const selected=node(selectedId);
@@ -2066,6 +2127,7 @@ function renderInspector(){
       const b=add(box,"button","tool-button","Follow function");b.addEventListener("click",function(){openNode(lead.function,true)});
     });
   }
+  renderTypeInspector(body,selected);
   if(selected.file){
     const section=add(body,"div","inspector-section");add(section,"div","section-head","SOURCE LOCATION");add(section,"code","location",selected.file+(selected.line?":"+selected.line:""));
     if(selected.source_excerpt){const code=add(section,"div","source-card");add(code,"pre","",selected.source_excerpt)}
