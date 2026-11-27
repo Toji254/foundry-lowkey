@@ -146,6 +146,8 @@ class ProtocolExplorerTests(unittest.TestCase):
         self.assertEqual(source["line_count"], len(source["content"].splitlines()))
         self.assertNotIn(str(self.root), source["path"])
         self.assertLessEqual(self.model["source_inventory"]["embedded_bytes"], 8 * 1024 * 1024)
+        self.assertRegex(self.model["workspace_key"], r"^[0-9a-f]{32}$")
+        self.assertEqual(build_explorer_model(self.index, root=self.root)["workspace_key"], self.model["workspace_key"])
 
     def test_model_preserves_function_to_storage_and_asset_relationships(self):
         kinds = {edge["kind"] for edge in self.model["edges"]}
@@ -188,6 +190,11 @@ class ProtocolExplorerTests(unittest.TestCase):
         self.assertIn("function renderSourceWindow(source)", document)
         self.assertIn("INHERITANCE / C3 LINEARIZATION", document)
         self.assertIn("COMPILER DISPATCH FACTS", document)
+        self.assertIn('id="bookmark-explorer"', document)
+        self.assertIn("function saveWorkspaceState()", document)
+        self.assertIn("function loadWorkspaceState()", document)
+        self.assertIn("manual_positions", document)
+        self.assertIn("Mark investigated", document)
         self.assertNotIn("__GRAPH_DATA__", document)
         self.assertNotIn("__SERVER_MODE__", document)
         self.assertNotIn('<script src="https://', document)
