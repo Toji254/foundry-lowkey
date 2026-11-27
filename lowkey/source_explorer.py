@@ -601,7 +601,7 @@ def build_explorer_model(index: dict[str, Any], root: str | Path = ".") -> dict[
     )
 
     source_paths = {
-        str(raw.get("file") or "") for raw in raw_nodes.values
+        str(raw.get("file") or "") for raw in raw_nodes.values()
         if str(raw.get("file") or "").lower().endswith(".sol")
     }
     sources = _source_file_inventory(root_path, source_paths)
