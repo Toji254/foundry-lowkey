@@ -395,8 +395,10 @@ def measure_token_portfolio(
         )
         if decimals > 36:
             raise TokenEconomicsError(f"{token['symbol']} decimals above 36 are unsupported.")
-        after_code = _code(rpc, local_url, address, after_block, token["symbol"] + " post-state")
-        if hashlib.sha256(bytes.fromhex(after_code[2:])).hexdigest() != code_hash:
+        after_code_hash, _ = _verify_code_source(
+            rpc, local_url, source_url, address, after_block, token["symbol"] + " post-state"
+        )
+        if after_code_hash != code_hash:
             raise TokenEconomicsError(
                 f"{token['symbol']} runtime bytecode changed during the measured transaction; token valuation is refused."
             )
@@ -427,11 +429,11 @@ def measure_token_portfolio(
             )
             if asset_decimals > 36:
                 raise TokenEconomicsError(f"{token['symbol']} underlying decimals above 36 are unsupported.")
-            asset_after_code = _code(
-                rpc, local_url, asset, after_block,
+            asset_after_code_hash, _ = _verify_code_source(
+                rpc, local_url, source_url, asset, after_block,
                 token["symbol"] + " post-state underlying asset",
             )
-            if hashlib.sha256(bytes.fromhex(asset_after_code[2:])).hexdigest() != asset_code_hash:
+            if asset_after_code_hash != asset_code_hash:
                 raise TokenEconomicsError(
                     f"{token['symbol']} underlying asset runtime bytecode changed during the measured transaction."
                 )
