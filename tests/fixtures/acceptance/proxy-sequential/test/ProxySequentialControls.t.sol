@@ -427,8 +427,8 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
             "INITIALIZATION_ORDER_IMPLEMENTATION_NOT_LOCKED");
         require(implementation.owner() == address(0),
             "INITIALIZATION_ORDER_IMPLEMENTATION_OWNER_NOT_EMPTY");
-        require(proxy.initializedVersion() == 0, "INITIALIZATION_ORDER_PROXY_PREINITIALIZED");
-        require(proxy.owner() == address(0), "INITIALIZATION_ORDER_PROXY_OWNER_PRESET");
+        require(state.initializedVersion() == 0, "INITIALIZATION_ORDER_PROXY_PREINITIALIZED");
+        require(state.owner() == address(0), "INITIALIZATION_ORDER_PROXY_OWNER_PRESET");
 
         vm.prank(ATTACKER);
         bool directAccepted = actor.attemptInitialize(address(implementation), ATTACKER);
