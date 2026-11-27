@@ -815,11 +815,24 @@ def effective_rpc(config, explicit_rpc=None, target=None):
     if explicit_rpc is not None:
         selected, _source = shared_context.choose_rpc(explicit_rpc=explicit_rpc)
         if selected:
+            if isinstance(config, dict) and config.get("_explicit_rpc_unscoped"):
+                # The first explicit-RPC resolution already detached this
+                # invocation from its selected project/network identity.
+                # Keep that decision sticky for repeated resolution inside
+                # the same command (for example, command preflight followed by
+                # the Cast invocation). The prior session marker is deliberately
+                # gone, so re-running the identity matcher here would otherwise
+                # mistake the detached context for a matching identity and
+                # silently re-enable the old global target.
+                config["_explicit_rpc_unscoped_endpoint"] = selected
+                return selected
             if _explicit_rpc_matches_selected_identity(config, selected):
                 if isinstance(config, dict):
                     config.pop("_explicit_rpc_unscoped", None)
+                    config.pop("_explicit_rpc_unscoped_endpoint", None)
             elif isinstance(config, dict):
                 config["_explicit_rpc_unscoped"] = True
+                config["_explicit_rpc_unscoped_endpoint"] = selected
                 config.pop("_active_network_session", None)
                 config.pop("_network_actor_selection", None)
                 config.pop("_rpc_override_explicit_actor", None)

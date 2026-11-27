@@ -172,6 +172,14 @@ def test_explicit_rpc_override_detaches_foreign_project_target(tmp_path):
         patch.object(lk, "project_fixture_rpc_info", return_value=None),
         patch.object(lk, "cast_output") as cast_output,
     ):
+        # Model a command preflight resolving the override before run_cast
+        # performs its own RPC resolution. The second pass must not restore
+        # the target from the now-detached project context.
+        assert lk.effective_rpc(
+            config, explicit_rpc="http://127.0.0.1:9545",
+            target=config["target"],
+        ) == "http://127.0.0.1:9545"
+        assert config.get("_explicit_rpc_unscoped") is True
         result = lk.run_cast(
             ["call", "owner", "--rpc-url", "http://127.0.0.1:9545"],
             config,
