@@ -266,6 +266,21 @@ jobs:
           LOWKEY_RPC_URL: http://127.0.0.1:8545
         run: python3 scripts/proxy-break-acceptance-e2e.py
 
+      - name: P0 independently paired UUPS and ProxyAdmin control acceptance
+        env:
+          LOWKEY_RPC_URL: http://127.0.0.1:8545
+        run: python3 scripts/proxy-sequential-control-acceptance-e2e.py
+
+      - name: Upload independent proxy control evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy-sequential-control-acceptance-${{ github.run_number }}
+          path: .audit/proxy-sequential-acceptance/
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 21
+
       - name: Upload proxy break acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
