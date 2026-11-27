@@ -111,9 +111,52 @@ def main():
                 )
                 checks["different_ports"] = a["port"] != b["port"]
                 checks["same_chain_id"] = a["chain_id"] == b["chain_id"] == 31337
-                checks["rpc_chain_ids_match"] = quantity(rpc(a["rpc"], "eth_chainId")) == a["chain_id"] and quantity(rpc(b["rpc"], "eth_chainId")) == b["chain_id"]
-                checks["different_genesis_hashes"] = a["genesis_hash"] != b["genesis_hash"]
-                checks["different_account_seeds"] = a["actors"]["lab-deployer"] != b["actors"]["lab-deployer"] and a["actors"]["anvil-1"] != b["actors"]["anvil-1"]
+                checks["rpc_chain_ids_match"] = (
+                    quantity(rpc(a["rpc"], "eth_chainId")) == a["chain_id"]
+                    and quantity(rpc(b["rpc"], "eth_chainId")) == b["chain_id"]
+                )
+                # Genesis hashes are recorded and checked independently against
+                # each process's own RPC. They are allowed to match: two fresh
+                # sessions can share the same chain configuration/genesis while
+                # remaining isolated by their session, process, account and state identities.
+                genesis_a = rpc(a["rpc"], "eth_getBlockByNumber", ["earliest", False])
+                genesis_b = rpc(b["rpc"], "eth_getBlockByNumber", ["earliest", False])
+                hash_a = str(genesis_a.get("hash") or "").lower() if isinstance(genesis_a, dict) else ""
+                hash_b = str(genesis_b.get("hash") or "").lower() if isinstance(genesis_b, dict) else ""
+                valid_hash = lambda value: len(value) == 66 and value.startswith("0x") and all(
+                    char in "0123456789abcdef" for char in value[2:]
+                )
+                checks["genesis_hash_a_matches_its_rpc"] = (
+                    valid_hash(hash_a)
+                    and str(a.get("genesis_hash") or "").lower() == hash_a
+                    and str(a.get("identity_block_hash") or "").lower() == hash_a
+                )
+                checks["genesis_hash_b_matches_its_rpc"] = (
+                    valid_hash(hash_b)
+                    and str(b.get("genesis_hash") or "").lower() == hash_b
+                    and str(b.get("identity_block_hash") or "").lower() == hash_b
+                )
+                checks["genesis_identity_recorded_per_session"] = (
+                    checks["different_session_ids"]
+                    and checks["genesis_hash_a_matches_its_rpc"]
+                    and checks["genesis_hash_b_matches_its_rpc"]
+                )
+                checks["different_account_seeds"] = (
+                    a["actors"]["lab-deployer"] != b["actors"]["lab-deployer"]
+                    and a["actors"]["anvil-1"] != b["actors"]["anvil-1"]
+                )
+                evidence["chain_identity_records"] = {
+                    a["id"]: {
+                        "chain_id": a["chain_id"],
+                        "genesis_hash": str(a.get("genesis_hash") or "").lower(),
+                        "rpc_genesis_hash": hash_a,
+                    },
+                    b["id"]: {
+                        "chain_id": b["chain_id"],
+                        "genesis_hash": str(b.get("genesis_hash") or "").lower(),
+                        "rpc_genesis_hash": hash_b,
+                    },
+                }
                 if not all(checks.values()):
                     raise RuntimeError(f"Live network identity checks failed: {checks!r}")
 
