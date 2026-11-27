@@ -318,6 +318,7 @@ def _attach_compiler_dispatch_facts(
             else "PARTIAL" if linearized else "UNAVAILABLE"
         )
         target["c3_evidence"] = "COMPILER_AST"
+        target["compiler_abstract"] = bool(ast_contract.get("abstract"))
         c3_count += 1
 
     functions = [item for item in ast_nodes if item.get("kind") == "function"]
@@ -2360,6 +2361,73 @@ def _build_imported_graph(source_root: Path, name: str) -> dict[str, Any]:
     return graph
 
 
+def _load_project_graph_workspace(root: Path) -> dict[str, Any]:
+    try:
+        try:
+            from . import audit_context
+        except ImportError:  # pragma: no cover - script/module invocation
+            import audit_context
+        context = audit_context.load(root)
+        value = context.get("protocol_graph_workspace") if isinstance(context, dict) else None
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        return {"version": 1, "interface_bindings": []}
+    if not isinstance(value, dict) or value.get("version") != 1:
+        return {"version": 1, "interface_bindings": []}
+    bindings = value.get("interface_bindings")
+    return {
+        "version": 1,
+        "interface_bindings": [
+            [str(row[0]), str(row[1])]
+            for row in (bindings if isinstance(bindings, list) else [])
+            if isinstance(row, list) and len(row) == 2
+            and all(isinstance(item, str) and item for item in row)
+        ][:500],
+    }
+
+
+def _save_project_graph_workspace(root: Path, workspace_key: str, bindings: list[Any], model: dict[str, Any]) -> bool:
+    expected_key = hashlib.sha256(str(root.resolve()).encode("utf-8")).hexdigest()[:32]
+    if workspace_key != expected_key:
+        raise ValueError("Workspace identity does not match this local project.")
+    if len(bindings) > 500:
+        raise ValueError("At most 500 interface bindings may be saved.")
+    declarations = {
+        str(item.get("id")): item for item in model.get("nodes", [])
+        if isinstance(item, dict) and item.get("type") == "declaration"
+    }
+    clean: list[list[str]] = []
+    seen: set[str] = set()
+    for row in bindings:
+        if not isinstance(row, list) or len(row) != 2 or not all(isinstance(item, str) and item for item in row):
+            raise ValueError("Each interface binding must contain an interface ID and contract ID.")
+        interface_id, contract_id = row
+        interface_node, contract_node = declarations.get(interface_id), declarations.get(contract_id)
+        if not interface_node or interface_node.get("declaration_kind") != "interface":
+            raise ValueError("A binding references an interface that is not in this project graph.")
+        if not contract_node or contract_node.get("declaration_kind") != "contract":
+            raise ValueError("A binding target must be a contract declaration in this project graph.")
+        if contract_node.get("compiler_abstract") is True:
+            raise ValueError("An abstract contract cannot be selected as a concrete implementation candidate.")
+        if interface_id in seen:
+            raise ValueError("Duplicate interface binding.")
+        seen.add(interface_id)
+        clean.append([interface_id, contract_id])
+    try:
+        try:
+            from . import audit_context
+        except ImportError:  # pragma: no cover - script/module invocation
+            import audit_context
+        if not audit_context.is_audit_project(root):
+            return False
+        audit_context.update(
+            root,
+            protocol_graph_workspace={"version": 1, "interface_bindings": clean},
+        )
+        return True
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError) as error:
+        raise ValueError("Could not save project workspace preferences: " + str(error)) from error
+
+
 def create_explorer_server(
     index: dict[str, Any],
     root: str | Path = ".",
@@ -2375,6 +2443,7 @@ def create_explorer_server(
     if root_path.is_file():
         root_path = root_path.parent
     model = build_explorer_model(index, root=root_path)
+    model["workspace_state"] = _load_project_graph_workspace(root_path)
     model["project_name"] = root_path.name or "Local project"
     model["show_third_party"] = bool(include_third_party)
     model["initial_only"] = only
@@ -2427,6 +2496,8 @@ def create_explorer_server(
             request_path = urllib.parse.urlsplit(self.path)
             if request_path.path in {"/", "/index.html"}:
                 self.send_bytes(200, render_explorer_document(model, server_mode=True).encode("utf-8"), "text/html; charset=utf-8")
+            elif request_path.path == "/api/workspace":
+                self.send_json(200, _load_project_graph_workspace(root_path))
             elif request_path.path == "/api/source":
                 try:
                     values = urllib.parse.parse_qs(request_path.query, keep_blank_values=True).get("path", [])
@@ -2462,6 +2533,25 @@ def create_explorer_server(
         def do_POST(self) -> None:
             try:
                 self.check_origin()
+                if self.path == "/api/workspace":
+                    payload = json.loads(self.read_body(64 * 1024).decode("utf-8"))
+                    if not isinstance(payload, dict):
+                        raise ValueError("Workspace update must be a JSON object.")
+                    bindings = payload.get("interface_bindings", [])
+                    if not isinstance(bindings, list):
+                        raise ValueError("interface_bindings must be an array.")
+                    persisted = _save_project_graph_workspace(
+                        root_path,
+                        str(payload.get("workspace_key") or ""),
+                        bindings,
+                        model,
+                    )
+                    self.send_json(200, {
+                        "ok": True,
+                        "persisted": persisted,
+                        "workspace": _load_project_graph_workspace(root_path),
+                    })
+                    return
                 if self.path == "/api/import":
                     payload = json.loads(self.read_body().decode("utf-8"))
                     if not isinstance(payload, dict):
