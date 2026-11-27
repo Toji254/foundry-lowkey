@@ -241,14 +241,16 @@ def _price_round(
     feed: str, block: int, block_timestamp: int, max_age_seconds: int,
     after_block: int | None = None,
 ) -> dict[str, Any]:
-    code_hash, code_verified = _verify_code_source(
+    identity_hash, code_verified = _verify_code_source(
         rpc, local_url, source_url, feed, block, "USD price feed"
     )
+    feed_runtime = _code(rpc, local_url, feed, block, "USD price feed")
+    code_hash = hashlib.sha256(bytes.fromhex(feed_runtime[2:])).hexdigest()
     if after_block is not None:
         after_identity_hash, _ = _verify_code_source(
             rpc, local_url, source_url, feed, after_block, "USD price feed post-state"
         )
-        if after_identity_hash != code_hash:
+        if after_identity_hash != identity_hash:
             raise TokenEconomicsError("USD price feed proxy/implementation identity changed during the measured transaction.")
     feed_decimals, decimals_verified = _read_uint_call(
         rpc, local_url, source_url, feed, _DECIMALS, block, "price feed decimals"
@@ -280,6 +282,7 @@ def _price_round(
     return {
         "feed": feed,
         "feed_code_sha256": code_hash,
+        "feed_identity_sha256": identity_hash,
         "feed_code_source_verified": code_verified,
         "feed_decimals": feed_decimals,
         "decimals_source_verified": decimals_verified,
@@ -413,9 +416,11 @@ def measure_token_portfolio(
     )
     for token in spec["tokens"]:
         address = token["address"]
-        code_hash, code_verified = _verify_code_source(
+        identity_hash, code_verified = _verify_code_source(
             rpc, local_url, source_url, address, before_block, token["symbol"]
         )
+        token_runtime = _code(rpc, local_url, address, before_block, token["symbol"])
+        code_hash = hashlib.sha256(bytes.fromhex(token_runtime[2:])).hexdigest()
         all_source_verified = all_source_verified and code_verified
         decimals_target = token["address"]
         decimals, decimals_verified = _read_uint_call(
@@ -424,10 +429,10 @@ def measure_token_portfolio(
         )
         if decimals > 36:
             raise TokenEconomicsError(f"{token['symbol']} decimals above 36 are unsupported.")
-        after_code_hash, _ = _verify_code_source(
+        after_identity_hash, _ = _verify_code_source(
             rpc, local_url, source_url, address, after_block, token["symbol"] + " post-state"
         )
-        if after_code_hash != code_hash:
+        if after_identity_hash != identity_hash:
             raise TokenEconomicsError(
                 f"{token['symbol']} runtime bytecode changed during the measured transaction; token valuation is refused."
             )
@@ -448,21 +453,23 @@ def measure_token_portfolio(
 
         if token["kind"] == "erc4626":
             asset = token["asset"]
-            asset_code_hash, asset_code_verified = _verify_code_source(
+            asset_identity_hash, asset_code_verified = _verify_code_source(
                 rpc, local_url, source_url, asset, before_block,
                 token["symbol"] + " underlying asset",
             )
+            asset_runtime = _code(rpc, local_url, asset, before_block, token["symbol"] + " underlying asset")
+            asset_code_hash = hashlib.sha256(bytes.fromhex(asset_runtime[2:])).hexdigest()
             asset_decimals, asset_decimals_verified = _read_uint_call(
                 rpc, local_url, source_url, asset, _DECIMALS,
                 before_block, token["symbol"] + " underlying decimals",
             )
             if asset_decimals > 36:
                 raise TokenEconomicsError(f"{token['symbol']} underlying decimals above 36 are unsupported.")
-            asset_after_code_hash, _ = _verify_code_source(
+            asset_after_identity_hash, _ = _verify_code_source(
                 rpc, local_url, source_url, asset, after_block,
                 token["symbol"] + " post-state underlying asset",
             )
-            if asset_after_code_hash != asset_code_hash:
+            if asset_after_identity_hash != asset_identity_hash:
                 raise TokenEconomicsError(
                     f"{token['symbol']} underlying asset runtime bytecode changed during the measured transaction."
                 )
@@ -503,6 +510,7 @@ def measure_token_portfolio(
             value_asset = asset
         else:
             asset_code_hash = None
+            asset_identity_hash = None
             asset_decimals = decimals
             all_source_verified = all_source_verified and decimals_verified
             value_decimals = decimals
@@ -586,8 +594,10 @@ def measure_token_portfolio(
             "symbol": token["symbol"],
             "token": address,
             "token_code_sha256": code_hash,
+            "token_identity_sha256": identity_hash,
             "asset": value_asset,
             "asset_code_sha256": asset_code_hash,
+            "asset_identity_sha256": asset_identity_hash,
             "token_decimals": decimals,
             "asset_decimals": asset_decimals,
             "oracle": price,
