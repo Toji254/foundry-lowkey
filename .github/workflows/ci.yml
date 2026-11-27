@@ -271,6 +271,21 @@ jobs:
           LOWKEY_RPC_URL: http://127.0.0.1:8545
         run: python3 scripts/proxy-sequential-control-acceptance-e2e.py
 
+      - name: P0 paired Beacon upgrade and shared-proxy acceptance
+        env:
+          LOWKEY_RPC_URL: http://127.0.0.1:8545
+        run: python3 scripts/proxy-beacon-acceptance-e2e.py
+
+      - name: Upload Beacon proxy acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy-beacon-acceptance-${{ github.run_number }}
+          path: .audit/proxy-beacon-acceptance/
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 21
+
       - name: Upload independent proxy control evidence
         if: always()
         uses: actions/upload-artifact@v4
