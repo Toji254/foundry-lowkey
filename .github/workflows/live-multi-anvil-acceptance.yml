@@ -15,9 +15,6 @@ jobs:
     name: Live two-session Anvil isolation
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      HOME: ${{ runner.temp }}/lowkey-network-acceptance-home
-      XDG_CONFIG_HOME: ${{ runner.temp }}/lowkey-network-acceptance-home/.config
     steps:
       - uses: actions/checkout@v4
 
@@ -27,7 +24,12 @@ jobs:
           check-latest: true
 
       - name: Prepare isolated test home
-        run: mkdir -p "$HOME" "$XDG_CONFIG_HOME"
+        run: |
+          set -euo pipefail
+          isolated_home="$RUNNER_TEMP/lowkey-network-acceptance-home"
+          mkdir -p "$isolated_home" "$isolated_home/.config"
+          echo "HOME=$isolated_home" >> "$GITHUB_ENV"
+          echo "XDG_CONFIG_HOME=$isolated_home/.config" >> "$GITHUB_ENV"
 
       - uses: foundry-rs/foundry-toolchain@v1
         with:
