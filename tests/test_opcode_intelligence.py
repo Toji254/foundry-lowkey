@@ -1,4 +1,6 @@
 import importlib.util
+import contextlib
+import io
 import pathlib
 import sys
 import unittest
@@ -182,6 +184,18 @@ class OpcodeIntelligenceTests(unittest.TestCase):
         self.assertEqual(result["steps"][0]["memory_words"], 4097)
         self.assertFalse(result["steps"][1]["memory_available"])
         self.assertIsNone(result["steps"][1]["memory_words"])
+
+    def test_cli_spec_and_bytecode_modes_are_explicit_and_read_only(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = opcode.run_cli(["--spec", "PUSH0", "--fork", "shanghai", "--learn"])
+        self.assertEqual(code, 0)
+        self.assertIn('"mnemonic": "PUSH0"', output.getvalue())
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = opcode.run_cli(["--bytecode", "0x60015b", "--fork", "shanghai"])
+        self.assertEqual(code, 0)
+        self.assertIn('"jumpdest_positions": [\n    2', output.getvalue())
 
     def test_opcode_trace_is_not_traceevent_v2(self):
         result = opcode.normalize_struct_logs([{"pc": 0, "op": "STOP", "depth": 1}])
