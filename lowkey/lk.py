@@ -6209,7 +6209,7 @@ def run_opcodes(config, args=None):
     include_stack = False
     include_memory = False
     learn = False
-    max_steps = 100000
+    max_steps = 10000
     cursor = 0
     while cursor < len(args):
         option = args[cursor]
@@ -6230,8 +6230,8 @@ def run_opcodes(config, args=None):
                 max_steps = int(args[cursor + 1])
             except ValueError:
                 return fail("--max-steps must be a positive integer.")
-            if max_steps < 1 or max_steps > opcode_intelligence.MAX_TRACE_STEPS:
-                return fail(f"--max-steps must be between 1 and {opcode_intelligence.MAX_TRACE_STEPS}.")
+            if max_steps < 1 or max_steps > 50000:
+                return fail("--max-steps must be between 1 and 50000 for CLI output safety.")
             cursor += 2
         else:
             return fail(f"Unknown opcode trace option: {option}")
