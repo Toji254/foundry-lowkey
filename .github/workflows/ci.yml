@@ -2739,6 +2739,18 @@ jobs:
           echo "HOME=$LOWKEY_HOME" >> "$GITHUB_ENV"
           echo "$LOWKEY_HOME/.foundry/bin" >> "$GITHUB_PATH"
 
+      - name: Run dynamically derived command help matrix
+        run: python scripts/command-help-matrix.py --timeout 8 --output "${RUNNER_TEMP}/lowkey-command-help-matrix.json"
+
+      - name: Retain command help matrix evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowkey-command-help-matrix-${{ github.run_number }}
+          path: ${{ runner.temp }}/lowkey-command-help-matrix.json
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Run safe installed CLI graph matrix
         run: python scripts/protocol-graph-cli-acceptance.py
 
