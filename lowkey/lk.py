@@ -803,11 +803,9 @@ def _explicit_rpc_matches_selected_identity(config, explicit_rpc):
 
     # If a target/actor exists but its RPC provenance cannot be established,
     # an explicit endpoint is unscoped; matching chain IDs are not enough.
-    return not bool(
-        isinstance(config, dict)
-        and not config.get("target")
-        and not config.get("actor")
-    )
+    if isinstance(config, dict) and (config.get("target") or config.get("actor")):
+        return False
+    return True
 
 
 def effective_rpc(config, explicit_rpc=None, target=None):

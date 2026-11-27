@@ -188,6 +188,42 @@ def test_explicit_rpc_override_detaches_foreign_project_target(tmp_path):
     assert lk.resolve_target_ref(config, "0x" + "b" * 40, root=tmp_path) == "0x" + "b" * 40
 
 
+def test_explicit_rpc_override_remains_detached_across_repeated_resolution(tmp_path):
+    session = {
+        "id": "managed-session-a",
+        "name": "dev",
+        "rpc": "http://127.0.0.1:8545",
+        "actors": {"anvil-1": "0x" + "2" * 40},
+    }
+    config = {
+        "actor": "anvil-1",
+        "target": "0x" + "a" * 40,
+        "target_contract": "ForeignVault",
+        "wallets": {},
+        "_active_network_session": session,
+    }
+    foreign_rpc = "http://127.0.0.1:9545"
+    with (
+        patch.object(lk, "project_fixture_rpc_info", return_value=None),
+        patch.object(lk, "cast_output") as cast_output,
+    ):
+        # The first explicit-RPC resolution detaches session identity. run_cast
+        # resolves that same endpoint again during the same invocation.
+        assert lk.effective_rpc(config, explicit_rpc=foreign_rpc) == foreign_rpc
+        assert config.get("_explicit_rpc_unscoped") is True
+        result = lk.run_cast(
+            ["call", "owner", "--rpc-url", foreign_rpc],
+            config,
+            capture=True,
+        )
+    assert result.code != 0
+    assert "target" in result.output.lower()
+    cast_output.assert_not_called()
+    assert config.get("_explicit_rpc_unscoped") is True
+    assert lk._actor_profile_entry(config, "anvil-1") is None
+    assert lk.active_project_target(config, root=tmp_path) is None
+
+
 def test_explicit_rpc_override_preserves_explicit_target_address():
     explicit_target = "0x" + "b" * 40
     config = {
