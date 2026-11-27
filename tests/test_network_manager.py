@@ -369,3 +369,80 @@ def test_actor_alias_registration_is_idempotent_for_same_account(tmp_path, monke
     assert first["created"] is True
     assert second["created"] is False
     assert second["address"] == first["address"]
+
+
+def test_legacy_registry_is_migrated_additively_and_backed_up(tmp_path):
+    audit = tmp_path / ".audit"
+    audit.mkdir()
+    legacy = {
+        "rpc": "http://127.0.0.1:8545",
+        "fixture_target": "0x" + "11" * 20,
+        "fixture_context": {"timestamp": 1700000000, "blockNumber": 42},
+    }
+    raw = json.dumps(legacy, sort_keys=True)
+    state_path = audit / "anvil.json"
+    state_path.write_text(raw, encoding="utf-8")
+
+    manager = NetworkManager(tmp_path, process_identity=lambda _pid: None)
+    migrated = manager._read()
+
+    assert migrated["schema_version"] == 2
+    assert migrated["managed_sessions"] == {}
+    assert migrated["rpc"] == legacy["rpc"]
+    assert migrated["fixture_target"] == legacy["fixture_target"]
+    assert migrated["fixture_context"] == legacy["fixture_context"]
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["schema_version"] == 2
+    assert persisted["managed_sessions"] == {}
+    backup = state_path.with_name("anvil.json.v1.bak")
+    assert backup.read_text(encoding="utf-8") == raw
+    assert backup.stat().st_mode & 0o777 == 0o600
+
+
+def test_malformed_managed_sessions_fails_closed_without_overwriting_registry(tmp_path):
+    audit = tmp_path / ".audit"
+    audit.mkdir()
+    state_path = audit / "anvil.json"
+    raw = json.dumps({"schema_version": 2, "managed_sessions": [], "legacy": {"keep": True}})
+    state_path.write_text(raw, encoding="utf-8")
+    manager = NetworkManager(tmp_path, process_identity=lambda _pid: None)
+
+    with pytest.raises(NetworkError, match="managed_sessions.*object"):
+        manager.list()
+
+    assert state_path.read_text(encoding="utf-8") == raw
+
+
+def test_malformed_managed_session_entry_fails_closed_without_discarding_other_records(tmp_path):
+    audit = tmp_path / ".audit"
+    audit.mkdir()
+    state_path = audit / "anvil.json"
+    payload = {
+        "schema_version": 2,
+        "managed_sessions": {
+            "session-valid": {"id": "session-valid", "project_id": "project"},
+            "session-corrupt": ["not", "a", "session", "object"],
+        },
+    }
+    raw = json.dumps(payload)
+    state_path.write_text(raw, encoding="utf-8")
+    manager = NetworkManager(tmp_path, process_identity=lambda _pid: None)
+
+    with pytest.raises(NetworkError, match="malformed managed session record"):
+        manager.list()
+
+    assert state_path.read_text(encoding="utf-8") == raw
+
+
+def test_future_registry_schema_is_rejected_without_overwriting_registry(tmp_path):
+    audit = tmp_path / ".audit"
+    audit.mkdir()
+    state_path = audit / "anvil.json"
+    raw = json.dumps({"schema_version": 999, "managed_sessions": {}})
+    state_path.write_text(raw, encoding="utf-8")
+    manager = NetworkManager(tmp_path, process_identity=lambda _pid: None)
+
+    with pytest.raises(NetworkError, match="newer than this Lowkey supports"):
+        manager.list()
+
+    assert state_path.read_text(encoding="utf-8") == raw

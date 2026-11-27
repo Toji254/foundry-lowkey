@@ -184,14 +184,81 @@ class NetworkManager:
                     f"The project's managed network registry {self.state_path} must contain a JSON object. "
                     "Lowkey will not silently replace it or select another RPC."
                 )
-        # Preserve legacy fixture fields at the top level. Managed sessions
-        # are an additive schema migration within the existing state file.
+        # Schema 1 is the unversioned/legacy .audit/anvil.json shape. Keep
+        # every legacy key and migrate additively into the managed-session
+        # envelope already used by Lowkey; never coerce malformed records to
+        # an empty registry.
+        schema_version = data.get("schema_version", 1)
+        if isinstance(schema_version, bool) or not isinstance(schema_version, int) or schema_version < 1:
+            raise NetworkError(
+                f"The managed network registry {self.state_path} has an invalid schema_version "
+                f"{schema_version!r}; repair or restore it before using RPC commands."
+            )
+        if schema_version > SCHEMA_VERSION:
+            raise NetworkError(
+                f"The managed network registry {self.state_path} uses schema version "
+                f"{schema_version}, newer than this Lowkey supports ({SCHEMA_VERSION}). "
+                "Upgrade Lowkey before modifying this registry."
+            )
+
+        has_sessions = "managed_sessions" in data
         sessions = data.get("managed_sessions")
-        if not isinstance(sessions, dict):
+        if has_sessions and not isinstance(sessions, dict):
+            raise NetworkError(
+                f"The managed network registry {self.state_path} has a malformed "
+                "'managed_sessions' field; it must be an object. No registry data was replaced."
+            )
+        if not has_sessions and schema_version == SCHEMA_VERSION:
+            raise NetworkError(
+                f"The managed network registry {self.state_path} is missing its required "
+                "'managed_sessions' field for schema version {SCHEMA_VERSION}."
+            )
+        if not has_sessions:
             sessions = {}
+        for session_id, session in sessions.items():
+            if not isinstance(session_id, str) or not session_id.strip() or not isinstance(session, dict):
+                raise NetworkError(
+                    f"The managed network registry {self.state_path} contains a malformed "
+                    f"managed session record at key {session_id!r}; no record was discarded."
+                )
+
         data["managed_sessions"] = sessions
-        data.setdefault("schema_version", SCHEMA_VERSION)
+        if schema_version < SCHEMA_VERSION:
+            data["schema_version"] = SCHEMA_VERSION
+            if raw is not None:
+                self._backup_legacy_registry(raw, schema_version)
+                self._write(data)
         return data
+
+    def _backup_legacy_registry(self, raw: str, source_version: int) -> Path:
+        """Preserve the exact pre-migration file before its atomic schema upgrade."""
+        backup_path = self.state_path.with_name(
+            f"{self.state_path.name}.v{source_version}.bak"
+        )
+        fd, temporary = tempfile.mkstemp(
+            prefix=f"{backup_path.name}.", suffix=".tmp", dir=self.audit_dir
+        )
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, backup_path)
+            try:
+                os.chmod(backup_path, 0o600)
+            except OSError:
+                pass
+            return backup_path
+        except Exception as exc:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise NetworkError(
+                f"Could not preserve the legacy network registry at {backup_path}; "
+                f"schema migration was aborted: {exc}"
+            ) from exc
 
     def _write(self, data: dict[str, Any]) -> None:
         self.audit_dir.mkdir(parents=True, exist_ok=True)
