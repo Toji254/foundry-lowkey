@@ -124,6 +124,10 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertTrue(question_engine.exists())
             proxy_engine_module = pathlib.Path(home) / ".lowkey" / "proxy_engine.py"
             self.assertTrue(proxy_engine_module.is_file())
+            opcode_module = pathlib.Path(home) / ".lowkey" / "opcode_intelligence.py"
+            economics_module = pathlib.Path(home) / ".lowkey" / "token_economics.py"
+            self.assertTrue(opcode_module.is_file())
+            self.assertTrue(economics_module.is_file())
             library_linker_module = pathlib.Path(home) / ".lowkey" / "library_linker.py"
             network_manager_module = pathlib.Path(home) / ".lowkey" / "network_manager.py"
             runtime_verification_module = pathlib.Path(home) / ".lowkey" / "runtime_verification.py"
@@ -167,6 +171,12 @@ class InstallSmokeTests(unittest.TestCase):
             )
             self.assertEqual(proxy_help.returncode, 0, proxy_help.stdout + proxy_help.stderr)
             self.assertIn("COMMAND VARIATIONS", proxy_help.stdout)
+            opcode_cli = subprocess.run(
+                [str(installed_lk), "opcodes", "--spec", "PUSH0", "--fork", "shanghai"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(opcode_cli.returncode, 0, opcode_cli.stdout + opcode_cli.stderr)
+            self.assertEqual(json.loads(opcode_cli.stdout)["mnemonic"], "PUSH0")
 
             trace_import = subprocess.run(
                 ["python3", "-c", "import forge_state_diff, godmode, attack_engine; print('TRACE_IMPORT_OK')"],
@@ -193,6 +203,8 @@ class InstallSmokeTests(unittest.TestCase):
             install_manifest = json.loads(manifest.read_text(encoding="utf-8"))
             self.assertIn(str(shared_context), install_manifest["files"])
             self.assertIn(str(proxy_engine_module), install_manifest["files"])
+            self.assertIn(str(opcode_module), install_manifest["files"])
+            self.assertIn(str(economics_module), install_manifest["files"])
             self.assertIn(str(library_linker_module), install_manifest["files"])
             self.assertIn(str(network_manager_module), install_manifest["files"])
             self.assertIn(str(runtime_verification_module), install_manifest["files"])
