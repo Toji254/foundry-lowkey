@@ -188,7 +188,7 @@ class DeploymentGraphCliTests(unittest.TestCase):
         output = io.StringIO()
         with patch.object(
             lk.project_tools, "build_dependency_graph"
-        ) as build, contextlib.redirect_stdout(output):
+        ) as build, contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
             result = lk.run_deps([str(self.root), "another-path", "--json"])
 
         self.assertNotEqual(result, 0)
