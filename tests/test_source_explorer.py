@@ -1,9 +1,11 @@
+import hashlib
 import io
 import json
 import pathlib
 import tempfile
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 import unittest
@@ -133,6 +135,17 @@ class ProtocolExplorerTests(unittest.TestCase):
         self.assertTrue(interface_edges, "typed interface calls should remain visible as external-call edges")
         self.assertTrue(any(e.get("implementation_resolution") == "UNRESOLVED" for e in interface_edges))
 
+    def test_model_embeds_full_source_with_relative_path_hash_and_line_metadata(self):
+        sources = {item["path"]: item for item in self.model["sources"]}
+        source = sources["src/Protocol.sol"]
+        expected = (self.root / "src" / "Protocol.sol").read_bytes()
+        self.assertEqual(source["status"], "EMBEDDED")
+        self.assertEqual(source["content"], expected.decode("utf-8-sig"))
+        self.assertEqual(source["sha256"], hashlib.sha256(expected).hexdigest())
+        self.assertEqual(source["line_count"], len(source["content"].splitlines()))
+        self.assertNotIn(str(self.root), source["path"])
+        self.assertLessEqual(self.model["source_inventory"]["embedded_bytes"], 8 * 1024 * 1024)
+
     def test_model_preserves_function_to_storage_and_asset_relationships(self):
         kinds = {edge["kind"] for edge in self.model["edges"]}
         self.assertTrue(kinds & {"READS", "WRITES", "MUTATES"})
@@ -169,6 +182,9 @@ class ProtocolExplorerTests(unittest.TestCase):
         self.assertIn("focus_group_ids", document)
         self.assertIn("incidentEdgesByNode", document)
         self.assertIn("function edgeGeometry(edge)", document)
+        self.assertIn('id="source-drawer"', document)
+        self.assertIn("Open full Solidity source", document)
+        self.assertIn("function renderSourceWindow(source)", document)
         self.assertNotIn("__GRAPH_DATA__", document)
         self.assertNotIn("__SERVER_MODE__", document)
         self.assertNotIn('<script src="https://', document)
@@ -299,6 +315,31 @@ class ProtocolExplorerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "inconsistent ZIP size metadata"):
                 extract_source_archive(self.root / "unused.zip", self.root / "mismatch")
 
+    def test_local_source_api_serves_only_contained_solidity_paths(self):
+        server = create_explorer_server(self.index, root=self.root, port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            host, port = server.server_address[:2]
+            base = f"http://{host}:{port}"
+            with urllib.request.urlopen(base + "/api/source?path=src%2FProtocol.sol", timeout=5) as response:
+                source = json.loads(response.read())
+            self.assertEqual(source["path"], "src/Protocol.sol")
+            self.assertEqual(source["status"], "SERVED_LOCAL")
+            self.assertIn("contract Protocol", source["content"])
+            self.assertEqual(source["sha256"], hashlib.sha256((self.root / "src" / "Protocol.sol").read_bytes()).hexdigest())
+
+            for unsafe in ("../outside.sol", "/etc/passwd.sol", "src\\\\..\\\\outside.sol", "foundry.toml"):
+                with self.subTest(unsafe=unsafe):
+                    url = base + "/api/source?path=" + urllib.parse.quote(unsafe, safe="")
+                    with self.assertRaises(urllib.error.HTTPError) as error:
+                        urllib.request.urlopen(url, timeout=5)
+                    self.assertEqual(error.exception.code, 400)
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+            server.server_close()
+
     def test_github_url_validation_is_strict(self):
         self.assertEqual(
             validate_github_url("https://github.com/gmx-io/gmx-contracts"),
@@ -342,6 +383,9 @@ class ProtocolExplorerTests(unittest.TestCase):
                 payload = json.loads(response.read())
             self.assertEqual(payload["graph"]["schema_version"], 2)
             self.assertTrue(any(n["label"] == "Sample" for n in payload["graph"]["nodes"]))
+            imported_source = next(item for item in payload["graph"]["sources"] if item["path"] == "Sample.sol")
+            self.assertEqual(imported_source["status"], "EMBEDDED")
+            self.assertIn("contract Sample", imported_source["content"])
         finally:
             server.shutdown()
             thread.join(timeout=5)
