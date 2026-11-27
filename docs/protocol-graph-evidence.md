@@ -4,6 +4,8 @@ Lowkey emits three separate evidence layers. They must not be collapsed into one
 
 ## 1. Compiler AST
 
+For virtual calls, when a fresh compiler AST provides a C3 linearization and the matching Lowkey source edge is already marked virtual/unresolved at the same call site, the explorer may add a separate `VIRTUAL_DISPATCH_CANDIDATE` edge to the most-derived implemented declaration in the caller contract's static C3 context. The original `CALLS` edge is retained with unresolved implementation status. Calls explicitly marked `SUPER` are not rewritten by this enrichment. A derived runtime type can still override a virtual function, so this candidate is not proof of the final runtime dispatch target, a deployed implementation, or a proxy slot resolution.
+
 Run `forge build --build-info` in the target project, then run `lk archetype classify --root . --json`. The classifier reads existing `out/build-info/*.json`; it does not silently rebuild or change compiler settings.
 
 Each build-info source is accepted only when its literal source content still matches the current project file. The graph then records contract and function declarations, inheritance candidates, compiler-resolved call candidates, state-variable reads/writes, and writer-to-reader dependency candidates. Source SHA-256 values pin each accepted compiler source.
@@ -25,7 +27,7 @@ Compiler AST identifiers are associated with state declarations and function rea
 ## 4. Current limitations
 
 - Compiler AST graph only consumes existing Foundry build-info. It does not currently compile arbitrary multi-language projects itself.
-- Static function-call resolution depends on Solidity AST referencedDeclaration values; low-level calls, function pointers and dynamic dispatch may remain unresolved.
+- Static function-call resolution depends on Solidity AST referencedDeclaration values; low-level calls, function pointers and dynamic dispatch may remain unresolved. C3 virtual-dispatch candidates are bounded to the caller's compiler-recorded inheritance context and are not deployed runtime target proofs.
 - The runtime graph is only as complete as the saved canonical trace artifacts.
 - Storage read/write evidence remains separately labeled by Forge/Anvil trace fidelity; this graph does not upgrade partial storage observations to exact.
 - Proxy/beacon/diamond implementation resolution and verified deployment identity remain separate gates.
