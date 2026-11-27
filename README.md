@@ -14,6 +14,8 @@ RECON → ATTACK → PROVE
 
 Lowkey does not replace Forge or Cast. It orchestrates them and adds the local audit workflow around them.
 
+**Current architecture and validation snapshot:** [docs/architecture-and-baseline.md](docs/architecture-and-baseline.md) — dated architecture map, capability boundaries, and exact-SHA CI baseline.
+
 ## Godmode / evidence-first attack engine
 
 The integrated Godmode layer exposes the full 44-capability roadmap through one inventory:
