@@ -734,6 +734,64 @@ class AuditPlanTests(unittest.TestCase):
         self.assertFalse(plan["executed"])
         self.assertTrue(all(item["status"] == "NOT_EXECUTED" for item in plan["scenarios"]))
 
+    def test_audit_emits_hypotheses_for_reported_candidate_architectures(self):
+        cases = (
+            (
+                "ERC1967_IMPLEMENTATION_PROXY_CANDIDATE",
+                ["UUPS_COMPATIBLE_IMPLEMENTATION"],
+                "PROXY-UUPS-AUTH",
+            ),
+            (
+                "ERC1967_BEACON_PROXY_CANDIDATE",
+                ["BEACON_CONTROLLED"],
+                "PROXY-BEACON-AUTH",
+            ),
+            (
+                "DIAMOND_LOUPE_AND_DELEGATECALL_CANDIDATE",
+                ["DIAMONDCUT_REVIEW_REQUIRED"],
+                "PROXY-DIAMOND-CUT",
+            ),
+        )
+        for architecture, mechanisms, expected_id in cases:
+            with self.subTest(architecture=architecture):
+                target = "0x" + "11" * 20
+                with patch.object(pe, "inspect_proxy", return_value={
+                    "target": target,
+                    "architecture": architecture,
+                    "upgrade_mechanisms": mechanisms,
+                    "checks": {},
+                    "snapshot": {"chain_id": 31337, "block_number": 10},
+                }):
+                    report = pe.audit_proxy("http://127.0.0.1:8545", target)
+                ids = {item["id"] for item in report["hypotheses"]}
+                self.assertIn(expected_id, ids)
+                hypothesis = next(item for item in report["hypotheses"] if item["id"] == expected_id)
+                self.assertEqual(hypothesis["status"], "INVESTIGATION_REQUIRED")
+
+    def test_direct_or_unknown_target_does_not_get_proxy_only_attack_scenarios(self):
+        plan = pe.build_attack_plan({
+            "target": "0x" + "11" * 20,
+            "architecture": "DIRECT_OR_UNKNOWN",
+        })
+        ids = {item["id"] for item in plan["scenarios"]}
+        for scenario_id in (
+            "PROXY-INIT-001",
+            "PROXY-INIT-002",
+            "PROXY-STORAGE-001",
+            "PROXY-STORAGE-002",
+        ):
+            self.assertNotIn(scenario_id, ids)
+
+    def test_proxy_attack_plan_has_unique_scenario_ids(self):
+        plan = pe.build_attack_plan({
+            "target": "0x" + "11" * 20,
+            "architecture": "DIAMOND_LOUPE_AND_DELEGATECALL_CANDIDATE",
+            "checks": {"diamond_loupe": {"facet_count": 2}},
+        })
+        ids = [item["id"] for item in plan["scenarios"]]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertTrue(all(item["status"] == "NOT_EXECUTED" for item in plan["scenarios"]))
+
     def test_source_scanner_emits_anchors_without_claiming_ast_proof(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
