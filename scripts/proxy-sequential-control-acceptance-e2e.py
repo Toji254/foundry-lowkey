@@ -379,8 +379,7 @@ def make_uups_uuid_lockout_manifest(
     """Freeze a same-proxy/same-actor UUPS UUID validation and lockout experiment.
 
     The sole declared scenario variable is the proxy implementation slot:
-    secure UUPS logic rejects the non-admin actor, while vulnerable UUPS logic
-    allows the same upgradeTo(address) calldata through the UUPS proxy.
+    secure UUPS logic rejects a wrong UUID, while weak UUPS logic accepts it and strands the proxy.
     """
     selector = "0x3659cfe6"  # upgradeTo(address)
     argv = [
@@ -396,7 +395,7 @@ def make_uups_uuid_lockout_manifest(
         "paired_forge_experiment": True,
         "target_authenticity": "fixture",
         "family": "proxy",
-        "proxy_family": "TRANSPARENT",
+        "proxy_family": "UUPS",
         "non_economic": True,
         "expected_chain_id": 31337,
         "expected_fork_block": fork_block,
@@ -416,7 +415,7 @@ def make_uups_uuid_lockout_manifest(
             "address": actor,
             "slot": "0x0",
             "kind": "uint256_delta",
-            "description": "UUPSLockoutActor.invalidUuidUpgradeAccepted; increments only when the non-admin UUPS call through the UUPS fallback succeeds.",
+            "description": "UUPSLockoutActor.invalidUuidUpgradeAccepted; increments only when the authorized actor's mismatched-UUID upgrade call succeeds.",
         },
         "scenario_parameters": [{
             "name": "uups_uuid_implementation",
@@ -424,7 +423,7 @@ def make_uups_uuid_lockout_manifest(
             "slot": IMPLEMENTATION_SLOT,
             "control_value": address_word(secure_implementation),
             "attack_value": address_word(vulnerable_implementation),
-            "description": "The sole declared scenario difference: the owner-installed UUPS implementation behind the same UUPS proxy.",
+            "description": "The sole scenario difference: strict UUID equality versus presence-only UUID validation behind the same proxy.",
         }],
         "trace_expectations": [{
             "address": proxy,
@@ -433,7 +432,7 @@ def make_uups_uuid_lockout_manifest(
             "control_max_calls": 1,
             "attack_min_calls": 1,
             "attack_max_calls": 1,
-            "description": "Both scenarios send identical upgradeTo(address) calldata through the same UUPS proxy from the same ProxyUpgradeActor; only the delegated UUPS implementation differs.",
+            "description": "Both scenarios send identical upgradeTo(address) calldata through the same UUPS proxy from the same authorized UUPSLockoutActor.",
         }],
         "evidence_requirements": {"call_tree": "exact", "calldata": "exact", "storage": "derived"},
         "require_trace_storage": True,
@@ -443,7 +442,7 @@ def make_uups_uuid_lockout_manifest(
             "state_diff_file": ".audit/godmode/control-uups-uuid-lockout-state-diff.json",
             "argv": argv,
             "semantic_check_argv": argv,
-            "semantic_check_test": "test_paired_uups_uups_second_surface",
+            "semantic_check_test": "test_paired_uups_uuid_mismatch_prevents_upgrade_lockout",
         },
         "attack": {
             "harness": "test/ProxySequentialControls.t.sol",
@@ -451,19 +450,14 @@ def make_uups_uuid_lockout_manifest(
             "state_diff_file": ".audit/godmode/attack-uups-uuid-lockout-state-diff.json",
             "argv": argv,
             "semantic_check_argv": argv,
-            "semantic_check_test": "test_paired_uups_uups_second_surface",
+            "semantic_check_test": "test_paired_uups_uuid_mismatch_prevents_upgrade_lockout",
         },
         "fidelity_sources": [
             "test/ProxySequentialControls.t.sol",
             "src/ProxySequentialFixtures.sol",
             "src/LowkeyForgeStateDiffRecorder.sol",
         ],
-        "notes": (
-            "Fixture-only UUPS proxy hybrid experiment. The immutable ProxyAdmin address "
-            "is denied implementation-facing selectors, an ordinary caller is delegated, and the "
-            "paired attack checks whether a UUPS upgradeTo(address) route remains reachable through "
-            "the UUPS fallback. Fixture and caller simulation cap the result at SIMULATED_BREAK."
-        ),
+        "notes": "Fixture-only UUPS UUID mismatch and post-upgrade lockout experiment. The secure path rejects a wrong UUID; weak validation accepts it and strands the proxy. The result remains SIMULATED_BREAK.",
     }
 
 
@@ -884,7 +878,7 @@ def main() -> int:
         )
         uuid_manifest_name = "uups-uuid-lockout-control.json"
         (root / uuid_manifest_name).write_text(
-            json.dumps(uuid_manifest, indent=2, sort_keys=True) + "\\n",
+            json.dumps(uuid_manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         uuid_initial_slot = rpc_storage(cast, root, env, uuid_proxy, IMPLEMENTATION_SLOT)
