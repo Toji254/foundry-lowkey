@@ -103,6 +103,11 @@ def load_dependency_manifest(project_root: str | Path) -> DependencyManifest:
     relative = MANIFEST_RELATIVE_PATH
     path = root / ".audit" / "dependencies.json"
     try:
+        # Validate the parent first so an escaping/broken .audit symlink is
+        # not mistaken for a genuinely absent manifest.
+        resolved_parent = path.parent.resolve(strict=False)
+        if not resolved_parent.is_relative_to(root):
+            return _blocked(relative, "Dependency manifest directory resolves outside the selected project root.")
         # Inspect the directory entry before resolving it. Path.exists() follows
         # symlinks and reports False for a self-referential link, which would
         # incorrectly downgrade an unsafe manifest to NOT_PRESENT.
