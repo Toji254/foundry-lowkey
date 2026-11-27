@@ -368,7 +368,7 @@ def _attach_compiler_dispatch_facts(
                 return None
             with candidate.open("rb") as handle:
                 prefix = handle.read(min(MAX_UPLOAD_FILE_BYTES + 1, byte_offset))
-            return prefix.count(b"\\n") + 1
+            return prefix.count(b"\n") + 1
         except (OSError, RuntimeError, TypeError, ValueError):
             return None
 
