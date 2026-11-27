@@ -1753,8 +1753,96 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
     else:
         print("  Dependency resolution was not assessed because no application contract source was mapped.")
 
+    compiler_dependencies = graph.get("compiler_dependencies") or {}
+    compiler_edges = [
+        edge for edge in (compiler_dependencies.get("edges") or [])
+        if isinstance(edge, dict)
+    ] if isinstance(compiler_dependencies, dict) else []
+    compiler_library_edges = [
+        edge for edge in compiler_edges if edge.get("kind") == "solidity-library-link"
+    ]
+    compiler_creation_edges = [
+        edge for edge in compiler_edges if edge.get("kind") == "creation-expression"
+    ]
+    compiler_typed_constructor_edges = [
+        edge for edge in compiler_edges if edge.get("kind") == "typed-parameter-reference"
+    ]
+    compiler_constructor_inputs = [
+        edge for edge in compiler_edges if edge.get("kind") == "constructor-input"
+    ]
+
     print()
-    print("5. FILES LOWKEY IS NOT CALLING 'PROTOCOL CODE'")
+    print("5. COMPILER-BACKED DEPLOYMENT RELATIONSHIPS")
+    print("-" * 72)
+    if compiler_dependencies.get("available"):
+        matched_units = int(compiler_dependencies.get("matched_units") or 0)
+        stale_units = int(compiler_dependencies.get("stale_units") or 0)
+        print(
+            f"  Compiler evidence: AVAILABLE "
+            f"({matched_units} source-matched unit(s); {stale_units} stale unit(s))"
+        )
+        confirmed_library_edges = [
+            edge for edge in compiler_library_edges
+            if edge.get("confidence") == "CONFIRMED"
+            and edge.get("auto_deploy") is True
+        ]
+        print(
+            f"  Solidity library links: {len(compiler_library_edges)} "
+            f"({len(confirmed_library_edges)} compiler-confirmed deployable link relationship(s))"
+        )
+        for edge in compiler_library_edges[:10]:
+            status = (
+                "CONFIRMED · linkReferences"
+                if edge.get("confidence") == "CONFIRMED" and edge.get("auto_deploy") is True
+                else "UNRESOLVED · review compiler metadata"
+            )
+            references = edge.get("link_references") or []
+            print(
+                f"    {edge.get('from') or 'unknown'} -> {edge.get('to') or 'unknown'} "
+                f"[{status}; {len(references)} reference(s)]"
+            )
+        if len(compiler_library_edges) > 10:
+            print(f"    ... and {len(compiler_library_edges) - 10} more")
+        print(
+            f"  Contract creation expressions: {len(compiler_creation_edges)} "
+            "(factory/constructor-created relationships; not separate deployment instructions)"
+        )
+        for edge in compiler_creation_edges[:8]:
+            print(f"    {edge.get('from') or 'unknown'} -> {edge.get('to') or 'unknown'}")
+        print(
+            f"  Contract-typed constructor references: {len(compiler_typed_constructor_edges)} "
+            "(source-level type evidence; concrete instances remain unresolved)"
+        )
+        print(
+            f"  ABI constructor values: {len(compiler_constructor_inputs)} "
+            "(all require explicit value resolution; none are auto-deployed)"
+        )
+        for edge in compiler_constructor_inputs[:12]:
+            contract_name = str(edge.get("from") or "unknown")
+            parameter = str(edge.get("parameter_path") or edge.get("parameter_name") or "argument")
+            abi_type = str(edge.get("abi_type") or "unknown")
+            resolution = str(edge.get("resolution_status") or "REVIEW_REQUIRED")
+            print(f"    {contract_name} · {parameter}: {abi_type} [{resolution}]")
+        if len(compiler_constructor_inputs) > 12:
+            print(f"    ... and {len(compiler_constructor_inputs) - 12} more")
+        unavailable_abis = int(compiler_dependencies.get("unavailable_constructor_abi_count") or 0)
+        if unavailable_abis:
+            print(f"  Constructor ABI unavailable: {unavailable_abis} contract artifact(s)")
+        cycles = compiler_dependencies.get("library_cycles") or []
+        if cycles:
+            print(f"  Library dependency cycles: {len(cycles)} — deployment ordering is blocked")
+            for cycle in cycles[:5]:
+                print(f"    CYCLE: {' -> '.join(str(item) for item in cycle)}")
+        elif compiler_dependencies.get("library_order_complete") is True:
+            print("  Compiler-confirmed library order: COMPLETE")
+        else:
+            print("  Compiler-confirmed library order: INCOMPLETE or NOT ESTABLISHED")
+        print("  A plain address is not classified as an EOA, token, router, Safe or other contract.")
+    else:
+        print("  Compiler build-info evidence: UNAVAILABLE")
+        print("  Library linking and constructor ABI relationships were not compiler-verified in this project view.")
+    print()
+    print("6. FILES LOWKEY IS NOT CALLING 'PROTOCOL CODE'")
     print("-" * 72)
     if support_paths:
         print("  Tests/scripts/helpers are kept out of the default protocol graph:")
@@ -1779,7 +1867,7 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
         print("  No application Solidity/Vyper source nodes were mapped in this scope.")
         print("  Section 5 lists support, documentation and test sources kept out of the application graph.")
         print("  Select the actual protocol package before relying on contract dependency or call-site results.")
-    print("  Review unresolved imports in section 4; support-only failures are not production dependency failures.")
+    print("  Review unresolved imports in section 4 and compiler-backed relationships in section 5; support-only failures are not production dependency failures.")
     print("  Generated PoCs/tests/scripts are evidence and tooling, not protocol logic.")
 
     human_graph = {
@@ -1790,6 +1878,7 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
         "low_level_calls": low_level,
         "heuristic_external_calls": external_calls,
         "unresolved": unresolved,
+        "compiler_dependencies": compiler_dependencies,
         "support_files": support_paths,
     }
     result = {"project": project, "graph": graph, "human": human_graph}

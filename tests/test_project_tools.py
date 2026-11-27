@@ -435,6 +435,123 @@ contract Engine is IOracle, Ownable {}
             self.assertNotIn("Poc_locked_ether.t.sol", application_section)
             self.assertEqual(result["human"]["contracts"][0][0], "BountyArena")
 
+    def test_project_map_renders_compiler_deployment_relationships_without_guessing_addresses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            node = {
+                "id": "src/Vault.sol",
+                "file": "src/Vault.sol",
+                "language": "solidity",
+                "declarations": [{"name": "Vault", "kind": "contract", "inherits": []}],
+                "calls": [],
+            }
+            compiler_edges = [
+                {
+                    "from": "src/Vault.sol:Vault",
+                    "to": "src/libraries/Math.sol:Math",
+                    "kind": "solidity-library-link",
+                    "confidence": "CONFIRMED",
+                    "auto_deploy": True,
+                    "link_references": [[120, 20]],
+                },
+                {
+                    "from": "src/Vault.sol:Vault",
+                    "to": "src/Child.sol:Child",
+                    "kind": "creation-expression",
+                    "confidence": "CONFIRMED",
+                    "factory_created": True,
+                    "auto_deploy": False,
+                },
+                {
+                    "from": "src/Vault.sol:Vault",
+                    "to": "src/interfaces/IToken.sol:IToken",
+                    "kind": "typed-parameter-reference",
+                    "confidence": "INFERRED",
+                    "parameter_name": "token",
+                },
+                {
+                    "from": "src/Vault.sol:Vault",
+                    "to": "src/Vault.sol:Vault#constructor._token",
+                    "kind": "constructor-input",
+                    "parameter_name": "_token",
+                    "parameter_path": "_token",
+                    "abi_type": "address",
+                    "value_kind": "contract-typed-reference",
+                    "resolution_status": "CONTRACT_INSTANCE_UNRESOLVED",
+                    "requires_resolution": True,
+                    "auto_deploy": False,
+                },
+                {
+                    "from": "src/Vault.sol:Vault",
+                    "to": "src/Vault.sol:Vault#constructor._treasury",
+                    "kind": "constructor-input",
+                    "parameter_name": "_treasury",
+                    "parameter_path": "_treasury",
+                    "abi_type": "address",
+                    "value_kind": "address-value-unclassified",
+                    "resolution_status": "ADDRESS_SEMANTICS_UNCLASSIFIED",
+                    "requires_resolution": True,
+                    "auto_deploy": False,
+                },
+                {
+                    "from": "src/Vault.sol:Vault",
+                    "to": "src/Vault.sol:Vault#constructor._fee",
+                    "kind": "constructor-input",
+                    "parameter_name": "_fee",
+                    "parameter_path": "_fee",
+                    "abi_type": "uint16",
+                    "value_kind": "primitive-value",
+                    "resolution_status": "CONSTRUCTOR_VALUE_REQUIRED",
+                    "requires_resolution": True,
+                    "auto_deploy": False,
+                },
+            ]
+            graph = {
+                "nodes": [node],
+                "edges": [],
+                "compiler_dependencies": {
+                    "available": True,
+                    "matched_units": 1,
+                    "stale_units": 0,
+                    "edges": compiler_edges,
+                    "constructor_input_count": 3,
+                    "unavailable_constructor_abi_count": 0,
+                    "library_order_complete": True,
+                    "library_cycles": [],
+                },
+            }
+            project = {
+                "root": str(root),
+                "kind": "foundry",
+                "analysis": {"analysis_status": "AVAILABLE", "coverage": "COMPLETE", "source_file_count": 1, "languages": {"solidity": 1}},
+                "solidity_compilers": ["0.8.24"],
+                "vyper_compiler": None,
+            }
+            output = __import__("io").StringIO()
+            from contextlib import redirect_stdout
+            with (
+                patch.object(project_tools, "detect_project", return_value=project),
+                patch.object(project_tools, "build_dependency_graph", return_value=graph),
+                patch.object(project_tools, "_protocol_node", return_value=True),
+                redirect_stdout(output),
+            ):
+                result = project_tools.render_project_map(root)
+
+            rendered = output.getvalue()
+            self.assertIn("5. COMPILER-BACKED DEPLOYMENT RELATIONSHIPS", rendered)
+            self.assertIn("Math.sol:Math [CONFIRMED", rendered)
+            self.assertIn("Contract creation expressions: 1", rendered)
+            self.assertIn("Contract-typed constructor references: 1", rendered)
+            self.assertIn("_token: address [CONTRACT_INSTANCE_UNRESOLVED]", rendered)
+            self.assertIn("_treasury: address [ADDRESS_SEMANTICS_UNCLASSIFIED]", rendered)
+            self.assertIn("_fee: uint16 [CONSTRUCTOR_VALUE_REQUIRED]", rendered)
+            self.assertIn("none are auto-deployed", rendered)
+            self.assertIn("plain address is not classified", rendered)
+            self.assertEqual(
+                len(result["human"]["compiler_dependencies"]["edges"]),
+                len(compiler_edges),
+            )
+
     def test_graph_render_explains_call_evidence_trust(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
