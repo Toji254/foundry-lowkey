@@ -186,6 +186,9 @@ def main() -> int:
                 assert page.locator("#graph-edges .edge.CALLS").count() == 0
                 calls_filter.check()
                 search.fill("")
+                # Move focus off the search input before testing the global
+                # slash shortcut; otherwise "/" is typed into the input.
+                page.locator("#inspector .entity-name").click()
                 page.keyboard.press("/")
                 assert page.evaluate(
                     "document.activeElement && document.activeElement.id"
