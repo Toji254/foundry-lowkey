@@ -104,6 +104,7 @@ contract PairedProxyAdmin {
     function callProxy(address proxy, bytes calldata data)
         external returns (bool success, bytes memory returned)
     {
+        require(msg.sender == _owner, "ONLY_OWNER");
         (success, returned) = proxy.call(data);
     }
 
