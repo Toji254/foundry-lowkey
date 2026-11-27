@@ -20,6 +20,7 @@ if str(LOWKEY) not in sys.path:
 from source_index import build_source_index
 from source_link import main
 import source_explorer
+import protocol_graph
 from source_explorer import (
     build_explorer_model,
     create_explorer_server,
@@ -185,6 +186,8 @@ class ProtocolExplorerTests(unittest.TestCase):
         self.assertIn('id="source-drawer"', document)
         self.assertIn("Open full Solidity source", document)
         self.assertIn("function renderSourceWindow(source)", document)
+        self.assertIn("INHERITANCE / C3 LINEARIZATION", document)
+        self.assertIn("COMPILER DISPATCH FACTS", document)
         self.assertNotIn("__GRAPH_DATA__", document)
         self.assertNotIn("__SERVER_MODE__", document)
         self.assertNotIn('<script src="https://', document)
@@ -219,6 +222,114 @@ class ProtocolExplorerTests(unittest.TestCase):
         self.assertTrue(functions["inspect"]["entrypoint"])
         self.assertFalse(functions["constructor"]["entrypoint"])
         self.assertIsNone(functions["constructor"]["entrypoint_kind"])
+
+    def test_compiler_c3_linearization_and_override_facts_are_exposed_without_guessing(self):
+        source = """
+        pragma solidity ^0.8.20;
+        contract DispatchBase {
+            function run(uint256 value) public virtual {}
+        }
+        contract DispatchLeft is DispatchBase {
+            function run(uint256 value) public virtual override {}
+        }
+        contract DispatchRight is DispatchBase {
+            function run(uint256 value) public virtual override {}
+        }
+        contract DispatchFinal is DispatchLeft, DispatchRight {
+            function run(uint256 value) public override(DispatchLeft, DispatchRight) {}
+        }
+        """
+        path = self.root / "src" / "Dispatch.sol"
+        path.write_text(source, encoding="utf-8")
+        index = build_source_index(self.root, use_cache=False)
+
+        contract_ids = {
+            name: "ast-contract:" + name
+            for name in ("DispatchBase", "DispatchLeft", "DispatchRight", "DispatchFinal")
+        }
+        expected_order = {
+            "DispatchBase": ["DispatchBase"],
+            "DispatchLeft": ["DispatchLeft", "DispatchBase"],
+            "DispatchRight": ["DispatchRight", "DispatchBase"],
+            "DispatchFinal": ["DispatchFinal", "DispatchRight", "DispatchLeft", "DispatchBase"],
+        }
+        compiler_nodes = []
+        for name, order in expected_order.items():
+            compiler_nodes.append({
+                "id": contract_ids[name],
+                "kind": "contract",
+                "name": name,
+                "source": "src/Dispatch.sol",
+                "linearized_base_ids": list(range(len(order))),
+                "linearized_base_contracts": [contract_ids[item] for item in order],
+            })
+
+        function_ids = {
+            name: "ast-function:" + name
+            for name in ("DispatchBase", "DispatchLeft", "DispatchRight", "DispatchFinal")
+        }
+        for index_number, name in enumerate(function_ids):
+            signature_start = source.index("function run", source.index("contract " + name))
+            compiler_nodes.append({
+                "id": function_ids[name],
+                "compiler_id": 100 + index_number,
+                "kind": "function",
+                "name": "run",
+                "signature": "run(uint256)",
+                "contract": contract_ids[name],
+                "source": "src/Dispatch.sol",
+                "source_span": str(len(source[:signature_start].encode("utf-8"))) + ":40:0",
+                "is_virtual": name != "DispatchFinal",
+                "has_override_specifier": name != "DispatchBase",
+                "base_function_ids": [function_ids["DispatchBase"]] if name != "DispatchBase" else [],
+            })
+
+        final_function_start = source.index("function run", source.index("contract DispatchFinal"))
+        compiler_graph = {
+            "status": "AST_OBSERVED",
+            "accepted_builds": 1,
+            "compiler_versions": ["0.8.20"],
+            "limitations": [],
+            "nodes": compiler_nodes,
+            "edges": [{
+                "kind": "compiler_override_candidate",
+                "source": function_ids["DispatchFinal"],
+                "target": function_ids["DispatchBase"],
+                "source_span": str(len(source[:final_function_start].encode("utf-8"))) + ":40:0",
+                "certainty": "compiler_declared_base_function",
+            }],
+        }
+        with unittest.mock.patch.object(protocol_graph, "compiler_ast_graph", return_value=compiler_graph):
+            model = build_explorer_model(index, root=self.root)
+
+        declarations = {
+            item["name"]: item for item in model["nodes"] if item["type"] == "declaration"
+        }
+        final = declarations["DispatchFinal"]
+        self.assertEqual(final["c3_status"], "COMPILER_AST")
+        self.assertEqual(
+            [item["name"] for item in final["c3_linearization"]],
+            expected_order["DispatchFinal"],
+        )
+        self.assertEqual(
+            [item["rank"] for item in final["c3_linearization"]],
+            [1, 2, 3, 4],
+        )
+
+        final_function = next(
+            item for item in model["nodes"]
+            if item["type"] == "function" and item["contract"] == "DispatchFinal"
+        )
+        self.assertIn("compiler_dispatch", final_function)
+        self.assertFalse(final_function["compiler_dispatch"]["is_virtual"])
+        self.assertTrue(final_function["compiler_dispatch"]["has_override_specifier"])
+        override = next(
+            edge for edge in model["edges"]
+            if edge["kind"] == "OVERRIDES" and edge["source"] == final_function["id"]
+        )
+        self.assertEqual(override["evidence"], "COMPILER_AST")
+        self.assertEqual(override["file"], "src/Dispatch.sol")
+        self.assertEqual(override["line"], source[:final_function_start].count("\n") + 1)
 
     def test_uploaded_files_keep_project_paths_and_reject_traversal(self):
         destination = self.root / "uploaded"
