@@ -2059,9 +2059,37 @@ def create_explorer_server(
             except ValueError as error:
                 self.send_json(421, {"error": str(error)})
                 return
-            if self.path in {"/", "/index.html"}:
+            request_path = urllib.parse.urlsplit(self.path)
+            if request_path.path in {"/", "/index.html"}:
                 self.send_bytes(200, render_explorer_document(model, server_mode=True).encode("utf-8"), "text/html; charset=utf-8")
-            elif self.path == "/health":
+            elif request_path.path == "/api/source":
+                try:
+                    values = urllib.parse.parse_qs(request_path.query, keep_blank_values=True).get("path", [])
+                    if len(values) != 1 or not values[0]:
+                        raise ValueError("Provide exactly one project-relative Solidity source path.")
+                    raw_path = values[0]
+                    if "\\" in raw_path:
+                        raise ValueError("Backslashes are not accepted in source paths.")
+                    relative = Path(raw_path)
+                    if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts) or relative.suffix.lower() != ".sol":
+                        raise ValueError("Only safe project-relative .sol paths may be read.")
+                    resolved = (root_path / relative).resolve(strict=True)
+                    resolved.relative_to(root_path)
+                    size = resolved.stat().st_size
+                    if size > MAX_UPLOAD_FILE_BYTES:
+                        raise ValueError("Source file exceeds the 2 MiB per-file limit.")
+                    raw = resolved.read_bytes()
+                    if len(raw) > MAX_UPLOAD_FILE_BYTES:
+                        raise ValueError("Source file exceeds the 2 MiB per-file limit.")
+                    source = raw.decode("utf-8-sig", errors="replace")
+                    self.send_json(200, {
+                        "path": relative.as_posix(), "status": "SERVED_LOCAL",
+                        "byte_size": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+                        "line_count": len(source.splitlines()), "content": source,
+                    })
+                except (OSError, RuntimeError, ValueError) as error:
+                    self.send_json(400, {"error": str(error)[:1000]})
+            elif request_path.path == "/health":
                 self.send_json(200, {"ok": True, "service": "lowkey-local-source-workspace"})
             else:
                 self.send_json(404, {"error": "Not found."})
