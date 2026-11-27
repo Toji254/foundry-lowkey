@@ -17967,6 +17967,87 @@ def _deployment_tx_hash(output):
     return None
 
 
+def _rpc_quantity_int(value):
+    """Parse a JSON-RPC quantity without accepting bools or lossy coercions."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = int(value, 16) if value.lower().startswith("0x") else int(value, 10)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _find_deployment_transaction_hash(
+    rpc, sender, contract_address, starting_block=None, *, max_blocks=24,
+):
+    """Recover a CREATE transaction only from a matching recent block and receipt.
+
+    Cast output formats vary between versions. When their text omits the hash,
+    inspect a bounded block range and require the sender, contract-creation
+    transaction, successful receipt and exact receipt.contractAddress to agree.
+    Ambiguous or unavailable RPC evidence returns None; it is never guessed.
+    """
+    if not rpc or not is_address(sender) or not is_address(contract_address):
+        return None
+    try:
+        latest = _rpc_quantity_int(rpc_json(rpc, "eth_blockNumber", []))
+        if latest is None:
+            return None
+        first = _rpc_quantity_int(starting_block)
+        if first is None:
+            first = max(0, latest - max(1, min(int(max_blocks), 64)) + 1)
+        else:
+            # The pre-submit block is an exclusive lower bound.
+            first = max(0, first + 1)
+        window = max(1, min(int(max_blocks), 64))
+        first = max(first, latest - window + 1)
+        if latest < first:
+            return None
+
+        matches = []
+        for block_number in range(first, latest + 1):
+            block = rpc_json(
+                rpc, "eth_getBlockByNumber", [hex(block_number), True]
+            )
+            if not isinstance(block, dict):
+                continue
+            transactions = block.get("transactions")
+            if not isinstance(transactions, list):
+                continue
+            for transaction in transactions:
+                if not isinstance(transaction, dict):
+                    continue
+                if str(transaction.get("from") or "").lower() != sender.lower():
+                    continue
+                destination = transaction.get("to")
+                if destination not in (None, "", "0x"):
+                    continue
+                candidate_hash = transaction.get("hash")
+                if not is_tx_hash(candidate_hash):
+                    continue
+                receipt = rpc_json(
+                    rpc, "eth_getTransactionReceipt", [candidate_hash]
+                )
+                if not isinstance(receipt, dict):
+                    continue
+                receipt_status = _rpc_quantity_int(receipt.get("status"))
+                if receipt_status != 1:
+                    continue
+                if str(receipt.get("contractAddress") or "").lower() != contract_address.lower():
+                    continue
+                matches.append(candidate_hash)
+        # More than one matching receipt is inconsistent with a single
+        # deployment operation; refuse to choose one.
+        return matches[0] if len(matches) == 1 else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _deployment_receipt_address(rpc, tx_hash):
     """Read the mined CREATE receipt and return only its contract address."""
     if not rpc or not is_tx_hash(tx_hash):
@@ -18723,6 +18804,14 @@ def _deploy_artifact_locally(
             if review != "deploy":
                 return None, "local deployment cancelled by user"
 
+    # Record the latest block before broadcast so a missing Cast transaction
+    # hash can be recovered from a bounded post-submit CREATE receipt scan.
+    pre_deployment_block = None
+    try:
+        pre_deployment_block = rpc_json(rpc, "eth_blockNumber", [])
+    except Exception:
+        pre_deployment_block = None
+
     command = [
         "cast", "send",
         "--rpc-url", rpc,
@@ -18787,6 +18876,15 @@ def _deploy_artifact_locally(
     target = _live_deployed_address(rpc, candidates)
     if target:
         config["_last_deployment_receipt"]["target"] = target
+        if not tx_hash:
+            recovered_hash = _find_deployment_transaction_hash(
+                rpc, accounts[0] if accounts else None, target,
+                starting_block=pre_deployment_block,
+            )
+            config["_last_deployment_receipt"]["tx_hash"] = recovered_hash
+            config["_last_deployment_receipt"]["tx_hash_recovery_status"] = (
+                "RECOVERED_FROM_CHAIN_RECEIPT" if recovered_hash else "UNAVAILABLE"
+            )
         return target, None
 
     if tx_hash:
