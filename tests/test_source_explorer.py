@@ -568,6 +568,12 @@ class ProtocolExplorerTests(unittest.TestCase):
                 "version": 1,
                 "workspace_key": self.model["workspace_key"],
                 "interface_bindings": [[interface["id"], implementation["id"]]],
+                "scope_preferences": {
+                    "include_support_sources": True,
+                    "inline_libraries": False,
+                    "excluded_contract_ids": [implementation["id"]],
+                    "excluded_path_prefixes": ["test/fixtures"],
+                },
             }
             request = urllib.request.Request(
                 base + "/api/workspace",
@@ -580,15 +586,25 @@ class ProtocolExplorerTests(unittest.TestCase):
             self.assertTrue(saved["ok"])
             self.assertTrue(saved["persisted"])
             self.assertEqual(saved["workspace"]["interface_bindings"], [[interface["id"], implementation["id"]]])
+            self.assertEqual(saved["workspace"]["scope_preferences"], {
+                "include_support_sources": True,
+                "inline_libraries": False,
+                "excluded_contract_ids": [implementation["id"]],
+                "excluded_path_prefixes": ["test/fixtures"],
+            })
 
             with urllib.request.urlopen(base + "/api/workspace", timeout=5) as response:
                 loaded = json.loads(response.read())
             self.assertEqual(loaded["interface_bindings"], [[interface["id"], implementation["id"]]])
+            self.assertFalse(loaded["scope_preferences"]["inline_libraries"])
+            self.assertEqual(loaded["scope_preferences"]["excluded_path_prefixes"], ["test/fixtures"])
 
             persisted = json.loads(context_path.read_text(encoding="utf-8"))
             self.assertEqual(persisted["target"]["address"], "0x" + "1" * 40)
             self.assertEqual(persisted["custom_preserved_marker"], {"keep": True})
             self.assertEqual(persisted["protocol_graph_workspace"]["interface_bindings"], [[interface["id"], implementation["id"]]])
+            self.assertEqual(persisted["protocol_graph_workspace"]["scope_preferences"]["excluded_contract_ids"], [implementation["id"]])
+            self.assertFalse(persisted["protocol_graph_workspace"]["scope_preferences"]["inline_libraries"])
 
             invalid = dict(payload)
             invalid["interface_bindings"] = [[interface["id"], interface["id"]]]
@@ -601,6 +617,23 @@ class ProtocolExplorerTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as error:
                 urllib.request.urlopen(request, timeout=5)
             self.assertEqual(error.exception.code, 400)
+
+            invalid_scope = dict(payload)
+            invalid_scope["scope_preferences"] = {
+                "include_support_sources": False,
+                "inline_libraries": True,
+                "excluded_contract_ids": [interface["id"]],
+                "excluded_path_prefixes": ["../outside"],
+            }
+            request = urllib.request.Request(
+                base + "/api/workspace",
+                data=json.dumps(invalid_scope).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as scope_error:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(scope_error.exception.code, 400)
         finally:
             server.shutdown()
             thread.join(timeout=5)
