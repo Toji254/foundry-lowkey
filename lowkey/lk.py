@@ -44,6 +44,14 @@ try:
     import proxy_engine
 except ImportError:
     from lowkey import proxy_engine
+
+try:
+    import opcode_intelligence
+except ImportError:
+    try:
+        from lowkey import opcode_intelligence
+    except ImportError:
+        opcode_intelligence = None
 try:
     import fixture_context
 except ImportError:
@@ -32645,6 +32653,10 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         if len(args)==2: config["labels"][args[0]]=args[1]; save_config(config)
         else: print("Usage: lk label <address> <name>")
     elif cmd=="recon": run_recon(config)
+    elif cmd=="opcodes":
+        if opcode_intelligence is None:
+            return fail("Opcode intelligence is not installed. Re-run install.sh.")
+        return opcode_intelligence.run_cli(args)
     elif cmd=="proxy":
         return proxy_engine.run_cli(
             config,
