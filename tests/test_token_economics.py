@@ -28,15 +28,25 @@ def round_data(answer, *, updated=9990, answered_round=5):
 
 
 class RpcFixture:
-    def __init__(self, *, stale=False, incomplete=False, source_code_mismatch=False, wrong_vault_asset=False, changed_decimals=False, changed_vault_asset=False):
+    def __init__(self, *, stale=False, incomplete=False, source_code_mismatch=False, proxy_identity_mismatch=False, wrong_vault_asset=False, changed_decimals=False, changed_vault_asset=False):
         self.stale = stale
         self.incomplete = incomplete
         self.source_code_mismatch = source_code_mismatch
+        self.proxy_identity_mismatch = proxy_identity_mismatch
         self.wrong_vault_asset = wrong_vault_asset
         self.changed_decimals = changed_decimals
         self.changed_vault_asset = changed_vault_asset
 
     def __call__(self, url, method, params, timeout=30):
+        if method == "eth_getStorageAt":
+            address, slot, block_tag = params
+            implementation_slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+            if (
+                self.proxy_identity_mismatch and url == "source"
+                and address.lower() == TOKEN and slot.lower() == implementation_slot
+            ):
+                return word(int("8" * 40, 16))
+            return word(0)
         if method == "eth_getCode":
             address = params[0].lower()
             if url == "source" and self.source_code_mismatch and address == TOKEN:
@@ -196,6 +206,14 @@ class TokenEconomicsTests(unittest.TestCase):
                 RpcFixture(changed_vault_asset=True), local_url="local", source_url=None,
                 manifest=manifest(kind="erc4626"), accounts=[ACTOR],
                 before_block=100, after_block=101, block_timestamp=10_000,
+            )
+
+    def test_same_proxy_runtime_with_different_implementation_slot_is_refused(self):
+        with self.assertRaisesRegex(TokenEconomicsError, "implementation/beacon identity differs"):
+            measure_token_portfolio(
+                RpcFixture(proxy_identity_mismatch=True), local_url="local", source_url="source",
+                manifest=manifest(), accounts=[ACTOR], before_block=100,
+                after_block=101, block_timestamp=10_000,
             )
 
     def test_source_code_mismatch_is_refused(self):
