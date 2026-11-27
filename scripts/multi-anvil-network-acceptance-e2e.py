@@ -104,7 +104,11 @@ def main():
 
                 checks = evidence["checks"]
                 checks["different_session_ids"] = a["id"] != b["id"]
-                checks["different_processes"] = a["pid"] != b["pid"] and a.get("process_start_ticks") and b.get("process_start_ticks")
+                checks["different_processes"] = bool(
+                    a["pid"] != b["pid"]
+                    and a.get("process_start_ticks")
+                    and b.get("process_start_ticks")
+                )
                 checks["different_ports"] = a["port"] != b["port"]
                 checks["same_chain_id"] = a["chain_id"] == b["chain_id"] == 31337
                 checks["rpc_chain_ids_match"] = quantity(rpc(a["rpc"], "eth_chainId")) == a["chain_id"] and quantity(rpc(b["rpc"], "eth_chainId")) == b["chain_id"]

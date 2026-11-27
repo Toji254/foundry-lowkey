@@ -446,3 +446,28 @@ def test_future_registry_schema_is_rejected_without_overwriting_registry(tmp_pat
         manager.list()
 
     assert state_path.read_text(encoding="utf-8") == raw
+
+
+def test_missing_registry_is_not_materialized_as_an_empty_file(tmp_path):
+    manager = NetworkManager(tmp_path, process_identity=lambda _pid: None)
+
+    assert manager.list() == []
+    assert not manager.state_path.exists()
+
+
+def test_existing_legacy_backup_is_never_overwritten_with_different_content(tmp_path):
+    audit = tmp_path / ".audit"
+    audit.mkdir()
+    state_path = audit / "anvil.json"
+    backup_path = audit / "anvil.json.v1.bak"
+    original = json.dumps({"rpc": "http://127.0.0.1:8545"})
+    previous_backup = json.dumps({"rpc": "http://127.0.0.1:8546"})
+    state_path.write_text(original, encoding="utf-8")
+    backup_path.write_text(previous_backup, encoding="utf-8")
+    manager = NetworkManager(tmp_path, process_identity=lambda _pid: None)
+
+    with pytest.raises(NetworkError, match="refusing to overwrite"):
+        manager._read()
+
+    assert state_path.read_text(encoding="utf-8") == original
+    assert backup_path.read_text(encoding="utf-8") == previous_backup

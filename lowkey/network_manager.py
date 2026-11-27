@@ -236,6 +236,19 @@ class NetworkManager:
         backup_path = self.state_path.with_name(
             f"{self.state_path.name}.v{source_version}.bak"
         )
+        if backup_path.exists():
+            try:
+                existing = backup_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise NetworkError(
+                    f"Could not inspect existing legacy registry backup {backup_path}: {exc}"
+                ) from exc
+            if existing != raw:
+                raise NetworkError(
+                    f"An existing legacy registry backup at {backup_path} differs from the "
+                    "current source file; refusing to overwrite either copy."
+                )
+            return backup_path
         fd, temporary = tempfile.mkstemp(
             prefix=f"{backup_path.name}.", suffix=".tmp", dir=self.audit_dir
         )
