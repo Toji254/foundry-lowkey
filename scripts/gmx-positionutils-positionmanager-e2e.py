@@ -22,7 +22,11 @@ LOWKEY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LOWKEY_ROOT))
 
 from lowkey import lk as lowkey_cli  # noqa: E402
-from lowkey.library_linker import ArtifactIdentity, extract_link_references  # noqa: E402
+# Reuse the exact linker module object imported by lowkey.lk. Importing
+# lowkey.library_linker separately can create a second module/class identity
+# and dataclass equality then rejects otherwise identical source-qualified refs.
+ArtifactIdentity = lowkey_cli.library_linker.ArtifactIdentity  # noqa: E402
+extract_link_references = lowkey_cli.library_linker.extract_link_references  # noqa: E402
 from lowkey.network_manager import NetworkManager  # noqa: E402
 
 GMX_REPOSITORY = "https://github.com/gmx-io/gmx-contracts.git"
