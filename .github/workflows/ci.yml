@@ -266,7 +266,7 @@ jobs:
           LOWKEY_RPC_URL: http://127.0.0.1:8545
         run: python3 scripts/proxy-break-acceptance-e2e.py
 
-      - name: P0 independently paired UUPS and ProxyAdmin control acceptance
+      - name: P0 paired UUPS, ProxyAdmin, Transparent routing and UUPS hybrid acceptance
         env:
           LOWKEY_RPC_URL: http://127.0.0.1:8545
         run: python3 scripts/proxy-sequential-control-acceptance-e2e.py
