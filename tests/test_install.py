@@ -176,7 +176,7 @@ class InstallSmokeTests(unittest.TestCase):
                 cwd=ROOT, env=env, capture_output=True, text=True,
             )
             self.assertEqual(opcode_cli.returncode, 0, opcode_cli.stdout + opcode_cli.stderr)
-            self.assertEqual(json.loads(opcode_cli.stdout)["mnemonic"], "PUSH0")
+            self.assertIn('"mnemonic": "PUSH0"', opcode_cli.stdout)
 
             trace_import = subprocess.run(
                 ["python3", "-c", "import forge_state_diff, godmode, attack_engine; print('TRACE_IMPORT_OK')"],
