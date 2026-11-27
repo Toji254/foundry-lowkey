@@ -35,13 +35,13 @@ def run(
                 "returncode": result.returncode,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
-            }, indent=2, sort_keys=True) + "\\n",
+            }, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
     if result.returncode != 0:
         raise AssertionError(
-            f"Command failed ({result.returncode}): {argv!r}\\n"
-            f"--- stdout ---\\n{result.stdout[-16000:]}\\n--- stderr ---\\n{result.stderr[-16000:]}"
+            f"Command failed ({result.returncode}): {argv!r}\n"
+            f"--- stdout ---\n{result.stdout[-16000:]}\n--- stderr ---\n{result.stderr[-16000:]}"
         )
     return result
 
@@ -138,7 +138,7 @@ def preserve_failure_evidence(repo_root: Path, root: Path, error: BaseException)
         ),
     }
     (destination / "failure-diagnostics.json").write_text(
-        json.dumps(diagnostics, indent=2, sort_keys=True) + "\\n",
+        json.dumps(diagnostics, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return destination
