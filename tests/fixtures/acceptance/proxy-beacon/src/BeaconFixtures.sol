@@ -59,9 +59,13 @@ contract PairedBeacon {
     }
 
     function upgradeTo(address nextImplementation) external {
-        if (secureMode == 1) {
-            require(msg.sender == owner, "ONLY_OWNER");
-        }
+        // Evaluate both inputs on every branch so the initial owner slot is
+        // independently observable in the secure and vulnerable traces.
+        // secureMode == 0 deliberately disables the check; secureMode == 1
+        // still requires the original owner.
+        uint256 authorization = (secureMode == 0 ? 1 : 0)
+            + (msg.sender == owner ? 1 : 0);
+        require(authorization > 0, "ONLY_OWNER");
         require(nextImplementation.code.length > 0, "NO_IMPLEMENTATION_CODE");
         implementation = nextImplementation;
         emit Upgraded(nextImplementation);
