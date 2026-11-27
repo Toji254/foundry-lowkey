@@ -434,7 +434,7 @@ def measure_token_portfolio(
         )
         if after_identity_hash != identity_hash:
             raise TokenEconomicsError(
-                f"{token['symbol']} runtime bytecode changed during the measured transaction; token valuation is refused."
+                f"{token['symbol']} runtime bytecode or proxy implementation identity changed during the measured transaction; token valuation is refused."
             )
         decimals_after = _word(
             _call(rpc, local_url, address, _DECIMALS, after_block,
@@ -471,7 +471,7 @@ def measure_token_portfolio(
             )
             if asset_after_identity_hash != asset_identity_hash:
                 raise TokenEconomicsError(
-                    f"{token['symbol']} underlying asset runtime bytecode changed during the measured transaction."
+                    f"{token['symbol']} underlying asset runtime bytecode or proxy implementation identity changed during the measured transaction."
                 )
             asset_decimals_after = _word(
                 _call(rpc, local_url, asset, _DECIMALS, after_block,
