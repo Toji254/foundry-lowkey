@@ -173,19 +173,38 @@ def main() -> int:
         if (record.get("network") or {}).get("network_session_id") != session["id"]:
             raise AssertionError("Native deployment was registered under a different network session.")
 
-        review_files = list((root / ".audit").rglob("*.json"))
-        review_payloads = []
-        for path in review_files:
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if payload.get("schema") == "lowkey.foundry-script-review.v1":
-                review_payloads.append(payload)
-        if len(review_payloads) != 1 or review_payloads[0].get("approval_state") != "FORGE_SUCCEEDED":
+        review_path_match = re.search(
+            r"(?im)^\\s*Review evidence\\s*:\\s*(\\.audit/deployment-reviews/[0-9a-f]{64}\\.json)\\s*$",
+            lab.stdout,
+        )
+        if not review_path_match:
             raise AssertionError(
-                "The deployment review did not retain a successful post-broadcast evidence state: "
-                + json.dumps(review_payloads, indent=2)
+                "Lowkey did not report the persisted deployment-review evidence path.\\n"
+                + lab.stdout[-12000:]
+            )
+        review_path = (root / review_path_match.group(1)).resolve()
+        if not review_path.is_relative_to(root.resolve()) or not review_path.is_file():
+            raise AssertionError(
+                "The reported deployment-review evidence path is missing or escapes the project root: "
+                + review_path_match.group(1)
+            )
+        review_payload = json.loads(review_path.read_text(encoding="utf-8"))
+        expected_review_id = review_path.stem
+        if (
+            review_payload.get("schema") != "lowkey.foundry-script-review.v1"
+            or review_payload.get("review_id") != expected_review_id
+            or review_payload.get("script_path") != "script/Deploy.s.sol"
+            or review_payload.get("approval_state") != "FORGE_SUCCEEDED"
+        ):
+            raise AssertionError(
+                "The selected script's review evidence is incomplete or not successfully finalized: "
+                + json.dumps({
+                    "path": review_path_match.group(1),
+                    "schema": review_payload.get("schema"),
+                    "review_id": review_payload.get("review_id"),
+                    "script_path": review_payload.get("script_path"),
+                    "approval_state": review_payload.get("approval_state"),
+                }, indent=2)
             )
 
         evidence["deployment"] = {
@@ -198,9 +217,9 @@ def main() -> int:
             "reuse_permitted": record.get("reuse_permitted"),
         }
         evidence["review"] = {
-            "schema": review_payloads[0].get("schema"),
-            "approval_state": review_payloads[0].get("approval_state"),
-            "review_id": review_payloads[0].get("review_id"),
+            "schema": review_payload.get("schema"),
+            "approval_state": review_payload.get("approval_state"),
+            "review_id": review_payload.get("review_id"),
         }
         print("PASS: reviewed native Foundry script broadcast, target validation, runtime/owner checks,")
         print("      transaction provenance and managed-session primary-target registration.")
