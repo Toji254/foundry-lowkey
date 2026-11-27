@@ -124,6 +124,8 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertTrue(question_engine.exists())
             proxy_engine_module = pathlib.Path(home) / ".lowkey" / "proxy_engine.py"
             self.assertTrue(proxy_engine_module.is_file())
+            deployment_review_module = pathlib.Path(home) / ".lowkey" / "deployment_review.py"
+            self.assertTrue(deployment_review_module.is_file())
             opcode_module = pathlib.Path(home) / ".lowkey" / "opcode_intelligence.py"
             economics_module = pathlib.Path(home) / ".lowkey" / "token_economics.py"
             self.assertTrue(opcode_module.is_file())
@@ -165,6 +167,16 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertEqual(proxy_import.returncode, 0, proxy_import.stdout + proxy_import.stderr)
             self.assertIn("PROXY_ENGINE_IMPORT_OK", proxy_import.stdout)
 
+            deployment_review_import = subprocess.run(
+                ["python3", "-c", "import deployment_review; print('DEPLOYMENT_REVIEW_IMPORT_OK')"],
+                cwd=ROOT,
+                env={**env, "PYTHONPATH": str(pathlib.Path(home) / ".lowkey")},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(deployment_review_import.returncode, 0, deployment_review_import.stdout + deployment_review_import.stderr)
+            self.assertIn("DEPLOYMENT_REVIEW_IMPORT_OK", deployment_review_import.stdout)
+
             proxy_help = subprocess.run(
                 [str(installed_lk), "proxy", "audit", "--h"],
                 cwd=ROOT, env=env, capture_output=True, text=True,
@@ -203,6 +215,7 @@ class InstallSmokeTests(unittest.TestCase):
             install_manifest = json.loads(manifest.read_text(encoding="utf-8"))
             self.assertIn(str(shared_context), install_manifest["files"])
             self.assertIn(str(proxy_engine_module), install_manifest["files"])
+            self.assertIn(str(deployment_review_module), install_manifest["files"])
             self.assertIn(str(opcode_module), install_manifest["files"])
             self.assertIn(str(economics_module), install_manifest["files"])
             self.assertIn(str(library_linker_module), install_manifest["files"])

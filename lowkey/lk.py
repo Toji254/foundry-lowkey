@@ -15977,7 +15977,12 @@ def set_lab_target(
             elif isinstance(link_evidence, dict):
                 record["link_evidence"] = dict(link_evidence)
             record["deployment_role"] = "primary_audit_target"
-    if network_identity and is_address(target):
+    if (
+        isinstance(network_identity, dict)
+        and network_identity.get("reuse_permitted") is True
+        and network_identity.get("network_session_id")
+        and is_address(target)
+    ):
         session_record = {
             "role": "primary_audit_target",
             "qualified_identity": (
