@@ -6,6 +6,7 @@ projections of one model and never upgrades static edges into runtime claims.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
