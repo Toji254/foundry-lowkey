@@ -93,18 +93,111 @@ def _code(rpc: Callable[..., Any], url: str, address: str, block: int, label: st
     return result.lower()
 
 
+
+# EIP-1967 proxy identity slots. Unknown/custom proxy patterns are not claimed
+# to be verified by this resolver; supported proxy forms are checked explicitly.
+_IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+_BEACON_SLOT = "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50"
+_BEACON_IMPLEMENTATION = "0x5c60da1b"
+
+
+def _storage_word(
+    rpc: Callable[..., Any], url: str, address: str, slot: str, block: int, label: str,
+) -> int:
+    result = rpc(url, "eth_getStorageAt", [address, slot, hex(block)], 30)
+    return _word(result, label + " storage")
+
+
+def _slot_address(value: int, label: str) -> str | None:
+    if value == 0:
+        return None
+    raw = format(value, "064x")
+    if raw[:24] != "0" * 24:
+        raise TokenEconomicsError(f"{label} contains a non-canonical EIP-1967 address.")
+    address = "0x" + raw[24:]
+    if address == "0x" + "0" * 40:
+        return None
+    return address
+
+
+def _proxy_identity(
+    rpc: Callable[..., Any], local_url: str, source_url: str | None,
+    address: str, block: int, label: str,
+) -> tuple[dict[str, Any], bool]:
+    local_impl = _storage_word(rpc, local_url, address, _IMPLEMENTATION_SLOT, block, label + " implementation slot")
+    local_beacon = _storage_word(rpc, local_url, address, _BEACON_SLOT, block, label + " beacon slot")
+    source_verified = source_url is not None
+    if source_url is not None:
+        source_impl = _storage_word(rpc, source_url, address, _IMPLEMENTATION_SLOT, block, label + " source implementation slot")
+        source_beacon = _storage_word(rpc, source_url, address, _BEACON_SLOT, block, label + " source beacon slot")
+        if (local_impl, local_beacon) != (source_impl, source_beacon):
+            raise TokenEconomicsError(
+                f"{label} EIP-1967 implementation/beacon identity differs between local fork and source RPC."
+            )
+    if local_impl and local_beacon:
+        raise TokenEconomicsError(f"{label} has both EIP-1967 implementation and beacon slots set; identity is ambiguous.")
+
+    identity: dict[str, Any] = {"kind": "direct"}
+    implementation = _slot_address(local_impl, label + " implementation")
+    beacon = _slot_address(local_beacon, label + " beacon")
+    if implementation:
+        local_code = _code(rpc, local_url, implementation, block, label + " implementation")
+        source_code = None
+        if source_url is not None:
+            source_code = _code(rpc, source_url, implementation, block, label + " source implementation")
+            if source_code != local_code:
+                raise TokenEconomicsError(f"{label} implementation bytecode differs between local fork and source RPC.")
+        identity = {
+            "kind": "eip1967-implementation",
+            "implementation": implementation,
+            "implementation_code_sha256": hashlib.sha256(bytes.fromhex(local_code[2:])).hexdigest(),
+        }
+    elif beacon:
+        local_beacon_code = _code(rpc, local_url, beacon, block, label + " beacon")
+        source_beacon_code = None
+        if source_url is not None:
+            source_beacon_code = _code(rpc, source_url, beacon, block, label + " source beacon")
+            if source_beacon_code != local_beacon_code:
+                raise TokenEconomicsError(f"{label} beacon bytecode differs between local fork and source RPC.")
+        local_impl_raw = _call(rpc, local_url, beacon, _BEACON_IMPLEMENTATION, block, label + " beacon implementation()")
+        local_impl_address = _address_word(local_impl_raw, label + " beacon implementation()")
+        if source_url is not None:
+            source_impl_raw = _call(rpc, source_url, beacon, _BEACON_IMPLEMENTATION, block, label + " source beacon implementation()")
+            source_impl_address = _address_word(source_impl_raw, label + " source beacon implementation()")
+            if source_impl_address != local_impl_address:
+                raise TokenEconomicsError(f"{label} beacon implementation differs between local fork and source RPC.")
+        local_impl_code = _code(rpc, local_url, local_impl_address, block, label + " beacon implementation")
+        if source_url is not None:
+            source_impl_code = _code(rpc, source_url, local_impl_address, block, label + " source beacon implementation")
+            if source_impl_code != local_impl_code:
+                raise TokenEconomicsError(f"{label} beacon implementation bytecode differs between local fork and source RPC.")
+        identity = {
+            "kind": "eip1967-beacon",
+            "beacon": beacon,
+            "beacon_code_sha256": hashlib.sha256(bytes.fromhex(local_beacon_code[2:])).hexdigest(),
+            "implementation": local_impl_address,
+            "implementation_code_sha256": hashlib.sha256(bytes.fromhex(local_impl_code[2:])).hexdigest(),
+        }
+    return identity, source_verified
+
 def _verify_code_source(
     rpc: Callable[..., Any], local_url: str, source_url: str | None,
     address: str, block: int, label: str,
 ) -> tuple[str, bool]:
     local_code = _code(rpc, local_url, address, block, label)
     digest = hashlib.sha256(bytes.fromhex(local_code[2:])).hexdigest()
-    if source_url is None:
-        return digest, False
-    source_code = _code(rpc, source_url, address, block, label + " source")
-    if source_code != local_code:
-        raise TokenEconomicsError(f"{label} runtime bytecode differs between the local fork and source RPC.")
-    return digest, True
+    if source_url is not None:
+        source_code = _code(rpc, source_url, address, block, label + " source")
+        if source_code != local_code:
+            raise TokenEconomicsError(f"{label} runtime bytecode differs between the local fork and source RPC.")
+    identity, identity_verified = _proxy_identity(
+        rpc, local_url, source_url, address, block, label
+    )
+    identity_digest = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    combined_digest = hashlib.sha256((digest + identity_digest).encode()).hexdigest()
+    return combined_digest, bool(source_url is not None and identity_verified)
 
 
 def _read_uint_call(
