@@ -727,6 +727,39 @@ def detect_anvil_rpc(preferred=None):
 
 
 
+def _managed_network_project_root(config=None, root=None):
+    """Return the root allowed to own Lowkey's managed network registry.
+
+    Lowkey's own source checkout can contain a development .audit directory.
+    It is not a protocol project and must never shadow configured RPC or local
+    Anvil discovery. If source-checkout classification itself is uncertain,
+    keep the existing fail-closed project-network behavior.
+    """
+    if root is None:
+        cached = config.get("_resolved_project_context") if isinstance(config, dict) else None
+        candidate_value = str(cached.get("project_root") or "").strip() if isinstance(cached, dict) else ""
+        if candidate_value:
+            try:
+                candidate = Path(candidate_value).expanduser().resolve()
+                root = candidate if candidate.is_dir() else None
+            except (OSError, TypeError, ValueError):
+                root = None
+    if root is None:
+        try:
+            root = audit_context.foundry_project_root()
+        except Exception:
+            return None
+    try:
+        project_root = Path(root).expanduser().resolve()
+    except (OSError, TypeError, ValueError):
+        return None
+    try:
+        source_checkout = audit_context._is_lowkey_source_root(project_root)
+    except Exception:
+        source_checkout = False
+    return None if source_checkout else project_root
+
+
 def project_fixture_rpc_info(config, root=None):
     """Resolve a promoted fixture's managed Anvil only within its owning project.
 
@@ -734,9 +767,8 @@ def project_fixture_rpc_info(config, root=None):
     fixture lab was created. If the user changes that setting afterwards, their
     explicit choice wins over the remembered project-local node.
     """
-    try:
-        project_root = Path(root or audit_context.foundry_project_root()).expanduser().resolve()
-    except Exception:
+    project_root = _managed_network_project_root(config, root=root)
+    if project_root is None:
         return None
     state = read_project_anvil_state(project_root)
     if not isinstance(state, dict) or state.get("purpose") != "project-fixture-block-context":
@@ -762,30 +794,24 @@ def anvil_rpc_info(config):
     if project_info:
         return project_info
 
-    # Once a project has managed sessions, account discovery must follow the
-    # selected session too. Do not scan common ports and accidentally describe
-    # an unrelated/unmanaged Anvil as the project's active network.
-    try:
-        cached = config.get("_resolved_project_context") if isinstance(config, dict) else None
-        cached_root = None
-        if isinstance(cached, dict):
-            candidate = Path(str(cached.get("project_root") or "")).expanduser().resolve()
-            if candidate.is_dir():
-                cached_root = candidate
-        root = cached_root or Path(audit_context.foundry_project_root()).expanduser().resolve()
-        manager = NetworkManager(root, tool_path("anvil") or "anvil")
-        sessions = manager.list()
-        if sessions:
-            selected = manager.active()
-            if not selected:
-                return None
-            return detect_anvil_rpc(str(selected.get("rpc") or ""))
-    except NetworkError:
-        return None
-    except Exception:
-        # If project/network metadata cannot be inspected, do not use cached
-        # discovery in a project where session ownership may be ambiguous.
-        return None
+    # Only a protocol project owns a managed network registry. Lowkey's own
+    # source checkout may contain development .audit state; ignore it here.
+    root = _managed_network_project_root(config)
+    if root is not None:
+        try:
+            manager = NetworkManager(root, tool_path("anvil") or "anvil")
+            sessions = manager.list()
+            if sessions:
+                selected = manager.active()
+                if not selected:
+                    return None
+                return detect_anvil_rpc(str(selected.get("rpc") or ""))
+        except NetworkError:
+            return None
+        except Exception:
+            # If project/network metadata cannot be inspected, do not use cached
+            # discovery in a project where session ownership may be ambiguous.
+            return None
 
     explicit=config.get("rpc")
     if explicit:
@@ -813,10 +839,7 @@ def _explicit_rpc_matches_selected_identity(config, explicit_rpc):
     # session cache. When it carries an implicit target or actor, recover the
     # selected identity from the project's persistent managed-session registry
     # before treating an explicit endpoint as an unrelated manual choice.
-    try:
-        root = Path(audit_context.foundry_project_root()).expanduser().resolve()
-    except Exception:
-        root = None
+    root = _managed_network_project_root(config)
 
     if root is not None and isinstance(config, dict) and (config.get("target") or config.get("actor")):
         try:
@@ -896,27 +919,10 @@ def effective_rpc(config, explicit_rpc=None, target=None):
     # same persistent project session. Once a project root is known, any error
     # reading or validating its registry is a hard failure: falling through to
     # a project/global/environment RPC could silently select another chain.
-    cached_root = None
-    cached = config.get("_resolved_project_context") if isinstance(config, dict) else None
-    if isinstance(cached, dict):
-        candidate_value = str(cached.get("project_root") or "").strip()
-        if candidate_value:
-            try:
-                candidate = Path(candidate_value).expanduser().resolve()
-                if candidate.is_dir():
-                    cached_root = candidate
-            except (OSError, TypeError, ValueError):
-                cached_root = None
-    if cached_root is None:
+    managed_root = _managed_network_project_root(config)
+    if managed_root is not None:
         try:
-            cached_root = Path(audit_context.foundry_project_root()).expanduser().resolve()
-        except Exception:
-            # No project context: preserve legacy non-project RPC resolution.
-            cached_root = None
-
-    if cached_root is not None:
-        try:
-            manager = NetworkManager(cached_root, tool_path("anvil") or "anvil")
+            manager = NetworkManager(managed_root, tool_path("anvil") or "anvil")
             registered_sessions = manager.list()
             managed = manager.active()
             if registered_sessions and not managed:
@@ -959,29 +965,31 @@ def effective_rpc(config, explicit_rpc=None, target=None):
             return None
 
     try:
-        cached = config.get("_resolved_project_context") if isinstance(config, dict) else None
-        root = None
-        if isinstance(cached, dict):
+        root = _managed_network_project_root(config)
+        if root is not None:
+            cached = config.get("_resolved_project_context") if isinstance(config, dict) else None
+            if isinstance(cached, dict):
+                cached_rpc = cached.get("rpc")
+                if (
+                    isinstance(cached_rpc, str)
+                    and cached_rpc.strip()
+                    and cached.get("rpc_source") != "project-fixture"
+                ):
+                    return cached_rpc.strip()
+            state = audit_context.load(root)
+        else:
+            # Lowkey's source checkout is not a user project: ignore any old
+            # .audit context in that tree, but retain an explicitly configured
+            # RPC only when the target ownership check independently approves it.
             try:
-                cached_root = Path(str(cached.get("project_root") or "")).expanduser().resolve()
-                if cached_root.is_dir():
-                    root = cached_root
-                    cached_rpc = cached.get("rpc")
-                    if (
-                        isinstance(cached_rpc, str)
-                        and cached_rpc.strip()
-                        and cached.get("rpc_source") != "project-fixture"
-                    ):
-                        return cached_rpc.strip()
-            except (OSError, TypeError, ValueError):
+                root = Path(audit_context.foundry_project_root()).expanduser().resolve()
+            except Exception:
                 root = None
-        if root is None:
-            root = Path(audit_context.foundry_project_root()).expanduser().resolve()
+            state = {}
 
-        state = audit_context.load(root)
         legacy_rpc = (
             config.get("rpc") or config.get("rpc_url")
-            if shared_context.target_owned_by_project(target or config.get("target"), config, root)
+            if root is not None and shared_context.target_owned_by_project(target or config.get("target"), config, root)
             else None
         )
         selected, _source = shared_context.choose_rpc(
