@@ -319,6 +319,7 @@ class AttackEngineTests(unittest.TestCase):
                 "tokens": [{
                     "kind": "erc20",
                     "token_code_sha256": "5" * 64,
+                    "token_identity_sha256": "b" * 64,
                     "value_delta_usd_18": 10 * 10**18,
                     "oracle": {
                         "feed_code_source_verified": True,
@@ -354,6 +355,7 @@ class AttackEngineTests(unittest.TestCase):
         payload["token_portfolio"]["native_price"] = {
             "feed": "0x" + "77" * 20,
             "feed_code_sha256": "8" * 64,
+            "feed_identity_sha256": "a" * 64,
             "feed_code_source_verified": True,
             "source_round_verified": True,
             "price_usd_18": 10**18,
