@@ -98,3 +98,34 @@ The default project map includes a compiler-backed deployment-relationship secti
 ### Chain and genesis identity
 
 Explicit RPC overrides are resolved against the selected session's persisted identity, including on a fresh CLI invocation without an in-memory session cache. A mismatch detaches implicit project target and actor context; an explicit target address remains usable. If the project has no managed-session identity to compare, a deliberately supplied manual target may be used with the explicit endpoint. A managed network session records its chain ID and its own observed genesis/identity block. Two independent sessions may legitimately share the same chain ID and genesis hash when started with equivalent chain configuration; equality of genesis hashes is not, by itself, evidence that two sessions are the same network process or share state. Live isolation acceptance therefore checks each session's recorded genesis hash against that session's own RPC, while separately requiring distinct session UUIDs, process identities, ports and account sets, and verifying transactions and deployment registries remain isolated. A mismatched per-session RPC/registry genesis identity is a failure; a matching genesis hash across two otherwise independent sessions is permitted.
+
+
+## Explicit external dependency declarations
+
+Compiler evidence can identify a constructor input without proving whether an address is a Vault, Router, token, WETH, oracle or another contract. A project may declare that meaning in `.audit/dependencies.json`:
+
+```json
+{
+  "schema": "lowkey.external-dependencies.v1",
+  "network_identity": {
+    "project_id": "PROJECT_ID_FROM_LK",
+    "network_session_id": "SESSION_UUID_FROM_LK",
+    "chain_id": 31337,
+    "genesis_hash": "0xREPLACE_WITH_32_BYTE_SESSION_GENESIS_HASH"
+  },
+  "dependencies": [
+    {
+      "id": "positionmanager-vault",
+      "consumer": "contracts/core/PositionManager.sol:PositionManager",
+      "parameter": "_vault",
+      "kind": "vault",
+      "address": "0xREPLACE_WITH_LOCAL_VAULT_ADDRESS",
+      "description": "Local Vault fixture"
+    }
+  ]
+}
+```
+
+Supported kinds include `weth`, `erc20-token`, `chainlink-feed`, `router`, `vault`, `factory`, `oracle`, `bridge`, `proxy-admin`, `beacon`, `diamond-facet`, `multisig`, `timelock`, `governance` and `other-contract`. The `consumer` must be a source-qualified compiler contract and `parameter` must match a compiler-reported constructor input. Duplicate or malformed bindings block the manifest. An address requires a complete managed-session identity; a declaration from another session is detached from the active graph.
+
+Run `lk deps --json` to inspect the declaration. Manifest evidence is marked `DECLARED` / `DECLARED_UNVERIFIED`, is never an automatic deployment instruction, and does not prove code presence, runtime identity, token standard, authority, or protocol readiness. The graph remains `REVIEW_REQUIRED` until separate runtime and semantic checks establish the actual dependency.

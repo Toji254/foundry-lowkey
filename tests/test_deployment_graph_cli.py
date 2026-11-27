@@ -211,6 +211,64 @@ class DeploymentGraphCliTests(unittest.TestCase):
         self.assertIn("planning REVIEW_REQUIRED", rendered)
         self.assertIn("execution NOT_EXECUTED", rendered)
 
+
+    def test_deps_includes_project_manifest_external_infrastructure_declarations(self):
+        session = self._managed_session()
+        compiler = self.graph["compiler_dependencies"]
+        consumer = "src/Widget.sol:Widget"
+        compiler["edges"].append({
+            "from": consumer,
+            "to": f"{consumer}#constructor._vault",
+            "kind": "constructor-input",
+            "confidence": "CONFIRMED",
+            "requires_resolution": True,
+            "resolution_status": "ADDRESS_SEMANTICS_UNCLASSIFIED",
+            "source": "solc-output:abi.constructor.inputs",
+            "evidence": {"build_info": "build.json", "source_path": "src/Widget.sol"},
+        })
+        manifest_path = self.root / ".audit" / "dependencies.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps({
+            "schema": "lowkey.external-dependencies.v1",
+            "network_identity": {
+                "project_id": session["project_id"],
+                "network_session_id": session["id"],
+                "chain_id": session["chain_id"],
+                "genesis_hash": session["genesis_hash"],
+                "identity_block_hash": session["identity_block_hash"],
+            },
+            "dependencies": [{
+                "id": "widget-vault",
+                "consumer": consumer,
+                "parameter": "_vault",
+                "kind": "vault",
+                "address": "0x" + "11" * 20,
+                "description": "Local Vault fixture",
+            }],
+        }), encoding="utf-8")
+
+        manager = Mock()
+        manager.list.return_value = [{**session, "process_owned": True, "status": "running"}]
+        manager.get_deployments.return_value = {}
+        output = io.StringIO()
+        with patch.object(
+            lk.project_tools, "build_dependency_graph", return_value=self.graph
+        ), patch.object(
+            lk, "_project_network_manager", return_value=manager
+        ), contextlib.redirect_stdout(output):
+            result = lk.run_deps([str(self.root), "--json"], {"_active_network_session": session})
+
+        self.assertEqual(result, 0)
+        payload = json.loads(output.getvalue())
+        node = next(item for item in payload["deployment_graph"]["nodes"] if item["id"] == "external:widget-vault")
+        self.assertEqual(node["category"], "external-infrastructure:vault")
+        self.assertEqual(node["resolution_status"], "DECLARED_UNVERIFIED")
+        self.assertEqual(node["address"], "0x" + "11" * 20)
+        edge = next(item for item in payload["deployment_graph"]["edges"] if item["kind"] == "external-infrastructure")
+        self.assertFalse(edge["auto_deploy"])
+        self.assertEqual(edge["origin"]["manifest_path"], ".audit/dependencies.json")
+        self.assertEqual(payload["deployment_graph"]["external_manifest"]["status"], "VALID")
+
     def test_deps_json_rejects_extra_positional_arguments_before_analysis(self):
         output = io.StringIO()
         with patch.object(

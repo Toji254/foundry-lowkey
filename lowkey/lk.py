@@ -25509,6 +25509,24 @@ def run_deps(args, config=None):
     network_identity, deployment_records, network_warnings = _dependency_graph_network_snapshot(
         config, root
     )
+    try:
+        try:
+            import dependency_manifest as dependency_manifest_engine
+        except ImportError:
+            from lowkey import dependency_manifest as dependency_manifest_engine
+        external_manifest = dependency_manifest_engine.load_dependency_manifest(root).to_dict()
+    except Exception as error:
+        external_manifest = {
+            "status": "BLOCKED",
+            "path": ".audit/dependencies.json",
+            "schema": None,
+            "sha256": None,
+            "network_identity": None,
+            "dependencies": [],
+            "warnings": [
+                f"External dependency manifest could not be loaded ({type(error).__name__}: {error})."
+            ],
+        }
     compiler_report = graph.get("compiler_dependencies")
     if isinstance(compiler_report, dict):
         try:
@@ -25520,6 +25538,7 @@ def run_deps(args, config=None):
                 compiler_report,
                 network_identity=network_identity,
                 deployment_records=deployment_records,
+                external_manifest=external_manifest,
             ).to_dict()
         except Exception as error:
             graph.setdefault("deployment_graph", {}).setdefault("warnings", []).append(
@@ -25566,6 +25585,26 @@ def run_deps(args, config=None):
             )
         for warning in typed_graph.get("warnings") or []:
             print("Deployment graph warning: " + str(warning))
+    external_edges = [
+        edge for edge in typed_graph.get("edges", [])
+        if isinstance(edge, dict) and edge.get("kind") == "external-infrastructure"
+    ]
+    if external_edges:
+        print("\\nDeclared external infrastructure (not independently verified):")
+        for edge in external_edges:
+            print(
+                f"  [{edge.get('resolution_status', 'UNVERIFIED')}] "
+                f"{edge.get('from')} -> {edge.get('to')} "
+                f"({edge.get('function') or 'parameter'})"
+            )
+    manifest_summary = typed_graph.get("external_manifest") or {}
+    if manifest_summary.get("status") == "BLOCKED":
+        print("External dependency manifest: BLOCKED; planning must not proceed.")
+    elif manifest_summary.get("status") == "VALID":
+        print(
+            f"External dependency manifest: {manifest_summary.get('dependency_count', 0)} "
+            "declaration(s); addresses remain unverified until checked against live code."
+        )
     typed_edges = graph.get("typed_edges") or []
     if typed_edges:
         print("\nCompiler-backed relationships (source-matched solc evidence):")
