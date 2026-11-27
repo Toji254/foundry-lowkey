@@ -145,7 +145,13 @@ def test_review_rejects_changed_network_identity_and_allows_only_local_unmanaged
         review = _build(root)
         changed = {**_network(), "id": "other-session"}
         valid, error = verify_foundry_script_review_current(
-            review, root, rpc="http://127.0.0.1:8545", network_identity=changed
+            review, root, rpc="http://127.0.0.1:8545", network_identity=changed,
+            forge_version="forge 1.0.0",
+            environment_values={
+                "EXTERNAL_REGISTRY": "0x" + "12" * 20,
+                "OWNER": "0x" + "34" * 20,
+                "PRIVATE_RPC_TOKEN": "do-not-write-this-secret",
+            },
         )
         assert not valid and "network session identity changed" in error
 
