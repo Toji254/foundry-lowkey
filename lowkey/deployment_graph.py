@@ -195,25 +195,44 @@ def build_dependency_graph(
             ):
                 records_by_identity.setdefault(identity, []).append(record)
 
-    def deployment_state(identity: str) -> tuple[str, str | None]:
+    def deployment_state(identity: str) -> tuple[str, str | None, Mapping[str, Any] | None]:
         if network is None or deployment_records is None:
-            return "NOT_TESTED", None
+            return "NOT_TESTED", None, None
         candidates = records_by_identity.get(identity, [])
         if len(candidates) > 1:
             warnings.append(
                 f"Multiple session-matched deployment records exist for {identity}; address reuse is ambiguous."
             )
-            return "REVIEW_REQUIRED", None
+            return "REVIEW_REQUIRED", None, None
         if not candidates:
-            return "NOT_DEPLOYED", None
+            return "NOT_DEPLOYED", None, None
         record = candidates[0]
+        observed_evidence = {
+            "origin": "managed-network-deployment-registry",
+            "role": record.get("role"),
+            "operation_key": record.get("operation_key"),
+            "deployment_transaction": record.get("deployment_transaction"),
+            "artifact_sha256": record.get("artifact_sha256"),
+            "artifact_current_match": record.get("artifact_current_match") is True,
+            "runtime_code_hash": record.get("runtime_code_hash"),
+            "runtime_verification": record.get("runtime_verification"),
+            "last_verified_at": record.get("last_verified_at") or record.get("recorded_at"),
+            "network_session_id": (
+                record.get("network", {}).get("network_session_id")
+                if isinstance(record.get("network"), Mapping) else None
+            ),
+        }
         address = record.get("address")
         if not _is_address(address):
-            return "DEPLOYED_UNVERIFIED", None
+            return "DEPLOYED_UNVERIFIED", None, observed_evidence
+        if record.get("artifact_current_match") is not True:
+            # A previously verified runtime cannot prove today's artifact is identical.
+            return "DEPLOYED_ARTIFACT_UNVERIFIED", None, observed_evidence
         runtime = str(record.get("runtime_verification") or "UNVERIFIED").upper()
         if runtime == "MATCHED":
-            return "DEPLOYED_RUNTIME_VERIFIED", str(address)
-        return "DEPLOYED_UNVERIFIED", str(address)
+            # This is persisted last-check evidence, not a fresh RPC runtime read.
+            return "DEPLOYED_RUNTIME_MATCHED_AT_LAST_CHECK", str(address), observed_evidence
+        return "DEPLOYED_UNVERIFIED", str(address), observed_evidence
 
     nodes: dict[str, DependencyNode] = {}
 
@@ -235,7 +254,9 @@ def build_dependency_graph(
         address = existing.address if existing else None
         deployment_status = existing.deployment_status if existing else "NOT_TESTED"
         if identity in contract_ids and (existing is None or existing.deployment_status == "NOT_TESTED"):
-            deployment_status, address = deployment_state(identity)
+            deployment_status, address, deployment_evidence = deployment_state(identity)
+            if deployment_evidence is not None and dict(deployment_evidence) not in collected:
+                collected.append(dict(deployment_evidence))
         nodes[identity] = DependencyNode(
             id=identity,
             category=category if existing is None or existing.category == "dependency" else existing.category,

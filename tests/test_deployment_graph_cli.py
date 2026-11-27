@@ -8,7 +8,7 @@ import json
 import pathlib
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("lowkeycast_deployment_graph_cli", ROOT / "lowkey" / "lk.py")
@@ -56,6 +56,40 @@ class DeploymentGraphCliTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def _managed_session(self):
+        genesis = "0x" + "ab" * 32
+        return {
+            "id": "session-a",
+            "name": "dev-a",
+            "project_id": "project-a",
+            "rpc": "http://127.0.0.1:18545",
+            "chain_id": 31337,
+            "genesis_hash": genesis,
+            "identity_block_hash": genesis,
+            "identity_block_number": 0,
+        }
+
+    def _library_record(self, session):
+        return {
+            "role": "solidity_library",
+            "qualified_identity": "src/Math.sol:Math",
+            "address": "0x" + "11" * 20,
+            "artifact": str(self.root / "out" / "Math.sol" / "Math.json"),
+            "artifact_sha256": "artifact-sha",
+            "runtime_verification": "MATCHED",
+            "runtime_code_hash": "runtime-sha",
+            "deployment_transaction": "0x" + "aa" * 32,
+            "last_verified_at": "2026-11-27T10:00:00+00:00",
+            "reuse_permitted": True,
+            "network": {
+                "project_id": session["project_id"],
+                "network_session_id": session["id"],
+                "chain_id": session["chain_id"],
+                "genesis_hash": session["genesis_hash"],
+                "identity_block_hash": session["identity_block_hash"],
+            },
+        }
+
     def test_deps_json_emits_machine_readable_graph_without_human_prefix(self):
         output = io.StringIO()
         with patch.object(
@@ -70,6 +104,72 @@ class DeploymentGraphCliTests(unittest.TestCase):
         self.assertEqual(payload["deployment_graph"]["execution_status"], "NOT_EXECUTED")
         self.assertEqual(payload["deployment_graph"]["summary"]["nodes"], 3)
         self.assertNotIn("Dependency / inheritance map", output.getvalue())
+        self.assertTrue(lk._machine_readable_stdout("deps", [str(self.root), "--json"]))
+        self.assertFalse(lk._machine_readable_stdout("deps", [str(self.root)]))
+
+    def test_deps_json_enriches_graph_from_matching_live_session_records(self):
+        session = self._managed_session()
+        manager = Mock()
+        manager.list.return_value = [{**session, "process_owned": True, "status": "running"}]
+        manager.get_deployments.return_value = {"math": self._library_record(session)}
+        output = io.StringIO()
+        with patch.object(
+            lk.project_tools, "build_dependency_graph", return_value=self.graph
+        ), patch.object(lk, "_project_network_manager", return_value=manager), patch.object(
+            lk, "_artifact_file_sha256", return_value="artifact-sha"
+        ), contextlib.redirect_stdout(output):
+            result = lk.run_deps([str(self.root), "--json"], {"_active_network_session": session})
+
+        self.assertEqual(result, 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["deployment_graph"]["network_identity"]["network_session_id"], "session-a")
+        node = next(item for item in payload["deployment_graph"]["nodes"] if item["id"] == "src/Math.sol:Math")
+        self.assertEqual(node["address"], "0x" + "11" * 20)
+        self.assertEqual(node["deployment_status"], "DEPLOYED_RUNTIME_MATCHED_AT_LAST_CHECK")
+        evidence = next(item for item in node["evidence"] if item.get("origin") == "managed-network-deployment-registry")
+        self.assertEqual(evidence["deployment_transaction"], "0x" + "aa" * 32)
+        self.assertEqual(evidence["artifact_current_match"], True)
+        manager.get_deployments.assert_called_once_with("session-a")
+
+    def test_deps_does_not_read_deployments_from_unowned_or_stale_session(self):
+        session = self._managed_session()
+        manager = Mock()
+        manager.list.return_value = [{**session, "process_owned": False, "status": "stale-or-unowned"}]
+        manager.get_deployments.return_value = {"math": self._library_record(session)}
+        output = io.StringIO()
+        with patch.object(
+            lk.project_tools, "build_dependency_graph", return_value=self.graph
+        ), patch.object(lk, "_project_network_manager", return_value=manager), contextlib.redirect_stdout(output):
+            result = lk.run_deps([str(self.root), "--json"], {"_active_network_session": session})
+
+        self.assertEqual(result, 0)
+        payload = json.loads(output.getvalue())
+        self.assertIsNone(payload["deployment_graph"]["network_identity"])
+        node = next(item for item in payload["deployment_graph"]["nodes"] if item["id"] == "src/Math.sol:Math")
+        self.assertIsNone(node["address"])
+        self.assertEqual(node["deployment_status"], "NOT_TESTED")
+        self.assertTrue(any("process" in warning for warning in payload["deployment_graph"]["warnings"]))
+        manager.get_deployments.assert_not_called()
+
+    def test_deps_json_does_not_attach_deployment_when_artifact_hash_changed(self):
+        session = self._managed_session()
+        manager = Mock()
+        manager.list.return_value = [{**session, "process_owned": True, "status": "running"}]
+        manager.get_deployments.return_value = {"math": self._library_record(session)}
+        output = io.StringIO()
+        with patch.object(
+            lk.project_tools, "build_dependency_graph", return_value=self.graph
+        ), patch.object(lk, "_project_network_manager", return_value=manager), patch.object(
+            lk, "_artifact_file_sha256", return_value="different-artifact-sha"
+        ), contextlib.redirect_stdout(output):
+            result = lk.run_deps([str(self.root), "--json"], {"_active_network_session": session})
+
+        self.assertEqual(result, 0)
+        payload = json.loads(output.getvalue())
+        node = next(item for item in payload["deployment_graph"]["nodes"] if item["id"] == "src/Math.sol:Math")
+        self.assertIsNone(node["address"])
+        self.assertEqual(node["deployment_status"], "DEPLOYED_ARTIFACT_UNVERIFIED")
+        self.assertTrue(any(item.get("origin") == "managed-network-deployment-registry" for item in node["evidence"]))
 
     def test_deps_human_output_surfaces_graph_status_and_never_calls_it_executed(self):
         output = io.StringIO()

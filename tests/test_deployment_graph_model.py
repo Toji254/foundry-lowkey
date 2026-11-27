@@ -96,6 +96,9 @@ class DeploymentGraphModelTests(unittest.TestCase):
             "address": address,
             "runtime_verification": "MATCHED",
             "reuse_permitted": True,
+            "artifact_current_match": True,
+            "deployment_transaction": "0x" + "aa" * 32,
+            "last_verified_at": "2026-11-27T10:00:00+00:00",
             "network": self._network(),
         }
         graph = build_dependency_graph(
@@ -103,7 +106,10 @@ class DeploymentGraphModelTests(unittest.TestCase):
         ).to_dict()
         library = next(node for node in graph["nodes"] if node["id"] == "src/Math.sol:Math")
         self.assertEqual(library["address"], address)
-        self.assertEqual(library["deployment_status"], "DEPLOYED_RUNTIME_VERIFIED")
+        self.assertEqual(library["deployment_status"], "DEPLOYED_RUNTIME_MATCHED_AT_LAST_CHECK")
+        self.assertEqual(library["evidence"][-1]["origin"], "managed-network-deployment-registry")
+        self.assertEqual(library["evidence"][-1]["deployment_transaction"], "0x" + "aa" * 32)
+        self.assertEqual(library["evidence"][-1]["last_verified_at"], "2026-11-27T10:00:00+00:00")
         self.assertEqual(library["network_identity"]["network_session_id"], "session-a")
 
     def test_same_address_same_chain_and_genesis_in_another_session_is_not_reused(self):
@@ -141,6 +147,25 @@ class DeploymentGraphModelTests(unittest.TestCase):
         library = next(node for node in graph["nodes"] if node["id"] == "src/Math.sol:Math")
         self.assertIsNone(library["address"])
         self.assertEqual(library["deployment_status"], "NOT_DEPLOYED")
+
+    def test_historical_runtime_match_does_not_attach_address_when_artifact_changed(self):
+        address = "0x" + "11" * 20
+        changed = {
+            "role": "solidity_library",
+            "qualified_identity": "src/Math.sol:Math",
+            "address": address,
+            "runtime_verification": "MATCHED",
+            "reuse_permitted": True,
+            "artifact_current_match": False,
+            "network": self._network(),
+        }
+        graph = build_dependency_graph(
+            self._report(), network_identity=self._network(), deployment_records=[changed],
+        ).to_dict()
+        library = next(node for node in graph["nodes"] if node["id"] == "src/Math.sol:Math")
+        self.assertIsNone(library["address"])
+        self.assertEqual(library["deployment_status"], "DEPLOYED_ARTIFACT_UNVERIFIED")
+        self.assertTrue(any(item.get("origin") == "managed-network-deployment-registry" for item in library["evidence"]))
 
     def test_library_cycle_blocks_the_linear_deployment_plan(self):
         report = self._report()

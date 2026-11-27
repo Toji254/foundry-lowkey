@@ -25342,7 +25342,134 @@ def run_native_project_command(config, command_name, args):
     return returncode
 
 
-def run_deps(args):
+def _dependency_graph_network_snapshot(config, root):
+    """Return only a process-verified managed session and its own deployments."""
+    if not isinstance(config, dict):
+        return None, None, []
+    if config.get("_explicit_rpc_unscoped"):
+        return None, None, [
+            "An explicit unscoped RPC detached the managed network context; deployment reuse was not assessed."
+        ]
+    if config.get("_network_selection_error"):
+        return None, None, [
+            "Managed network selection is unresolved; deployment records were not read."
+        ]
+    selected = config.get("_active_network_session")
+    if not isinstance(selected, dict) or not selected.get("id"):
+        return None, None, []
+
+    session_id = str(selected.get("id"))
+    try:
+        manager = _project_network_manager(root)
+        live_sessions = manager.list()
+    except Exception as error:
+        return None, None, [
+            f"Managed network identity could not be revalidated ({type(error).__name__}: {error}); deployment records were not read."
+        ]
+
+    live = next(
+        (item for item in live_sessions if str(item.get("id") or "") == session_id),
+        None,
+    )
+    if not isinstance(live, dict):
+        return None, None, [
+            "The previously selected managed session is no longer registered; deployment records were not read."
+        ]
+
+    def parse_chain_id(value):
+        try:
+            text_value = str(value).strip()
+            return int(text_value, 16) if text_value.lower().startswith("0x") else int(text_value)
+        except (TypeError, ValueError):
+            return None
+
+    selected_chain = parse_chain_id(selected.get("chain_id"))
+    live_chain = parse_chain_id(live.get("chain_id"))
+    selected_rpc = str(selected.get("rpc") or "").rstrip("/")
+    live_rpc = str(live.get("rpc") or "").rstrip("/")
+    selected_genesis = str(selected.get("genesis_hash") or "").lower()
+    live_genesis = str(live.get("genesis_hash") or "").lower()
+    if not (
+        live.get("process_owned") is True
+        and str(live.get("status") or "").lower() == "running"
+        and str(live.get("project_id") or "") == str(selected.get("project_id") or "")
+        and selected_chain is not None
+        and selected_chain == live_chain
+        and selected_genesis
+        and selected_genesis == live_genesis
+        and selected_rpc
+        and selected_rpc == live_rpc
+    ):
+        return None, None, [
+            "The selected session no longer matches its owned process, project, chain, genesis and RPC identity; deployment records were not read."
+        ]
+
+    live_identity_block = str(
+        live.get("identity_block_hash") or live.get("genesis_hash") or ""
+    ).lower()
+    selected_identity_block = str(
+        selected.get("identity_block_hash") or selected.get("genesis_hash") or ""
+    ).lower()
+    if not live_identity_block or live_identity_block != selected_identity_block:
+        return None, None, [
+            "The selected session identity block no longer matches the managed registry; deployment records were not read."
+        ]
+    identity = {
+        "project_id": str(live.get("project_id")),
+        "project_root": str(Path(root).expanduser().resolve()),
+        "network_session_id": session_id,
+        "session_kind": str(live.get("session_kind") or "managed-anvil"),
+        "chain_id": live_chain,
+        # Supporting records persist the pinned identity block in this legacy field.
+        "genesis_hash": live_identity_block,
+        "identity_block_hash": live_identity_block,
+        "identity_block_number": live.get("identity_block_number"),
+        "rpc_fingerprint": live.get("rpc_fingerprint"),
+        "rpc_origin": live.get("rpc_origin"),
+        "reuse_permitted": True,
+    }
+    try:
+        stored = manager.get_deployments(session_id)
+    except Exception as error:
+        return identity, None, [
+            f"Managed deployment registry could not be read ({type(error).__name__}: {error}); deployment states remain NOT_TESTED."
+        ]
+    if not isinstance(stored, dict):
+        return identity, None, [
+            "Managed deployment registry returned malformed data; deployment states remain NOT_TESTED."
+        ]
+
+    records = []
+    for record in stored.values():
+        if not isinstance(record, dict):
+            continue
+        if record.get("role") not in {"supporting_contract", "solidity_library"}:
+            continue
+        item = dict(record)
+        artifact_path = item.get("artifact")
+        expected_hash = str(item.get("artifact_sha256") or "").lower()
+        actual_hash = _artifact_file_sha256(artifact_path) if artifact_path else None
+        item["artifact_current_match"] = bool(
+            expected_hash and actual_hash and expected_hash == str(actual_hash).lower()
+        )
+        records.append(item)
+    return identity, records, []
+
+
+def _machine_readable_stdout(command, args):
+    """Whether this command has an exact stdout JSON contract for the invocation."""
+    values = list(args or [])
+    canonical = _canonical_help_command(command)
+    if canonical == "verification":
+        return bool(
+            len(values) > 1
+            and str(values[0]).strip().lower() == "engines"
+            and "--json" in values[1:]
+        )
+    return canonical in {"proxy", "deps"} and "--json" in values
+
+
+def run_deps(args, config=None):
     raw_args = list(args or [])
     json_mode = "--json" in raw_args
     positional = [item for item in raw_args if item != "--json"]
@@ -25379,6 +25506,28 @@ def run_deps(args):
     except Exception as exc:
         return fail(f"Error: dependency analysis failed for {root}: {exc}")
 
+    network_identity, deployment_records, network_warnings = _dependency_graph_network_snapshot(
+        config, root
+    )
+    compiler_report = graph.get("compiler_dependencies")
+    if isinstance(compiler_report, dict):
+        try:
+            try:
+                import deployment_graph as deployment_graph_model
+            except ImportError:
+                from lowkey import deployment_graph as deployment_graph_model
+            graph["deployment_graph"] = deployment_graph_model.build_dependency_graph(
+                compiler_report,
+                network_identity=network_identity,
+                deployment_records=deployment_records,
+            ).to_dict()
+        except Exception as error:
+            graph.setdefault("deployment_graph", {}).setdefault("warnings", []).append(
+                f"Network-aware dependency graph could not be refreshed: {type(error).__name__}: {error}"
+            )
+    if network_warnings and isinstance(graph.get("deployment_graph"), dict):
+        graph["deployment_graph"].setdefault("warnings", []).extend(network_warnings)
+
     if json_mode:
         print(json.dumps(graph, indent=2, sort_keys=True))
         return 0
@@ -25408,6 +25557,15 @@ def run_deps(args):
             f"planning {typed_graph.get('planning_status', 'UNVERIFIED')}, "
             f"execution {typed_graph.get('execution_status', 'NOT_EXECUTED')}."
         )
+        active_identity = typed_graph.get("network_identity")
+        if isinstance(active_identity, dict):
+            print(
+                "Network context: "
+                f"{active_identity.get('network_session_id')} "
+                f"(chain {active_identity.get('chain_id')}); registry records are session-scoped."
+            )
+        for warning in typed_graph.get("warnings") or []:
+            print("Deployment graph warning: " + str(warning))
     typed_edges = graph.get("typed_edges") or []
     if typed_edges:
         print("\nCompiler-backed relationships (source-matched solc evidence):")
@@ -33292,7 +33450,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
                 return fail(f"Generator runtime is not installed: {exc}. Re-run install.sh.")
         return generator_module.run_generate(config, args)
     elif cmd=="poc": return run_audit_poc(config,args)
-    elif cmd=="deps": run_deps(args)
+    elif cmd=="deps": return run_deps(args, config)
     elif cmd=="inspect": return run_inspect(config,args)
     elif cmd=="layout": run_layout(args)
     elif cmd=="gas": run_gas(config,args)
@@ -33845,18 +34003,7 @@ def main():
     footer_status = result_code
     # Machine-readable engine inventory must be valid JSON without Lowkey's
     # normal recommendation footer appended to stdout.
-    machine_readable_verification = (
-        (
-            _canonical_help_command(command) == "verification"
-            and len(sys.argv) > 2
-            and str(sys.argv[2]).strip().lower() == "engines"
-            and "--json" in sys.argv[3:]
-        )
-        or (
-            _canonical_help_command(command) == "proxy"
-            and "--json" in sys.argv[2:]
-        )
-    )
+    machine_readable_verification = _machine_readable_stdout(command, sys.argv[2:])
     if not machine_readable_verification:
         _print_recommended_next_commands(
             command_name if 'command_name' in locals() else command,
