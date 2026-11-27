@@ -1028,6 +1028,7 @@ class CliConsistencyTests(unittest.TestCase):
         config = {"target": target, "target_contract": "Vault", "actor": None, "wallets": {}}
         with patch.object(lk, "load_abi", return_value=abi), \
              patch.object(lk, "prepare_cast_call_arguments", side_effect=lambda _config, _item, values: values), \
+             patch.object(lk, "anvil_rpc_info", return_value=None), \
              patch.object(lk, "cast_output") as cast:
             result = lk.run_cast([
                 "send", "setValue", "10", "--from", "0x1111111111111111111111111111111111111111", "--yes"
