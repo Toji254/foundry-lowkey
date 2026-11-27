@@ -6189,6 +6189,107 @@ def run_receipt(config, tx_hash=None, args=None):
     )
     return 0
 
+def run_opcodes(config, args=None):
+    """Run static opcode inspection or an explicitly requested transaction opcode trace."""
+    args = list(args or [])
+    if "--tx" not in args:
+        if opcode_intelligence is None:
+            return fail("Opcode intelligence is not installed. Re-run install.sh.")
+        return run_opcodes(config, args)
+
+    index = args.index("--tx")
+    if index + 1 >= len(args):
+        return fail("Usage: lk opcodes --tx <transaction-hash> [--fork <fork>] [--stack] [--memory] [--learn]")
+    tx_hash = args[index + 1]
+    del args[index:index + 2]
+    if not is_tx_hash(tx_hash):
+        return fail("Error: invalid transaction hash for opcode trace.")
+
+    fork = "osaka"
+    include_stack = False
+    include_memory = False
+    learn = False
+    max_steps = 100000
+    cursor = 0
+    while cursor < len(args):
+        option = args[cursor]
+        if option == "--fork" and cursor + 1 < len(args):
+            fork = args[cursor + 1]
+            cursor += 2
+        elif option == "--stack":
+            include_stack = True
+            cursor += 1
+        elif option == "--memory":
+            include_memory = True
+            cursor += 1
+        elif option == "--learn":
+            learn = True
+            cursor += 1
+        elif option == "--max-steps" and cursor + 1 < len(args):
+            try:
+                max_steps = int(args[cursor + 1])
+            except ValueError:
+                return fail("--max-steps must be a positive integer.")
+            if max_steps < 1 or max_steps > opcode_intelligence.MAX_TRACE_STEPS:
+                return fail(f"--max-steps must be between 1 and {opcode_intelligence.MAX_TRACE_STEPS}.")
+            cursor += 2
+        else:
+            return fail(f"Unknown opcode trace option: {option}")
+
+    rpc = effective_rpc(config)
+    if not rpc:
+        return fail("No RPC is selected. Configure a project RPC or pass a connected local Anvil context.")
+    trace_options = {
+        "disableStack": not include_stack,
+        "disableMemory": not include_memory,
+        "disableStorage": True,
+    }
+    response = _rpc_json_response(
+        rpc, "debug_traceTransaction", [tx_hash, trace_options], timeout=60,
+    )
+    if not isinstance(response, dict) or response.get("error") or not isinstance(response.get("result"), dict):
+        detail = response.get("error") if isinstance(response, dict) else None
+        return fail("RPC does not provide a usable debug_traceTransaction structLogs response."
+                    + (f" Detail: {detail}" if detail else ""))
+    trace_result = response["result"]
+    struct_logs = trace_result.get("structLogs")
+    if not isinstance(struct_logs, list):
+        return fail("RPC trace did not include a structLogs array; this backend may use an unsupported tracer.")
+
+    tx = rpc_json(rpc, "eth_getTransactionByHash", [tx_hash])
+    receipt = rpc_json(rpc, "eth_getTransactionReceipt", [tx_hash])
+    bytecode = None
+    if isinstance(tx, dict) and isinstance(tx.get("to"), str) and isinstance(receipt, dict):
+        try:
+            block_number = int(str(receipt.get("blockNumber") or "0x0"), 16)
+            pre_block = max(0, block_number - 1)
+            candidate = rpc_json(rpc, "eth_getCode", [tx["to"], hex(pre_block)])
+            if isinstance(candidate, str) and candidate.startswith("0x"):
+                bytecode = candidate
+        except (TypeError, ValueError):
+            bytecode = None
+
+    result = opcode_intelligence.normalize_struct_logs(
+        struct_logs,
+        fork=fork,
+        backend="debug_traceTransaction/structLogs",
+        bytecode=bytecode,
+        include_stack=include_stack,
+        include_memory=include_memory,
+        max_steps=max_steps,
+    )
+    result["transaction_hash"] = tx_hash
+    result["bytecode_validation"] = "PRESTATE_RUNTIME_CODE" if bytecode is not None else "UNAVAILABLE"
+    if learn and result.get("supported"):
+        result["explanation"] = (
+            "Each OpcodeStep is one interpreter instruction. PC values are byte offsets; "
+            "stack and memory are included only when explicitly requested and supplied by the RPC. "
+            "This is execution evidence, not a vulnerability verdict."
+        )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("supported") else 2
+
+
 def run_trace(config,args=None):
     args=list(args or [])
     tx_hash=args.pop(0) if args and args[0].startswith("0x") else last_transaction(config)
@@ -28755,8 +28856,8 @@ COMMAND_HELP = {
     "disasm": _help_entry("Disassemble bytecode into EVM instructions.", "lk disasm [args...]", "lk disasm 0x...", "Use it when source or ABI evidence is unavailable.", related=["lk selectors", "lk tx"]),
     "opcodes": _help_entry(
         "Inspect fork-aware EVM opcode metadata or decode supplied bytecode without executing it.",
-        "lk opcodes --spec <OPCODE> [--fork <fork>] | lk opcodes --bytecode <0x...> [--fork <fork>]",
-        "lk opcodes --spec PUSH0 --fork shanghai --learn",
+        "lk opcodes --spec <OPCODE> | --bytecode <0x...> | --tx <HASH> [--fork <fork>] [--stack] [--memory] [--learn]",
+        "lk opcodes --tx 0x... --fork cancun --stack --learn",
         "Use it for explicit opcode/fork inspection. Static bytecode decoding is not a transaction execution trace or vulnerability verdict.",
         related=["lk disasm", "lk trace", "lk tx"],
     ),
