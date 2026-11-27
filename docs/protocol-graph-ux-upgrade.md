@@ -38,6 +38,7 @@ The intended visual direction follows the user's dark hybrid Figma reference. Th
 
 - Fresh Foundry compiler AST facts provide C3 linearized base order and base-function references.
 - The inspector surfaces compiler C3 order, virtual/override facts and override relationships. If fresh compiler AST is unavailable, the UI says so rather than guessing.
+- When a source call is independently indexed as virtual and unresolved at the same compiler source location, Lowkey can add a separate `VIRTUAL_DISPATCH_CANDIDATE` edge to the most-derived implemented function in that caller contract's C3 context. The original `CALLS` edge remains unresolved. Calls marked `SUPER` are excluded from this enrichment; a derived runtime type can still override virtual candidates, so this is not a deployed dispatch conclusion.
 - Struct fields, enum members and file-level user-defined value types are navigable. Function parameters/return values and state/struct fields link to unique local type declarations when the source index can establish an unambiguous match.
 - Type expansion is one level at a time, preventing automatic recursive cycles.
 
