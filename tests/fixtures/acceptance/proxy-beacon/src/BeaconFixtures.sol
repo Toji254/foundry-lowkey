@@ -5,6 +5,11 @@ interface IBeaconImplementation {
     function implementation() external view returns (address);
 }
 
+interface IBeaconProxyLogic {
+    function value() external view returns (uint256);
+    function version() external view returns (uint256);
+}
+
 contract BeaconLogicV1 {
     uint256 public value;
 

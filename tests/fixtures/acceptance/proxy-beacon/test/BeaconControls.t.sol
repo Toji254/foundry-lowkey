@@ -8,7 +8,8 @@ import {
     BeaconProxyFixture,
     BeaconLogicV1,
     BeaconLogicV2,
-    BeaconUpgradeActor
+    BeaconUpgradeActor,
+    IBeaconProxyLogic
 } from "../src/BeaconFixtures.sol";
 
 contract BeaconControlsTest is LowkeyForgeStateDiffRecorder {
@@ -28,8 +29,8 @@ contract BeaconControlsTest is LowkeyForgeStateDiffRecorder {
         require(beacon.owner() == owner, "BEACON_OWNER_PRESTATE_MISMATCH");
         require(beacon.implementation() == implementationV1, "BEACON_IMPLEMENTATION_PRESTATE_MISMATCH");
         require(proxyA.beacon() == address(beacon) && proxyB.beacon() == address(beacon), "PROXIES_DO_NOT_SHARE_BEACON");
-        require(proxyA.version() == 1 && proxyB.version() == 1, "PROXY_V1_ROUTE_MISMATCH");
-        require(proxyA.value() == 111 && proxyB.value() == 222, "PROXY_STORAGE_PRESTATE_MISMATCH");
+        require(IBeaconProxyLogic(address(proxyA)).version() == 1 && IBeaconProxyLogic(address(proxyB)).version() == 1, "PROXY_V1_ROUTE_MISMATCH");
+        require(IBeaconProxyLogic(address(proxyA)).value() == 111 && IBeaconProxyLogic(address(proxyB)).value() == 222, "PROXY_STORAGE_PRESTATE_MISMATCH");
         require(actor.successfulCalls() == 0, "ACTOR_METRIC_PRESTATE_MISMATCH");
 
         bytes memory upgradeCall = abi.encodeWithSelector(PairedBeacon.upgradeTo.selector, implementationV2);
@@ -48,8 +49,8 @@ contract BeaconControlsTest is LowkeyForgeStateDiffRecorder {
         require(!controlSucceeded, "SECURE_BEACON_ACCEPTED_UNAUTHORIZED_UPGRADE");
         require(actor.successfulCalls() == 0, "SECURE_BEACON_METRIC_CHANGED");
         require(beacon.implementation() == implementationV1, "SECURE_BEACON_IMPLEMENTATION_CHANGED");
-        require(proxyA.version() == 1 && proxyB.version() == 1, "SECURE_BEACON_CHANGED_PROXY_ROUTE");
-        require(proxyA.value() == 111 && proxyB.value() == 222, "SECURE_BEACON_CHANGED_PROXY_STORAGE");
+        require(IBeaconProxyLogic(address(proxyA)).version() == 1 && IBeaconProxyLogic(address(proxyB)).version() == 1, "SECURE_BEACON_CHANGED_PROXY_ROUTE");
+        require(IBeaconProxyLogic(address(proxyA)).value() == 111 && IBeaconProxyLogic(address(proxyB)).value() == 222, "SECURE_BEACON_CHANGED_PROXY_STORAGE");
         require(controlEvents.length == 0, "SECURE_BEACON_EMITTED_UPGRADE_EVENT");
         _lowkeyWriteTrace(".audit/godmode/control-beacon-state-diff.json", controlEvents);
 
@@ -68,8 +69,8 @@ contract BeaconControlsTest is LowkeyForgeStateDiffRecorder {
         require(attackSucceeded, "VULNERABLE_BEACON_REJECTED_UNAUTHORIZED_UPGRADE");
         require(actor.successfulCalls() == 1, "VULNERABLE_BEACON_METRIC_MISSING");
         require(beacon.implementation() == implementationV2, "BEACON_IMPLEMENTATION_NOT_REPLACED");
-        require(proxyA.version() == 2 && proxyB.version() == 2, "SHARED_BEACON_DID_NOT_UPDATE_BOTH_PROXIES");
-        require(proxyA.value() == 111 && proxyB.value() == 222, "BEACON_UPGRADE_DID_NOT_PRESERVE_PROXY_STORAGE");
+        require(IBeaconProxyLogic(address(proxyA)).version() == 2 && IBeaconProxyLogic(address(proxyB)).version() == 2, "SHARED_BEACON_DID_NOT_UPDATE_BOTH_PROXIES");
+        require(IBeaconProxyLogic(address(proxyA)).value() == 111 && IBeaconProxyLogic(address(proxyB)).value() == 222, "BEACON_UPGRADE_DID_NOT_PRESERVE_PROXY_STORAGE");
         require(attackEvents.length == 1, "BEACON_UPGRADED_EVENT_MISSING");
         require(attackEvents[0].emitter == address(beacon), "BEACON_EVENT_EMITTER_MISMATCH");
         require(
@@ -109,8 +110,8 @@ contract BeaconControlsTest is LowkeyForgeStateDiffRecorder {
         beacon.upgradeTo(implementationV2);
 
         require(beacon.implementation() == implementationV2, "AUTHORIZED_BEACON_UPGRADE_FAILED");
-        require(proxyA.version() == 2 && proxyB.version() == 2, "AUTHORIZED_SHARED_BEACON_UPGRADE_FAILED");
-        require(proxyA.value() == 111 && proxyB.value() == 222, "AUTHORIZED_BEACON_UPGRADE_CORRUPTED_STORAGE");
+        require(IBeaconProxyLogic(address(proxyA)).version() == 2 && IBeaconProxyLogic(address(proxyB)).version() == 2, "AUTHORIZED_SHARED_BEACON_UPGRADE_FAILED");
+        require(IBeaconProxyLogic(address(proxyA)).value() == 111 && IBeaconProxyLogic(address(proxyB)).value() == 222, "AUTHORIZED_BEACON_UPGRADE_CORRUPTED_STORAGE");
     }
 
     function _slotAddress(address target, bytes32 slot) private view returns (address value) {
