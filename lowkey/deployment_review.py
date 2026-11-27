@@ -589,11 +589,10 @@ def _normalized_hardhat_network_config(
 
 
 def _version_pair(value: str, label: str) -> tuple[int, int, int]:
-    match = re.search(r"(?:^|\\s|v)(\\d+)\\.(\\d+)\\.(\\d+)(?:\\b|$)", str(value or ""))
+    match = re.search(r"(?:^|\s|v)(\d+)\.(\d+)\.(\d+)(?:\b|$)", str(value or ""))
     if not match:
         raise ValueError(f"{label} version could not be established")
     return tuple(int(part) for part in match.groups())
-
 
 def build_hardhat_script_review(
     project_root: str | Path,
