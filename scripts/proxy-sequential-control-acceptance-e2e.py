@@ -607,6 +607,312 @@ def run_uups_uuid_lockout_campaign(
         raise
 
 
+
+def make_implementation_initializer_manifest(
+    forge: str,
+    fork_block: int,
+    implementation: str,
+    actor: str,
+) -> dict[str, Any]:
+    test_name = "test_paired_implementation_initializer_lock_prevents_takeover"
+    selector = "0xc4d66de8"  # initialize(address)
+    argv = [
+        forge, "test", "--match-path", "test/ProxySequentialControls.t.sol",
+        "--match-test", test_name, "--fork-url", RPC,
+        "--fork-block-number", str(fork_block), "-vv",
+    ]
+    return {
+        "trace_backend": "forge-state-diff",
+        "paired_forge_experiment": True,
+        "target_authenticity": "fixture",
+        "family": "proxy",
+        "proxy_family": "IMPLEMENTATION_INITIALIZATION",
+        "non_economic": True,
+        "expected_chain_id": 31337,
+        "expected_fork_block": fork_block,
+        "target_address": implementation,
+        "function": "initialize(address)",
+        "same_calls_id": "p0-implementation-initializer-lock-v1",
+        "metric_name": "implementation_takeover_accepted",
+        "prestate_addresses": [implementation.lower(), actor.lower()],
+        "prestate_slots": [
+            {"address": implementation, "slot": "0x0"},
+            {"address": implementation, "slot": "0x1"},
+            {"address": actor, "slot": "0x0"},
+        ],
+        "metric_addresses": [actor],
+        "metric_storage": {
+            "address": actor, "slot": "0x0", "kind": "uint256_delta",
+            "description": "ImplementationInitializationActor.takeoverAccepted; increments only when direct initialize(address) succeeds.",
+        },
+        "scenario_parameters": [{
+            "name": "implementation_initialization_lock",
+            "address": implementation,
+            "slot": "0x0",
+            "control_value": "0x" + ("0" * 62) + "ff",
+            "attack_value": "0x" + ("0" * 64),
+            "description": "The sole scenario difference: initializedVersion is locked to uint8 max versus zero on the same deployed implementation.",
+        }],
+        "trace_expectations": [{
+            "address": implementation, "selector": selector,
+            "control_min_calls": 1, "control_max_calls": 1,
+            "attack_min_calls": 1, "attack_max_calls": 1,
+            "description": "The same unrelated actor sends identical initialize(address) calldata directly to the same implementation in both branches.",
+        }],
+        "evidence_requirements": {"call_tree": "exact", "calldata": "exact", "storage": "derived"},
+        "require_trace_storage": True,
+        "control": {
+            "harness": "test/ProxySequentialControls.t.sol",
+            "support_files": ["src/ProxySequentialFixtures.sol", "src/LowkeyForgeStateDiffRecorder.sol"],
+            "state_diff_file": ".audit/godmode/control-implementation-initializer-state-diff.json",
+            "argv": argv, "semantic_check_argv": argv, "semantic_check_test": test_name,
+        },
+        "attack": {
+            "harness": "test/ProxySequentialControls.t.sol",
+            "support_files": ["src/ProxySequentialFixtures.sol", "src/LowkeyForgeStateDiffRecorder.sol"],
+            "state_diff_file": ".audit/godmode/attack-implementation-initializer-state-diff.json",
+            "argv": argv, "semantic_check_argv": argv, "semantic_check_test": test_name,
+        },
+        "fidelity_sources": [
+            "test/ProxySequentialControls.t.sol",
+            "src/ProxySequentialFixtures.sol",
+            "src/LowkeyForgeStateDiffRecorder.sol",
+        ],
+        "notes": (
+            "Fixture-only direct implementation initializer-locking paired control. "
+            "The secure branch applies the initialized-version lock before the call; the vulnerable "
+            "branch restores the same deployment's uninitialized state. Result remains SIMULATED_BREAK."
+        ),
+    }
+
+
+
+
+def run_implementation_initializer_campaign(
+    lk: str,
+    root: Path,
+    env: dict[str, str],
+    manifest_name: str,
+    evidence_root: Path,
+) -> dict[str, Any]:
+    campaign_name = "implementation-initializer"
+    destination = evidence_root / campaign_name
+    destination.mkdir(parents=True, exist_ok=True)
+    manifest_path = root / manifest_name
+    if not manifest_path.is_file():
+        raise AssertionError(f"Implementation initializer manifest is missing: {manifest_path}")
+    shutil.copy2(manifest_path, destination / "control-manifest.json")
+
+    freeze_path = ".audit/godmode/implementation-initializer.freeze.json"
+    validation_report_path = ".audit/godmode/implementation-initializer-validation.json"
+    report_path = ".audit/godmode/implementation-initializer-control.json"
+    raw_paths = {
+        "control": root / ".audit" / "godmode" / "control-implementation-initializer-state-diff.json",
+        "attack": root / ".audit" / "godmode" / "attack-implementation-initializer-state-diff.json",
+    }
+    common = [
+        lk, "proxy", "campaign",
+        "--manifest", manifest_name,
+        "--root", str(root),
+        "--rpc-url", RPC,
+        "--freeze-file", freeze_path,
+    ]
+
+    def capture_step(name: str, argv: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(
+            argv, cwd=root, env=env, text=True, capture_output=True,
+            timeout=timeout, check=False,
+        )
+        (destination / f"{name}-stdout.txt").write_text(result.stdout or "", encoding="utf-8")
+        (destination / f"{name}-stderr.txt").write_text(result.stderr or "", encoding="utf-8")
+        if result.returncode != 0:
+            raise AssertionError(
+                f"Implementation initializer {name} command failed ({result.returncode}): {argv!r}\n"
+                f"stdout:\n{(result.stdout or '')[-12000:]}\n"
+                f"stderr:\n{(result.stderr or '')[-12000:]}"
+            )
+        return result
+
+    try:
+        capture_step(
+            "freeze",
+            common + ["--freeze"],
+            360,
+        )
+        frozen = root / freeze_path
+        if not frozen.is_file():
+            raise AssertionError("Implementation initializer frozen manifest was not written.")
+        shutil.copy2(frozen, destination / "freeze.json")
+
+        capture_step(
+            "validate",
+            common + ["--validate", "--output", validation_report_path],
+            360,
+        )
+        validation = root / validation_report_path
+        if not validation.is_file():
+            raise AssertionError("Implementation initializer freeze-validation report was not written.")
+        validation_payload = json.loads(validation.read_text(encoding="utf-8"))
+        if validation_payload.get("status") != "PROPOSED" or validation_payload.get("freeze_valid") is not True or validation_payload.get("execution_attempted") is not False:
+            raise AssertionError(f"Implementation initializer manifest did not validate without execution: {validation_payload}")
+        shutil.copy2(validation, destination / "freeze-validation.json")
+
+        # Save stdout/stderr and both raw state-diff files before interpreting
+        # the verdict, so a failed evidence gate remains diagnosable after the
+        # enclosing TemporaryDirectory is removed.
+        execution = subprocess.run(
+            common + ["--output", report_path, "--non-economic"],
+            cwd=root, env=env, text=True, capture_output=True,
+            timeout=900, check=False,
+        )
+        (destination / "execute-stdout.txt").write_text(execution.stdout or "", encoding="utf-8")
+        (destination / "execute-stderr.txt").write_text(execution.stderr or "", encoding="utf-8")
+        for scenario, raw_path in raw_paths.items():
+            if raw_path.is_file():
+                shutil.copy2(raw_path, destination / f"{scenario}-state-diff.json")
+        report_file = root / report_path
+        if report_file.is_file():
+            shutil.copy2(report_file, destination / "control-report.json")
+        if execution.returncode != 0:
+            raise AssertionError(
+                f"Implementation initializer execution command failed ({execution.returncode}).\n"
+                f"stdout:\n{(execution.stdout or '')[-12000:]}\n"
+                f"stderr:\n{(execution.stderr or '')[-12000:]}"
+            )
+        if not report_file.is_file():
+            raise AssertionError("Lowkey proxy campaign did not write the Implementation initializer report.")
+        if not all(raw_path.is_file() for raw_path in raw_paths.values()):
+            missing = [name for name, raw_path in raw_paths.items() if not raw_path.is_file()]
+            raise AssertionError(f"Implementation initializer raw state-diff artifacts are missing: {missing}")
+
+        report = json.loads(report_file.read_text(encoding="utf-8"))
+        if report.get("status") != "SIMULATED_BREAK" or report.get("legacy_status") != "SIMULATED_BREAK":
+            raise AssertionError(f"Implementation initializer fixture must remain SIMULATED_BREAK: {report}")
+        if report.get("target_authenticity") != "fixture" or report.get("control_delta") != 1:
+            raise AssertionError(f"Implementation initializer campaign lacks fixture fidelity or the expected metric delta: {report}")
+        runs = report.get("runs") or {}
+        control, attack = runs.get("control") or {}, runs.get("attack") or {}
+        if control.get("trace_error") or attack.get("trace_error"):
+            raise AssertionError(f"Implementation initializer campaign has a trace error: {runs}")
+        if control.get("metric") != 0 or attack.get("metric") != 1:
+            raise AssertionError(f"Implementation initializer metrics must be secure=0/vulnerable=1: {runs}")
+        if control.get("execution_verified") is not True or attack.get("execution_verified") is not True:
+            raise AssertionError(f"Implementation initializer Forge executions were not independently verified: {runs}")
+        for field in (
+            "state_diff_pair_verified",
+            "same_entry_call_verified",
+            "same_prestate_verified",
+            "same_chain_verified",
+            "same_block_verified",
+            "same_fork_anchor_verified",
+            "trace_delta_verified",
+            "evidence_requirements_verified",
+            "semantic_invariant_verified",
+        ):
+            if report.get(field) is not True:
+                raise AssertionError(f"Implementation initializer pair did not verify {field}: {report}")
+        proof_axes = report.get("proof_axes") or {}
+        if proof_axes.get("fidelity") not in {"synthetic_state", "simulated_caller"}:
+            raise AssertionError(f"Implementation initializer fidelity was not simulation-specific: {proof_axes}")
+        if proof_axes.get("confirmation_eligible") is not False:
+            raise AssertionError(f"Fixture-only Implementation initializer evidence became confirmation eligible: {proof_axes}")
+        return report
+    except Exception as exc:
+        (destination / "failure-diagnostics.txt").write_text(
+            f"{type(exc).__name__}: {exc}\n",
+            encoding="utf-8",
+        )
+        # Preserve anything that exists even when freeze, validation or
+        # execution fails before the normal evidence-copy stage.
+        for scenario, raw_path in raw_paths.items():
+            if raw_path.is_file() and not (destination / f"{scenario}-state-diff.json").is_file():
+                shutil.copy2(raw_path, destination / f"{scenario}-state-diff.json")
+        report_file = root / report_path
+        if report_file.is_file() and not (destination / "control-report.json").is_file():
+            shutil.copy2(report_file, destination / "control-report.json")
+        raise
+
+
+
+def make_implementation_initializer_manifest(
+    forge: str,
+    fork_block: int,
+    implementation: str,
+    actor: str,
+) -> dict[str, Any]:
+    test_name = "test_paired_implementation_initializer_lock_prevents_takeover"
+    selector = "0xc4d66de8"  # initialize(address)
+    argv = [
+        forge, "test", "--match-path", "test/ProxySequentialControls.t.sol",
+        "--match-test", test_name, "--fork-url", RPC,
+        "--fork-block-number", str(fork_block), "-vv",
+    ]
+    return {
+        "trace_backend": "forge-state-diff",
+        "paired_forge_experiment": True,
+        "target_authenticity": "fixture",
+        "family": "proxy",
+        "proxy_family": "IMPLEMENTATION_INITIALIZATION",
+        "non_economic": True,
+        "expected_chain_id": 31337,
+        "expected_fork_block": fork_block,
+        "target_address": implementation,
+        "function": "initialize(address)",
+        "same_calls_id": "p0-implementation-initializer-lock-v1",
+        "metric_name": "implementation_takeover_accepted",
+        "prestate_addresses": [implementation.lower(), actor.lower()],
+        "prestate_slots": [
+            {"address": implementation, "slot": "0x0"},
+            {"address": implementation, "slot": "0x1"},
+            {"address": actor, "slot": "0x0"},
+        ],
+        "metric_addresses": [actor],
+        "metric_storage": {
+            "address": actor, "slot": "0x0", "kind": "uint256_delta",
+            "description": "ImplementationInitializationActor.takeoverAccepted; increments only when direct initialize(address) succeeds.",
+        },
+        "scenario_parameters": [{
+            "name": "implementation_initialization_lock",
+            "address": implementation,
+            "slot": "0x0",
+            "control_value": "0x" + ("0" * 62) + "ff",
+            "attack_value": "0x" + ("0" * 64),
+            "description": "The sole scenario difference: initializedVersion is locked to uint8 max versus zero on the same deployed implementation.",
+        }],
+        "trace_expectations": [{
+            "address": implementation, "selector": selector,
+            "control_min_calls": 1, "control_max_calls": 1,
+            "attack_min_calls": 1, "attack_max_calls": 1,
+            "description": "The same unrelated actor sends identical initialize(address) calldata directly to the same implementation in both branches.",
+        }],
+        "evidence_requirements": {"call_tree": "exact", "calldata": "exact", "storage": "derived"},
+        "require_trace_storage": True,
+        "control": {
+            "harness": "test/ProxySequentialControls.t.sol",
+            "support_files": ["src/ProxySequentialFixtures.sol", "src/LowkeyForgeStateDiffRecorder.sol"],
+            "state_diff_file": ".audit/godmode/control-implementation-initializer-state-diff.json",
+            "argv": argv, "semantic_check_argv": argv, "semantic_check_test": test_name,
+        },
+        "attack": {
+            "harness": "test/ProxySequentialControls.t.sol",
+            "support_files": ["src/ProxySequentialFixtures.sol", "src/LowkeyForgeStateDiffRecorder.sol"],
+            "state_diff_file": ".audit/godmode/attack-implementation-initializer-state-diff.json",
+            "argv": argv, "semantic_check_argv": argv, "semantic_check_test": test_name,
+        },
+        "fidelity_sources": [
+            "test/ProxySequentialControls.t.sol",
+            "src/ProxySequentialFixtures.sol",
+            "src/LowkeyForgeStateDiffRecorder.sol",
+        ],
+        "notes": (
+            "Fixture-only direct implementation initializer-locking paired control. "
+            "The secure branch applies the initialized-version lock before the call; the vulnerable "
+            "branch restores the same deployment's uninitialized state. Result remains SIMULATED_BREAK."
+        ),
+    }
+
+
+
 def check_pair_result(root: Path, report_prefix: str, evidence_dir: Path) -> dict[str, Any]:
     control_report = root / ".audit" / "godmode" / "control.json"
     if not control_report.is_file():
@@ -772,6 +1078,8 @@ def main() -> int:
         uuid_proxy = deploy(
             forge, root, env, "LowkeyUUPSLockoutProxy", uuid_vulnerable_impl, uuid_actor,
         )
+        implementation_initializer = deploy(forge, root, env, "UUPSImplementationInitializationFixture")
+        implementation_initializer_actor = deploy(forge, root, env, "ImplementationInitializationActor")
         fork_block = int(run([cast, "block-number", "--rpc-url", RPC], root, env).stdout.strip(), 0)
 
         env.update({
@@ -782,6 +1090,8 @@ def main() -> int:
             "P0_UUPS_UUID_SECURE_IMPLEMENTATION": uuid_secure_impl,
             "P0_UUPS_UUID_VULNERABLE_IMPLEMENTATION": uuid_vulnerable_impl,
             "P0_UUPS_LOCKOUT_ACTOR": uuid_actor,
+            "P0_IMPLEMENTATION_INITIALIZER_TARGET": implementation_initializer,
+            "P0_IMPLEMENTATION_INITIALIZER_ACTOR": implementation_initializer_actor,
         })
         evidence_root = repo_root / ".audit" / "proxy-sequential-acceptance"
         if evidence_root.exists():
@@ -890,6 +1200,25 @@ def main() -> int:
         if rpc_storage(cast, root, env, uuid_proxy, IMPLEMENTATION_SLOT) != address_word(uuid_vulnerable_impl):
             raise AssertionError("UUPS UUID campaign mutated the source Anvil implementation slot.")
 
+        initializer_manifest = make_implementation_initializer_manifest(
+            forge=forge,
+            fork_block=fork_block,
+            implementation=implementation_initializer,
+            actor=implementation_initializer_actor,
+        )
+        initializer_manifest_name = "implementation-initializer-control.json"
+        (root / initializer_manifest_name).write_text(
+            json.dumps(initializer_manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        if rpc_storage(cast, root, env, implementation_initializer, "0x0") != "0x" + ("0" * 64):
+            raise AssertionError("Implementation initializer fixture did not begin uninitialized.")
+        initializer_case = run_implementation_initializer_campaign(
+            lk, root, env, initializer_manifest_name, evidence_root,
+        )
+        if rpc_storage(cast, root, env, implementation_initializer, "0x0") != "0x" + ("0" * 64):
+            raise AssertionError("Implementation initializer fork campaign mutated source Anvil state.")
+
         report = {
             "gate": "Lowkey independent P0 UUPS authorization, UUID/lockout, ProxyAdmin and Transparent hybrid acceptance",
             "status": "PASS",
@@ -909,8 +1238,9 @@ def main() -> int:
             },
             "transparent_uups_second_surface": hybrid_case,
             "uups_uuid_lockout": uuid_case,
+            "implementation_initialization": initializer_case,
             "classification_policy": (
-                "UUPS authorization, UUID/lockout, ProxyAdmin and Transparent hybrid results are fixture-only paired experiments. "
+                "UUPS authorization, UUID/lockout, direct implementation initialization, ProxyAdmin and Transparent hybrid results are fixture-only paired experiments. "
                 "The secure and vulnerable paths use equivalent fork snapshots, the same proxy, actor and "
                 "encoded upgrade calldata where paired. Transparent routing and a non-admin UUPS second "
                 "upgrade surface are demonstrated only for this fixture. Results remain SIMULATED_BREAK "
@@ -919,7 +1249,7 @@ def main() -> int:
         }
         (evidence_root / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(json.dumps(report, indent=2, sort_keys=True))
-        print("PASS: UUPS authorization, UUID/lockout, ProxyAdmin, Transparent routing and hybrid paired controls verified.")
+        print("PASS: UUPS authorization, UUID/lockout, implementation-initializer locking, ProxyAdmin, Transparent routing and hybrid paired controls verified.")
         run([lk, "target", "reset"], root, env)
     return 0
 

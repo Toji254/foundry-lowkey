@@ -281,3 +281,42 @@ contract UUPSLockoutActor {
     }
 }
 
+/// Direct implementation fixture. The owner-gated lock hook writes the same
+/// terminal initialized-version state used by constructor initializer locks.
+/// It permits a paired test against the same deployed address and bytecode.
+contract UUPSImplementationInitializationFixture {
+    uint8 public initializedVersion;
+    address public owner;
+    address private immutable _lockAuthority;
+
+    constructor() { _lockAuthority = msg.sender; }
+
+    function disableInitializers() external {
+        require(msg.sender == _lockAuthority, "ONLY_LOCK_AUTHORITY");
+        initializedVersion = type(uint8).max;
+    }
+
+    function initialize(address initialOwner) external {
+        require(initializedVersion == 0, "ALREADY_INITIALIZED");
+        require(initialOwner != address(0), "ZERO_OWNER");
+        initializedVersion = 1;
+        owner = initialOwner;
+    }
+}
+
+contract ImplementationInitializationActor {
+    uint256 public takeoverAccepted;
+
+    function attemptInitialize(address target, address initialOwner)
+        external returns (bool success)
+    {
+        (success, ) = target.call(
+            abi.encodeWithSignature("initialize(address)", initialOwner)
+        );
+        uint256 nextValue;
+        assembly { nextValue := sload(takeoverAccepted.slot) }
+        nextValue += success ? 1 : 0;
+        assembly { sstore(takeoverAccepted.slot, nextValue) }
+    }
+}
+

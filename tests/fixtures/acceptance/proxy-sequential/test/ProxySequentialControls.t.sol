@@ -14,7 +14,9 @@ import {
     UUPSUUIDVulnerableImplementation,
     WrongUUIDProxyReplacement,
     LowkeyUUPSLockoutProxy,
-    UUPSLockoutActor
+    UUPSLockoutActor,
+    UUPSImplementationInitializationFixture,
+    ImplementationInitializationActor
 } from "../src/ProxySequentialFixtures.sol";
 
 interface ILowkeyTransparentOwner {
@@ -267,6 +269,47 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
                 && abi.decode(markerData, (bytes32)) == keccak256("LOWKEY_UUPS_UUID_LOCKOUT"),
             "UUID_LOCKOUT_DELEGATE_ROUTE_NOT_CONFIRMED"
         );
+    }
+
+
+    function test_paired_implementation_initializer_lock_prevents_takeover() external {
+        address owner = vm.envAddress("P0_OWNER");
+        UUPSImplementationInitializationFixture implementation =
+            UUPSImplementationInitializationFixture(
+                vm.envAddress("P0_IMPLEMENTATION_INITIALIZER_TARGET")
+            );
+        ImplementationInitializationActor actor = ImplementationInitializationActor(
+            vm.envAddress("P0_IMPLEMENTATION_INITIALIZER_ACTOR")
+        );
+        uint256 baseline = vm.snapshot();
+
+        // Control: the deployment authority locks the direct implementation.
+        vm.prank(owner);
+        implementation.disableInitializers();
+        _lowkeyStartTrace(address(implementation));
+        require(implementation.initializedVersion() == type(uint8).max,
+            "INITIALIZER_CONTROL_NOT_LOCKED");
+        require(implementation.owner() == address(0), "INITIALIZER_CONTROL_OWNER_PRESET");
+        require(actor.takeoverAccepted() == 0, "INITIALIZER_CONTROL_METRIC_PRESET");
+        bool controlAccepted = actor.attemptInitialize(address(implementation), address(actor));
+        require(!controlAccepted, "LOCKED_IMPLEMENTATION_ACCEPTED_INITIALIZER");
+        require(actor.takeoverAccepted() == 0, "LOCKED_IMPLEMENTATION_METRIC_CHANGED");
+        require(implementation.owner() == address(0), "LOCKED_IMPLEMENTATION_OWNER_CHANGED");
+        _lowkeyWriteTrace(".audit/godmode/control-implementation-initializer-state-diff.json");
+
+        // Attack: revert to the same implementation's uninitialized deployment
+        // state, then submit identical initialize(address) calldata and caller.
+        require(vm.revertTo(baseline), "IMPLEMENTATION_INITIALIZER_BASELINE_REVERT_FAILED");
+        _lowkeyStartTrace(address(implementation));
+        require(implementation.initializedVersion() == 0, "INITIALIZER_ATTACK_VERSION_PRESTATE_MISMATCH");
+        require(implementation.owner() == address(0), "INITIALIZER_ATTACK_OWNER_PRESTATE_MISMATCH");
+        require(actor.takeoverAccepted() == 0, "INITIALIZER_ATTACK_METRIC_PRESTATE_MISMATCH");
+        bool attackAccepted = actor.attemptInitialize(address(implementation), address(actor));
+        require(attackAccepted, "UNLOCKED_IMPLEMENTATION_REJECTED_TAKEOVER");
+        require(actor.takeoverAccepted() == 1, "IMPLEMENTATION_TAKEOVER_METRIC_MISSING");
+        require(implementation.initializedVersion() == 1, "IMPLEMENTATION_INITIALIZER_VERSION_NOT_SET");
+        require(implementation.owner() == address(actor), "IMPLEMENTATION_TAKEOVER_OWNER_MISMATCH");
+        _lowkeyWriteTrace(".audit/godmode/attack-implementation-initializer-state-diff.json");
     }
 
 }
