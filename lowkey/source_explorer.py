@@ -2387,7 +2387,8 @@ function resetFilters(){
   hiddenVendors.clear();
   document.querySelectorAll("[data-filter]").forEach(function(x){x.checked=x.dataset.filter==="first-party"||x.dataset.filter==="unresolved"||["contract","abstract","interface","library"].includes(x.dataset.filter)});
   document.querySelectorAll("[data-edge]").forEach(function(x){x.checked=x.dataset.edge!=="IMPORTS"});
-  renderAll();
+  scopePreferences.include_support_sources=false;
+  renderAll();saveWorkspaceState();saveInterfaceBindingsToProject();
 }
 function setupInteractions(){
   document.querySelectorAll(".mode-tab").forEach(function(button){button.addEventListener("click",function(){setMode(button.dataset.mode)})});
@@ -2815,9 +2816,11 @@ def _save_project_graph_workspace(
     for raw_prefix in excluded_path_prefixes:
         if not isinstance(raw_prefix, str) or not raw_prefix or "\\" in raw_prefix:
             raise ValueError("Excluded source paths must be non-empty project-relative paths.")
+        raw_parts = raw_prefix.split("/")
         prefix_path = PurePosixPath(raw_prefix)
         if (
             prefix_path.is_absolute()
+            or any(part in {"", ".", ".."} for part in raw_parts)
             or any(part in {"", ".", ".."} for part in prefix_path.parts)
             or any(ord(char) < 32 for char in raw_prefix)
         ):
