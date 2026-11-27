@@ -119,15 +119,62 @@ def main():
 
                 cli(lk, root, evidence, "lab", "network", "use", "gmx-dev")
                 cli(lk, root, evidence, "actor", "1", "Alice")
+                cli(lk, root, evidence, "actor", "Alice")
+                status_a = cli(lk, root, evidence, "status")
+                actors_a = cli(lk, root, evidence, "actors")
+                checks["managed_actor_name_selection_persists_across_cli_processes"] = (
+                    "Actor  : Alice (" in status_a
+                    and "Actor: Alice (" in actors_a
+                    and "* Alice" in actors_a
+                )
+                checks["status_reports_managed_rpc_provenance"] = "(managed network)" in status_a
                 ca = manager.get_by_id(a["id"])
+
                 cli(lk, root, evidence, "lab", "network", "use", "gmx-attack")
                 cli(lk, root, evidence, "actor", "1", "Alice")
+                cli(lk, root, evidence, "actor", "Alice")
+                status_b = cli(lk, root, evidence, "status")
+                actors_b = cli(lk, root, evidence, "actors")
+                checks["managed_actor_name_selection_is_session_scoped"] = (
+                    "Actor  : Alice (" in status_b
+                    and "Actor: Alice (" in actors_b
+                    and "* Alice" in actors_b
+                )
                 cb = manager.get_by_id(b["id"])
                 checks["same_alias_is_session_scoped"] = ca["actors"]["Alice"] == a["actors"]["anvil-1"] and cb["actors"]["Alice"] == b["actors"]["anvil-1"] and ca["actors"]["Alice"] != cb["actors"]["Alice"]
+
+                cli(lk, root, evidence, "lab", "network", "use", "gmx-dev")
+                restored_a_status = cli(lk, root, evidence, "status")
+                restored_a_actors = cli(lk, root, evidence, "actors")
+                checks["switching_sessions_restores_the_selected_actor"] = (
+                    "Actor  : Alice (" in restored_a_status
+                    and a["actors"]["Alice"].lower() in restored_a_status.lower()
+                    and "Actor: Alice (" in restored_a_actors
+                    and "* Alice" in restored_a_actors
+                )
+
+                cli(lk, root, evidence, "lab", "network", "use", "gmx-attack")
+                restored_b_status = cli(lk, root, evidence, "status")
+                restored_b_actors = cli(lk, root, evidence, "actors")
+                checks["switching_back_restores_the_other_actor"] = (
+                    "Actor  : Alice (" in restored_b_status
+                    and b["actors"]["Alice"].lower() in restored_b_status.lower()
+                    and "Actor: Alice (" in restored_b_actors
+                    and "* Alice" in restored_b_actors
+                )
                 active = manager.active()
                 checks["network_switch_changes_actor_context"] = active["id"] == b["id"] and active["active_actor"] == "Alice"
-                if not checks["same_alias_is_session_scoped"] or not checks["network_switch_changes_actor_context"]:
-                    raise RuntimeError("Session actor aliases or active selection were not isolated.")
+                required_actor_checks = (
+                    "managed_actor_name_selection_persists_across_cli_processes",
+                    "managed_actor_name_selection_is_session_scoped",
+                    "status_reports_managed_rpc_provenance",
+                    "switching_sessions_restores_the_selected_actor",
+                    "switching_back_restores_the_other_actor",
+                    "same_alias_is_session_scoped",
+                    "network_switch_changes_actor_context",
+                )
+                if not all(checks.get(name) is True for name in required_actor_checks):
+                    raise RuntimeError(f"Managed actor/status context acceptance failed: { {name: checks.get(name) for name in required_actor_checks} }")
 
                 restarted = NetworkManager(root, anvil_binary=anvil)
                 ra, rb = restarted.status("gmx-dev"), restarted.status("gmx-attack")
