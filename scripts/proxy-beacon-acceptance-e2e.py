@@ -211,7 +211,11 @@ def make_manifest(
         "function": "upgradeTo(address)",
         "same_calls_id": "beacon-same-target-same-actor-same-upgrade-v1",
         "metric_name": "successful_unauthorized_beacon_upgrades",
-        "prestate_addresses": [beacon, proxy_a, proxy_b, actor, implementation_v1, implementation_v2],
+        # Only common initial-state participants belong in this equivalence set.
+        # V1 is reached in the secure branch and V2 in the vulnerable branch;
+        # both are execution targets, not accounts that must appear in both
+        # traces. The same V2 argument is independently bound by entry calldata.
+        "prestate_addresses": [beacon, proxy_a, proxy_b, actor],
         "prestate_slots": [
             {"address": beacon, "slot": "0x0"},
             {"address": beacon, "slot": "0x1"},
