@@ -755,7 +755,7 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
 .source-line.selected .source-line-number{color:#8bdcf9}
 .graph-toolbar{display:flex;align-items:center;gap:6px;padding:7px 11px;border-bottom:1px solid #1d314b;background:#0b1728cc}.toolbar-label{font-size:10px;color:#849bb5;font-weight:800;letter-spacing:.1em}.toolbar-spacer{flex:1}.rel-filter{border:1px solid var(--line);background:#0f1d31;color:#b9c9dc;border-radius:7px;padding:7px 8px;max-width:160px}
 .graph-stage{position:relative;min-height:0;overflow:hidden;background-image:radial-gradient(#24405f66 1px,transparent 1px);background-size:22px 22px}#graph{width:100%;height:100%;display:block;touch-action:none;cursor:grab}#graph.dragging{cursor:grabbing}
-.edge{fill:none;stroke:#607f9f;stroke-width:2;opacity:.76;marker-end:url(#arrow);transition:opacity .18s,stroke-width .18s}.edge.CALLS{stroke:#54c6a0}.edge.LIBRARY_CALL,.edge.USES_LIBRARY{stroke:#64c69d}.edge.EXTERNAL_CALL{stroke:#e6a66a;stroke-dasharray:3 4}.edge.APPLIES_MODIFIER{stroke:#9d9fea}.edge.OVERRIDES,.edge.INHERITS,.edge.USES_TYPE{stroke:#a68ef0}.edge.READS,.edge.WRITES,.edge.DELETES{stroke:#64bbd9}.edge.ASSET_FLOW{stroke:#d68ae3;stroke-width:2.5;stroke-dasharray:8 6;animation:flowMotion 1.45s linear infinite}@keyframes flowMotion{to{stroke-dashoffset:-28}}@media(prefers-reduced-motion:reduce){.edge.ASSET_FLOW{animation:none}}.edge.IMPORTS{stroke:#6a829d;stroke-dasharray:5 6}.edge.CONTAINS{stroke:#314a63;stroke-width:1.1;stroke-dasharray:3 5;marker-end:none;opacity:.45}.edge.hot{opacity:1;stroke-width:3.5}.edge.dimmed{opacity:.12;marker-end:none;animation:none}.edge-label{font-size:10px;fill:#aebed1;paint-order:stroke;stroke:#091321;stroke-width:4px;pointer-events:none}.edge-label.dimmed{opacity:.12}
+.edge{fill:none;stroke:#607f9f;stroke-width:2;opacity:.76;marker-end:url(#arrow);transition:opacity .18s,stroke-width .18s}.edge.CALLS{stroke:#54c6a0}.edge.LIBRARY_CALL,.edge.USES_LIBRARY{stroke:#64c69d}.edge.EXTERNAL_CALL{stroke:#e6a66a;stroke-dasharray:3 4}.edge.APPLIES_MODIFIER{stroke:#9d9fea}.edge.OVERRIDES,.edge.INHERITS,.edge.USES_TYPE{stroke:#a68ef0}.edge.READS,.edge.WRITES,.edge.DELETES{stroke:#64bbd9}.edge.ASSET_FLOW{stroke:#d68ae3;stroke-width:2.5;stroke-dasharray:8 6;animation:flowMotion 1.45s linear infinite}@keyframes flowMotion{to{stroke-dashoffset:-28}}@media(prefers-reduced-motion:reduce){.edge.ASSET_FLOW{animation:none}}.edge.IMPORTS{stroke:#6a829d;stroke-dasharray:5 6}.edge.CONTAINS{stroke:#314a63;stroke-width:1.1;stroke-dasharray:3 5;marker-end:none;opacity:.45}.edge.hot{opacity:1;stroke-width:3.5}.edge.ASSERTED_BINDING{stroke:#c58ada;stroke-dasharray:7 5;opacity:.98}.edge.dimmed{opacity:.12;marker-end:none;animation:none}.edge-label{font-size:10px;fill:#aebed1;paint-order:stroke;stroke:#091321;stroke-width:4px;pointer-events:none}.edge-label.dimmed{opacity:.12}
 .graph-node{cursor:pointer}.graph-node rect{fill:#14243b;stroke:#55708e;stroke-width:1.5;rx:10;filter:drop-shadow(0 7px 12px #0005)}.graph-node.declaration rect{fill:#112e48;stroke:#399bd0}.graph-node.interface rect{fill:#281f45;stroke:#a88af0}.graph-node.library rect{fill:#143c33;stroke:#57c69c}.graph-node.function rect,.graph-node.modifier rect{fill:#192944;stroke:#7fa6d3}.graph-node.state rect{fill:#19372e;stroke:#64b68e}.graph-node.asset rect{fill:#35213d;stroke:#c58ada}.graph-node.external rect,.graph-node.unresolved_state rect{fill:#38291f;stroke:#d6a55e}.graph-node.group rect{fill:#142b43;stroke:#3e86ae;stroke-width:2}.graph-node.selected rect{stroke:#59ddff;stroke-width:3;filter:drop-shadow(0 0 13px #42c9f888)}.graph-node.dimmed{opacity:.2;filter:saturate(.35)}.graph-node.focused rect{stroke-width:2.3}.graph-node:hover rect{stroke:#9deaff;stroke-width:2.5}.graph-node text{pointer-events:none}.node-title{font-size:14px;font-weight:800;fill:#eff7ff}.node-subtitle{font-size:10px;fill:#9eb3cc}
 .graph-empty{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none}.graph-empty span{max-width:420px;text-align:center;color:#9cb0c9;background:#0d1c30e8;border:1px solid #284563;border-radius:12px;padding:16px}
 #minimap{position:absolute;right:12px;bottom:12px;width:154px;height:95px;border:1px solid #36516e;border-radius:8px;background:#091626dd;pointer-events:auto;cursor:crosshair;touch-action:manipulation}.graph-hint{position:absolute;left:13px;bottom:13px;color:#7f96b2;font-size:10px;background:#081523cc;border:1px solid #253e5c;border-radius:6px;padding:5px 8px;pointer-events:none}
@@ -897,6 +897,8 @@ let MODEL=JSON.parse(document.getElementById("graph-data").textContent);
 const SERVER_MODE=__SERVER_MODE__;
 const byId=new Map(),positions=new Map(),hiddenVendors=new Set(),sourceFilesByPath=new Map();
 const bookmarkedIds=new Set(),investigatedEntrypoints=new Set(),manualPositionIds=new Set();
+const interfaceBindings=new Map();
+let projectWorkspaceSaveWarned=false;
 let workspaceStorageAvailable=true,restoredWorkspaceState=false;
 const nodeElementsById=new Map(),edgeElementsById=new Map(),edgeLabelsById=new Map(),edgeDataById=new Map(),edgeIndicesById=new Map(),incidentEdgesByNode=new Map();
 let mode="architecture",selectedId=null,selectedTab="overview",selectedEdge=null,focusFunctionId=null,history=[];
@@ -917,6 +919,7 @@ function saveWorkspaceState(){
       version:1,
       bookmarks:Array.from(bookmarkedIds),
       investigated:Array.from(investigatedEntrypoints),
+      interface_bindings:Array.from(interfaceBindings.entries()),
       selected_id:selectedId,
       mode:mode,
       inspector_tab:selectedTab,
@@ -932,7 +935,8 @@ function saveWorkspaceState(){
   }
 }
 function loadWorkspaceState(){
-  bookmarkedIds.clear();investigatedEntrypoints.clear();manualPositionIds.clear();restoredWorkspaceState=false;
+  bookmarkedIds.clear();investigatedEntrypoints.clear();manualPositionIds.clear();interfaceBindings.clear();restoredWorkspaceState=false;
+  restoreInterfaceBindings((MODEL.workspace_state||{}).interface_bindings);
   try{
     const raw=localStorage.getItem(workspaceStorageKey());
     if(!raw)return;
@@ -940,6 +944,7 @@ function loadWorkspaceState(){
     if(!saved||saved.version!==1)return;
     (Array.isArray(saved.bookmarks)?saved.bookmarks:[]).forEach(function(id){if(node(id))bookmarkedIds.add(id)});
     (Array.isArray(saved.investigated)?saved.investigated:[]).forEach(function(id){const item=node(id);if(item&&isEntryPoint(item))investigatedEntrypoints.add(id)});
+    if(Array.isArray(saved.interface_bindings))restoreInterfaceBindings(saved.interface_bindings);
     (Array.isArray(saved.manual_positions)?saved.manual_positions:[]).slice(0,1500).forEach(function(row){
       if(!Array.isArray(row)||row.length!==2||!node(row[0]))return;
       const point=row[1];
@@ -966,6 +971,134 @@ function loadWorkspaceState(){
     workspaceStorageAvailable=true;
   }catch(error){
     workspaceStorageAvailable=false;
+  }
+}
+function isInterfaceDeclaration(item){return !!(item&&item.type==="declaration"&&item.declaration_kind==="interface")}
+function isConcreteBindingCandidate(item){return !!(item&&item.type==="declaration"&&item.declaration_kind==="contract"&&item.compiler_abstract!==true)}
+function restoreInterfaceBindings(rows){
+  (Array.isArray(rows)?rows:[]).forEach(function(row){
+    if(!Array.isArray(row)||row.length!==2)return;
+    const iface=node(row[0]),contract=node(row[1]);
+    if(isInterfaceDeclaration(iface)&&isConcreteBindingCandidate(contract))interfaceBindings.set(iface.id,contract.id);
+  });
+}
+function matchingInterfaceMethods(interfaceId,implementationId){
+  const interfaceMethods=MODEL.nodes.filter(function(item){return item.type==="function"&&item.contract_id===interfaceId});
+  const matches=[],unmatched=[];
+  interfaceMethods.forEach(function(method){
+    const candidates=MODEL.nodes.filter(function(item){
+      return item.type==="function"&&item.contract_id===implementationId&&
+        item.name===method.name&&item.signature===method.signature;
+    });
+    if(candidates.length===1)matches.push({interface_method:method,implementation_method:candidates[0]});
+    else unmatched.push({method:method,candidate_count:candidates.length});
+  });
+  return {matches:matches,unmatched:unmatched,interface_method_count:interfaceMethods.length};
+}
+function saveInterfaceBindingsToProject(){
+  if(!SERVER_MODE||!MODEL.local_workspace_key||MODEL.local_workspace_key!==MODEL.workspace_key)return;
+  fetch("/api/workspace",{
+    method:"POST",
+    headers:{"Content-Type":"application/json","Accept":"application/json"},
+    body:JSON.stringify({version:1,workspace_key:MODEL.workspace_key,interface_bindings:Array.from(interfaceBindings.entries())})
+  }).then(function(response){return response.json().then(function(payload){return {ok:response.ok,payload:payload}})})
+    .then(function(result){
+      if(!result.ok||!result.payload.persisted){
+        if(!projectWorkspaceSaveWarned)toast("Browser copy saved, but project .audit preferences could not be persisted.");
+        projectWorkspaceSaveWarned=true;
+      }else projectWorkspaceSaveWarned=false;
+    })
+    .catch(function(){
+      if(!projectWorkspaceSaveWarned)toast("Project .audit sync failed; browser-local assumption remains saved.");
+      projectWorkspaceSaveWarned=true;
+    });
+}
+function saveInterfaceBinding(interfaceId,implementationId){
+  const iface=node(interfaceId),implementation=node(implementationId);
+  if(!isInterfaceDeclaration(iface))throw new Error("Select an indexed interface declaration.");
+  if(!isConcreteBindingCandidate(implementation))throw new Error("Choose a contract declaration; compiler-identified abstract contracts are excluded.");
+  const result=matchingInterfaceMethods(interfaceId,implementationId);
+  if(!result.matches.length)throw new Error("No interface method has one exact name-and-signature match in this contract. Nothing was saved.");
+  interfaceBindings.set(interfaceId,implementationId);
+  saveWorkspaceState();saveInterfaceBindingsToProject();
+  renderGraph();renderInspector();
+  toast("Saved as ASSERTED ASSUMPTION");
+}
+function removeInterfaceBinding(interfaceId){
+  if(!interfaceBindings.has(interfaceId))return;
+  interfaceBindings.delete(interfaceId);
+  saveWorkspaceState();saveInterfaceBindingsToProject();
+  renderGraph();renderInspector();
+  toast("Interface assumption removed");
+}
+function manualBindingEdges(sourceEdges){
+  const overlays=[];
+  (sourceEdges||[]).forEach(function(call){
+    if(call.kind!=="EXTERNAL_CALL")return;
+    const interfaceMethod=node(call.target);
+    const iface=interfaceMethod&&node(interfaceMethod.contract_id);
+    if(!isInterfaceDeclaration(iface))return;
+    const implementationId=interfaceBindings.get(iface.id);
+    if(!implementationId)return;
+    const implementation=node(implementationId);
+    if(!isConcreteBindingCandidate(implementation))return;
+    const methods=MODEL.nodes.filter(function(item){
+      return item.type==="function"&&item.contract_id===implementationId&&
+        item.name===interfaceMethod.name&&item.signature===interfaceMethod.signature;
+    });
+    if(methods.length!==1)return;
+    const target=methods[0];
+    overlays.push({
+      id:"asserted-binding:"+call.id+":"+target.id,source:call.source,target:target.id,
+      kind:"ASSERTED_BINDING",source_kind:"EXTERNAL_CALL",label:"ASSUMED IMPLEMENTATION",
+      resolution:"ASSUMED",evidence:"ASSERTED ASSUMPTION",implementation_resolution:"ASSUMED",
+      file:call.file,line:call.line,source_excerpt:call.source_excerpt||"",
+      receiver:call.receiver||"",method:call.method||interfaceMethod.name,
+      binding_interface:iface.id,binding_implementation:implementationId,
+      source_call_edge:call.id,via:[],details:{
+        interface_signature:interfaceMethod.signature,implementation_signature:target.signature,
+        interface_id:iface.id,implementation_id:implementationId,source_call_edge:call.id
+      },
+      detail:"ASSERTED ASSUMPTION — auditor supplied this interface-to-contract association. It is not compiler proof, runtime evidence, proxy resolution, or proof of code deployed at an address."
+    });
+  });
+  return overlays;
+}
+function renderInterfaceBindingEditor(parent,interfaceNode){
+  const section=add(parent,"div","inspector-section");
+  add(section,"div","section-head","INTERFACE IMPLEMENTATION BINDING");
+  const currentId=interfaceBindings.get(interfaceNode.id)||"";
+  const current=node(currentId);
+  const select=add(section,"select","binding-select","");
+  select.setAttribute("aria-label","Contract candidate for this interface");
+  const placeholder=document.createElement("option");
+  placeholder.value="";placeholder.textContent="Choose a contract candidate…";select.appendChild(placeholder);
+  const candidates=MODEL.nodes.filter(isConcreteBindingCandidate).sort(function(a,b){return a.label.localeCompare(b.label)});
+  candidates.forEach(function(candidate){
+    const option=document.createElement("option");
+    option.value=candidate.id;option.textContent=candidate.label+" · "+candidate.file;
+    select.appendChild(option);
+  });
+  select.value=currentId;
+  const actions=add(section,"div","inspector-actions");
+  const save=add(actions,"button","tool-button primary","Save asserted binding");
+  save.disabled=!candidates.length;
+  save.addEventListener("click",function(){
+    try{saveInterfaceBinding(interfaceNode.id,select.value)}
+    catch(error){toast(String(error.message||error))}
+  });
+  if(current){
+    const badge=add(section,"div","coverage warn","ASSERTED ASSUMPTION");
+    add(badge,"p","","Interface "+interfaceNode.label+" is manually associated with "+current.label+". This does not prove a deployed address, proxy implementation, or runtime target.");
+    const matching=matchingInterfaceMethods(interfaceNode.id,current.id);
+    add(section,"p","muted",matching.matches.length+" exact signature matches · "+matching.unmatched.length+" methods without one unique match.");
+    const remove=add(actions,"button","tool-button","Remove binding");
+    remove.addEventListener("click",function(){removeInterfaceBinding(interfaceNode.id)});
+  }else{
+    add(section,"p","muted","A separate assumed edge is shown only for unique exact function-signature matches. Original external-call edges remain unresolved.");
+  }
+  if(!MODEL.compiler_dispatch||MODEL.compiler_dispatch.status!=="AST_OBSERVED"){
+    add(section,"p","muted","Compiler abstractness evidence is unavailable; review the selected contract candidate manually.");
   }
 }
 function toggleBookmark(id){
@@ -1003,12 +1136,13 @@ function visibleNode(n){
 function visibleEdge(e){
   const edgeFilters={};document.querySelectorAll("[data-edge]").forEach(function(x){edgeFilters[x.dataset.edge]=x.checked});
   let family=e.kind;
-  if(e.kind==="LIBRARY_CALL"||e.kind==="USES_LIBRARY")family="USES_LIBRARY";
+  if(e.kind==="ASSERTED_BINDING")family="EXTERNAL_CALL";
+  else if(e.kind==="LIBRARY_CALL"||e.kind==="USES_LIBRARY")family="USES_LIBRARY";
   else if(["READS_CONSTANT","READS_IMMUTABLE","TRANSIENT_READS"].includes(e.kind))family="READS";
   else if(["WRITES","DELETES","MUTATES","TRANSIENT_WRITES","TRANSIENT_DELETES","INITIALIZES","UNRESOLVED_STORAGE","UNRESOLVED_MUTATION"].includes(e.kind))family="WRITES";
   if(edgeFilters[family]===false)return false;
   const choice=document.getElementById("edge-select").value;
-  if(choice&&choice!==e.kind)return false;
+  if(choice&&choice!==e.kind&&choice!==e.source_kind)return false;
   if((e.resolution==="UNRESOLVED"||e.resolution==="AMBIGUOUS")&&!filters().unresolved)return false;
   return visibleNode(node(e.source))&&visibleNode(node(e.target));
 }
@@ -1375,11 +1509,29 @@ function subtitle(n){
 }
 function renderGraph(){
   const projection=currentProjection();
-  renderNodes=projection.nodes||[];
-  renderEdges=(projection.edges||[]).filter(visibleEdge);
+  const projectionNodes=(projection.nodes||[]).slice();
+  const projectionEdges=(projection.edges||[]).slice();
+  const assertedEdges=manualBindingEdges(projectionEdges);
   const focusNodeIds=new Set(projection.focus_node_ids||[]);
   const focusGroupIds=new Set(projection.focus_group_ids||[]);
   const focusEdgeIds=new Set(projection.focus_edge_ids||[]);
+  const projectedIds=new Set(projectionNodes.map(function(item){return item.id}));
+  assertedEdges.forEach(function(edge){
+    const target=node(edge.target),owner=target&&node(target.contract_id);
+    [target,owner].forEach(function(item){if(item&&!projectedIds.has(item.id)){projectionNodes.push(item);projectedIds.add(item.id)}});
+    if(owner){
+      const groupId="group:"+owner.folder,group=node(groupId);
+      if(group&&!projectedIds.has(group.id)){projectionNodes.push(group);projectedIds.add(group.id)}
+      if(group&&!projectionEdges.some(function(item){return item.kind==="CONTAINS"&&item.source===group.id&&item.target===owner.id})){
+        const bridge={id:"asserted-binding-owner:"+group.id+":"+owner.id,source:group.id,target:owner.id,kind:"CONTAINS",label:"CONTAINS",resolution:"DIRECT",evidence:"DECLARATION_OWNERSHIP",file:owner.file,line:owner.line,detail:"Project folder ownership."};
+        projectionEdges.push(bridge);focusEdgeIds.add(bridge.id);
+      }
+      focusNodeIds.add(owner.id);focusGroupIds.add(groupId);
+    }
+    projectionEdges.push(edge);focusEdgeIds.add(edge.id);focusNodeIds.add(edge.source);focusNodeIds.add(edge.target);
+  });
+  renderNodes=projectionNodes;
+  renderEdges=projectionEdges.filter(visibleEdge);
   const focusActive=focusNodeIds.size>0;
   const selected=node(selectedId);
   const root=mode==="functions"?(focusFunctionId||selectedId):((mode==="storage"||mode==="assets")?contractContextForNode(selected):selectedId);
@@ -1536,6 +1688,10 @@ function showEdgeDetails(e){
   add(root,"div","section-head","RELATIONSHIP EVIDENCE");add(root,"div","entity-name",e.label||e.kind);
   add(root,"p","entity-meta",(node(e.source)?.label||e.source)+" → "+(node(e.target)?.label||e.target));
   const badge=add(root,"div","coverage "+(e.resolution==="DIRECT"?"ok":"warn"),e.resolution+" · "+e.evidence);
+  if(e.evidence==="ASSERTED ASSUMPTION"){
+    add(root,"div","coverage warn","ASSERTED ASSUMPTION");
+    add(root,"p","muted","This overlay is a user-supplied association only. The original EXTERNAL_CALL source relationship remains unchanged and unresolved for deployed implementation identity.");
+  }
   if(e.file)add(root,"code","location",e.file+(e.line?":"+e.line:""));
   if(e.receiver)add(root,"p","muted","Receiver: "+e.receiver);
   if(e.method)add(root,"p","muted","Declared method: "+e.method);
@@ -1814,6 +1970,18 @@ function renderInspector(){
           row.addEventListener("click",function(){openNode(item.id,true)});
         });
       }
+      if(isInterfaceDeclaration(selected))renderInterfaceBindingEditor(body,selected);
+      const assumptions=Array.from(interfaceBindings.entries()).filter(function(pair){return pair[1]===selected.id});
+      if(assumptions.length){
+        const section=add(body,"div","inspector-section");
+        add(section,"div","section-head","INTERFACE ASSUMPTIONS · "+assumptions.length);
+        assumptions.forEach(function(pair){
+          const iface=node(pair[0]),row=add(section,"button","inspect-item","");
+          add(row,"strong","","ASSERTED ASSUMPTION · "+(iface?iface.label:pair[0]));
+          add(row,"small","","Manually associated interface");
+          row.addEventListener("click",function(){if(iface)openNode(iface.id,true)});
+        });
+      }
       renderSection(body,"KEY ENTRY POINTS",functions.filter(isEntryPoint),"No public, external, receive or fallback entry points indexed.");
       renderSection(body,"STATE SURFACE",state,"No state declarations indexed.");
     }else if(selected.type==="function"||selected.type==="modifier"){
@@ -1858,7 +2026,9 @@ function renderInspector(){
   }else if(selectedTab==="calls"){
     const functionIds=new Set(functions.map(function(fn){return fn.id}));
     const callKinds=["CALLS","LIBRARY_CALL","EXTERNAL_CALL","APPLIES_MODIFIER","OVERRIDES","USES_LIBRARY","USES_TYPE","INHERITS"];
-    const outgoing=MODEL.edges.filter(function(e){return functionIds.has(e.source)&&callKinds.includes(e.kind)});
+    const outgoing=MODEL.edges.filter(function(e){return functionIds.has(e.source)&&callKinds.includes(e.kind)}).concat(
+      manualBindingEdges(MODEL.edges).filter(function(e){return functionIds.has(e.source)})
+    );
     const incoming=MODEL.edges.filter(function(e){return functionIds.has(e.target)&&["CALLS","LIBRARY_CALL","EXTERNAL_CALL"].includes(e.kind)});
     add(body,"div","section-head","OUTGOING CALLS / INTERFACE BOUNDARIES · "+outgoing.length);
     outgoing.forEach(function(e){
@@ -1910,6 +2080,7 @@ function renderFlow(){
   while(queue.length){
     const current=queue.shift();
     const outgoing=MODEL.edges.filter(function(e){return e.source===current&&callKinds.includes(e.kind)&&visibleEdge(e)})
+      .concat(manualBindingEdges(MODEL.edges).filter(function(e){return e.source===current&&visibleEdge(e)}))
       .sort(function(a,b){return (a.file||"").localeCompare(b.file||"")||(a.line||0)-(b.line||0)});
     outgoing.forEach(function(edge){
       callEdges.push(edge);
@@ -2444,6 +2615,7 @@ def create_explorer_server(
         root_path = root_path.parent
     model = build_explorer_model(index, root=root_path)
     model["workspace_state"] = _load_project_graph_workspace(root_path)
+    model["local_workspace_key"] = model.get("workspace_key")
     model["project_name"] = root_path.name or "Local project"
     model["show_third_party"] = bool(include_third_party)
     model["initial_only"] = only
