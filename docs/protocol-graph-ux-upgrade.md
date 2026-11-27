@@ -97,7 +97,7 @@ Use ordinary Foundry project build-info for C3/override enrichment; graph genera
 
 ## Browser acceptance status
 
-`scripts/protocol-graph-browser-e2e.py` and the `protocol-graph-browser` workflow now exercise the shipped graph in Chromium using generated generic Solidity projects. The planned checks cover graph initialization, entrypoint focus, source call-site navigation, bookmark/investigation state, search, relationship filtering, keyboard shortcuts, page reload persistence, a 768px viewport, and expansion of a 60-contract network. The workflow also retains desktop, narrow and large-network screenshots. These checks remain pending until CI completes on the latest branch head.
+`scripts/protocol-graph-browser-e2e.py` and the `protocol-graph-browser` workflow now exercise the shipped graph in Chromium using generated generic Solidity projects. The planned checks cover graph initialization, entrypoint focus, source call-site navigation, bookmark/investigation state, search, relationship filtering, keyboard shortcuts, page reload persistence, a 768px viewport, and expansion of a 200-contract network with 1,200 connected functions (at least 1,400 graph nodes). The workflow also retains desktop, narrow and large-network screenshots. These checks remain pending until CI completes on the latest branch head.
 
 ## Remaining UX acceptance
 
