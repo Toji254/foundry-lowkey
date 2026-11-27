@@ -636,8 +636,8 @@ def make_implementation_initializer_manifest(
         "metric_name": "implementation_takeover_accepted",
         "prestate_addresses": [implementation.lower(), actor.lower()],
         "prestate_slots": [
+            # initializedVersion and owner are Solidity-packed in implementation slot zero.
             {"address": implementation, "slot": "0x0"},
-            {"address": implementation, "slot": "0x1"},
             {"address": actor, "slot": "0x0"},
         ],
         "metric_addresses": [actor],
