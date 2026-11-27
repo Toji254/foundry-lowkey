@@ -2731,6 +2731,17 @@ jobs:
       - name: Install Chromium for the real workspace browser test
         run: python -m playwright install --with-deps chromium
 
+      - name: Install Lowkey into an isolated HOME for the CLI acceptance
+        run: |
+          LOWKEY_HOME="${RUNNER_TEMP}/lowkey-cli-home"
+          mkdir -p "$LOWKEY_HOME"
+          HOME="$LOWKEY_HOME" bash install.sh
+          echo "HOME=$LOWKEY_HOME" >> "$GITHUB_ENV"
+          echo "$LOWKEY_HOME/.foundry/bin" >> "$GITHUB_PATH"
+
+      - name: Run safe installed CLI graph matrix
+        run: python scripts/protocol-graph-cli-acceptance.py
+
       - name: Exercise the real protocol graph workspace
         run: python scripts/protocol-graph-browser-e2e.py
 
