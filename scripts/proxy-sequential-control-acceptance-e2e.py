@@ -121,11 +121,13 @@ def check_pair_result(root: Path, report_prefix: str, evidence_dir: Path) -> dic
             f"Paired proxy metrics do not show secure=0/vulnerable=1: "
             f"control={control_metric}, attack={attack_metric}, report={payload}"
         )
+    if (runs.get("control") or {}).get("execution_verified") is not True or (runs.get("attack") or {}).get("execution_verified") is not True:
+        raise AssertionError(f"Independent runner did not verify both Forge executions: {runs}")
     if payload.get("status") != "SIMULATED_BREAK" or payload.get("legacy_status") != "SIMULATED_BREAK":
         raise AssertionError(f"Fixture-only paired report must remain SIMULATED_BREAK: {payload}")
     for field in ("state_diff_pair_verified", "same_entry_call_verified", "same_prestate_verified",
                   "same_chain_verified", "same_block_verified", "same_fork_anchor_verified",
-                  "trace_delta_verified", "evidence_requirements_verified"):
+                  "trace_delta_verified", "evidence_requirements_verified", "semantic_invariant_verified"):
         if payload.get(field) is not True:
             raise AssertionError(f"Independent paired control did not verify {field}: {payload}")
     destination = evidence_dir / report_prefix
