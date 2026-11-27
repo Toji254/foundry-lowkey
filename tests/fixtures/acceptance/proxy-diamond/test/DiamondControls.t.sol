@@ -223,7 +223,6 @@ contract DiamondControlsTest is LowkeyForgeStateDiffRecorder {
         require(app.value() == 4242 && app.ping() == keccak256("LOWKEY_DIAMOND_PING"), "DIAMOND_ADD_REMOVE_BROKE_UNRELATED_FUNCTIONS");
 
         vm.prank(owner);
-        vm.prank(owner);
         (bool invalidFacet,) = address(diamond).call(
             abi.encodeWithSelector(
                 IDiamondCut.diamondCut.selector,
