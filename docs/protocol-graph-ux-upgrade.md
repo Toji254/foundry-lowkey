@@ -63,8 +63,10 @@ The intended visual direction follows the user's dark hybrid Figma reference. Th
 - LEXICAL_SOURCE: local source parser observation.
 - COMPILER_AST: fresh compiler AST declaration/source relationship.
 - ASSERTED ASSUMPTION: user-supplied association; never a proof claim.
-- Runtime trace evidence remains separately validated and is not merged into the source explorer as if it were static call-graph truth.
-- Unresolved relationships remain unresolved unless an evidence-backed resolution exists.
+- Validated canonical TraceEvent v2 observations now appear on the same protocol canvas as `RUNTIME_CALL_OBSERVED` edges with amber dashed styling and a dedicated relationship-layer filter.
+- Runtime address endpoints are clearly marked as observed runtime addresses, not source contract declarations. Selecting an observed edge shows backend, operation, depth, selector, revert status, artifact, stream, sequence and run ID.
+- Runtime edges remain separate from static source evidence. The address-to-source/deployment join is intentionally unavailable until chain/genesis/deployment/proxy identity can be validated.
+- Unresolved source relationships remain unresolved unless an evidence-backed resolution exists.
 
 Static graph relationships show possible source-level relationships, not that the path executed. A validated runtime trace shows an observed event in that trace only. Deployment/proxy resolution remains a separate deployment evidence path.
 
@@ -92,10 +94,13 @@ lk link --list --search withdraw
 
 Use ordinary Foundry project build-info for C3/override enrichment; graph generation does not force a new compilation. A source graph without fresh build-info will still show the lexical facts and explicitly mark compiler inheritance facts unavailable.
 
+## Browser acceptance status
+
+`scripts/protocol-graph-browser-e2e.py` and the `protocol-graph-browser` workflow now exercise the shipped graph in Chromium using generated generic Solidity projects. The planned checks cover graph initialization, entrypoint focus, source call-site navigation, bookmark/investigation state, search, relationship filtering, keyboard shortcuts, page reload persistence, a 768px viewport, and expansion of a 60-contract network. The workflow also retains desktop, narrow and large-network screenshots. These checks remain pending until CI completes on the latest branch head.
+
 ## Remaining UX acceptance
 
-- Run browser E2E tests at practical desktop and narrower viewport sizes.
-- Check node/edge overlap, pointer coordinate transformations, drawer resizing, inspector reflow, focus visibility, keyboard-only navigation and console/network failures.
-- Benchmark hundreds of contracts/thousands of functions/dense edges with real browser timings.
-- Add robust expand/collapse controls, richer entrypoint filters, full caller-path navigation and source call-token selection/highlighting.
-- Visually compare the actual target Figma frame after the current Figma MCP rate limit is lifted.
+- Inspect the Chromium screenshots and fix any node/edge overlap, clipped layout, source drawer or inspector reflow issue reported by the real browser test.
+- Add thousands-of-functions/dense-edge stress data and accessibility/keyboard-only acceptance beyond the current interaction smoke test.
+- Add robust explicit expand/collapse controls, richer entrypoint filters, full caller-path navigation and source call-token selection/highlighting.
+- Visually compare the actual target Figma frame when Figma access is available; its Starter-plan MCP quota is still exhausted, so the prototype has not been inspected.
