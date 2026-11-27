@@ -89,8 +89,7 @@ def main() -> int:
                 'import {NativeTarget} from "../src/NativeTarget.sol";\n'
                 "contract Deploy is Script {\n"
                 "    function run() external {\n"
-                '        uint256 privateKey = vm.envUint("PRIVATE_KEY");\n'
-                "        vm.startBroadcast(privateKey);\n"
+                "        vm.startBroadcast();\n"
                 "        NativeTarget target = new NativeTarget();\n"
                 "        vm.stopBroadcast();\n"
                 '        console2.log("LOWKEY_TARGET", address(target));\n'

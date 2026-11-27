@@ -423,6 +423,24 @@ class NetworkDeploymentRegistryIntegrationTests(unittest.TestCase):
             project_record = config["project_target_registry"][str(root.resolve())]["NativeTarget"]
             self.assertEqual(project_record["network_registry_status"], "RECORDED")
 
+    def test_native_foundry_signer_never_uses_default_key_for_different_session_actor(self):
+        session_actor = "0x" + "11" * 20
+        unrelated_key_address = "0x" + "22" * 20
+        with patch.object(lk, "cast_output", return_value=(0, unrelated_key_address, "")):
+            selected_key, auth_args = lk._foundry_script_broadcast_auth(
+                "0x" + "33" * 32, [session_actor]
+            )
+        self.assertIsNone(selected_key)
+        self.assertEqual(auth_args, ["--unlocked", "--sender", session_actor])
+
+    def test_native_foundry_signer_uses_private_key_only_when_it_matches_session_actor(self):
+        session_actor = "0x" + "11" * 20
+        key = "0x" + "33" * 32
+        with patch.object(lk, "cast_output", return_value=(0, session_actor, "")):
+            selected_key, auth_args = lk._foundry_script_broadcast_auth(key, [session_actor])
+        self.assertEqual(selected_key, key)
+        self.assertEqual(auth_args, ["--private-key", key])
+
 
 if __name__ == "__main__":
     unittest.main()

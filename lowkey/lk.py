@@ -989,6 +989,27 @@ def derive_default_anvil_key(index):
     match=re.search(r"0x[0-9a-fA-F]{64}",out or "")
     return normalize_private_key(match.group(0)) if match else None
 
+
+def _foundry_script_broadcast_auth(key, accounts):
+    """Choose only a signer that is actually authorized by this local RPC."""
+    sender = str(accounts[0]).strip() if isinstance(accounts, (list, tuple)) and accounts else ""
+    if not is_address(sender):
+        raise ValueError("the selected network has no valid lab-deployer account")
+    if key:
+        try:
+            code, output, _error = cast_output(
+                ["cast", "wallet", "address", "--private-key", str(key)]
+            )
+            match = re.search(r"0x[0-9a-fA-F]{40}", output or "")
+            derived_address = match.group(0).lower() if code == 0 and match else None
+        except Exception:
+            derived_address = None
+        if derived_address == sender.lower():
+            return str(key), ["--private-key", str(key)]
+    # Managed Anvil sessions use a random mnemonic per session. Never reuse a
+    # key derived from Foundry's public default mnemonic unless it matches.
+    return None, ["--unlocked", "--sender", sender]
+
 INTERNAL_WALLET_NAMES = {'lab-deployer', 'lowkey'}
 
 def wallet_is_internal(name, entry):
@@ -16679,7 +16700,8 @@ def _lab_script_environment(script, rpc, key, accounts):
             "PRIVATE_KEY", "DEPLOYER_PRIVATE_KEY", "ADMIN_PRIVATE_KEY",
             "OWNER_PRIVATE_KEY", "SENDER_PRIVATE_KEY", "BROADCAST_PRIVATE_KEY",
         }:
-            assignments[name] = str(int(str(key), 16))
+            if key:
+                assignments[name] = str(int(str(key), 16))
         elif upper in {"IS_TESTNET", "TESTNET", "LOCAL_LAB", "ANVIL"}:
             assignments[name] = "true"
         elif upper in {
@@ -17002,11 +17024,13 @@ def _review_project_lab_script(config, root, script, rpc, accounts, key, script_
             r"vm\.env(?!Or)[A-Za-z0-9_]*\s*\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]",
             source,
         ))
-        second_key = str(int(str(derive_default_anvil_key(1) or key), 16))
-        reserved_environment = {
-            "LOWKEY_LAB_KEY": str(int(str(key), 16)),
-            "LOWKEY_BOB_KEY": second_key,
-        }
+        reserved_environment = {}
+        if key:
+            second_key = str(int(str(derive_default_anvil_key(1) or key), 16))
+            reserved_environment = {
+                "LOWKEY_LAB_KEY": str(int(str(key), 16)),
+                "LOWKEY_BOB_KEY": second_key,
+            }
         effective_environment = dict(os.environ)
         effective_environment.update(script_env)
         effective_environment.update(reserved_environment)
@@ -17113,7 +17137,42 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     print("Mode    : project-native deployment script")
     print("Action  : executing the project's own deployment entry point...")
 
-    script_env, unresolved_env = _lab_script_environment(script, rpc, key, accounts)
+    try:
+        broadcast_key, broadcast_auth_args = _foundry_script_broadcast_auth(key, accounts)
+    except ValueError as signer_error:
+        return fail(f"Error: native script deployment has no usable session signer. {signer_error}")
+
+    if broadcast_key:
+        print("Signer  : verified private key matches the selected lab-deployer account")
+    else:
+        print(
+            "Signer  : RPC-unlocked lab-deployer account "
+            f"({accounts[0]}); no key from another Anvil session will be reused"
+        )
+
+    script_env, unresolved_env = _lab_script_environment(
+        script, rpc, broadcast_key, accounts
+    )
+    if not broadcast_key:
+        try:
+            script_source = Path(script).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            script_source = ""
+        private_key_names = {
+            name for name in (
+                "PRIVATE_KEY", "DEPLOYER_PRIVATE_KEY", "ADMIN_PRIVATE_KEY",
+                "OWNER_PRIVATE_KEY", "SENDER_PRIVATE_KEY", "BROADCAST_PRIVATE_KEY",
+            )
+            if ('"' + name + '"' in script_source) or ("'" + name + "'" in script_source)
+        }
+        if private_key_names:
+            return fail(
+                "Error: this deployment script requires a private-key environment variable "
+                + ", ".join(sorted(private_key_names))
+                + ", but no supplied private key was proven to control the selected "
+                "managed Anvil actor. No deployment review or broadcast was started."
+            )
+
     if script_env:
         print(f"Config  : supplied safe local defaults for {len(script_env)} deployment variable(s)")
     if unresolved_env:
@@ -17123,15 +17182,17 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
         )
 
     review_code = _review_project_lab_script(
-        config, root, script, rpc, accounts, key, script_env, unresolved_env
+        config, root, script, rpc, accounts, broadcast_key, script_env, unresolved_env
     )
     if review_code != 0:
         return review_code
 
-    reserved = {
-        "LOWKEY_LAB_KEY": str(int(str(key), 16)),
-        "LOWKEY_BOB_KEY": str(int(str(derive_default_anvil_key(1) or key), 16)),
-    }
+    reserved = {}
+    if broadcast_key:
+        reserved = {
+            "LOWKEY_LAB_KEY": str(int(str(broadcast_key), 16)),
+            "LOWKEY_BOB_KEY": str(int(str(derive_default_anvil_key(1) or broadcast_key), 16)),
+        }
     active_review = config.pop("_lowkey_active_foundry_script_review", None) if isinstance(config, dict) else None
     previous = {}
     for name, value in {**reserved, **script_env}.items():
@@ -17187,8 +17248,7 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
                 "--rpc-url",
                 rpc,
                 "--broadcast",
-                "--private-key",
-                key,
+                *broadcast_auth_args,
             ],
             capture=True,
         )
