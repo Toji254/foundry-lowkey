@@ -220,7 +220,10 @@ def test_review_persistence_is_atomic_and_does_not_store_environment_values():
         review = _build(root, env={"PRIVATE_RPC_TOKEN": secret_value, "LOWKEY_RPC_URL": "http://127.0.0.1:18545"})
         path = persist_hardhat_script_review(review, root, state="REVIEW_REQUIRED")
         evidence = root / path
-        payload = json.loads(evidence.read_text(encoding="utf-8"))
+        raw_evidence = evidence.read_bytes()
+        assert raw_evidence.endswith(b"\n")
+        assert not raw_evidence.endswith(b"\\n")
+        payload = json.loads(raw_evidence)
         assert payload["approval_state"] == "REVIEW_REQUIRED"
         assert payload["review_id"] == review.review_id
         assert secret_value not in evidence.read_text(encoding="utf-8")

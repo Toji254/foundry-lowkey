@@ -198,9 +198,13 @@ def test_review_evidence_is_atomic_and_never_persists_environment_values():
         review = _build(root)
         path = persist_foundry_script_review(review, root, state="REVIEW_REQUIRED")
         evidence = root / path
-        payload = json.loads(evidence.read_text(encoding="utf-8"))
+        raw_evidence = evidence.read_bytes()
+        assert raw_evidence.endswith(b"\n")
+        assert not raw_evidence.endswith(b"\\n")
+        payload = json.loads(raw_evidence)
         assert payload["approval_state"] == "REVIEW_REQUIRED"
         assert payload["review_id"] == review.review_id
+        assert render_foundry_script_review(review).count("\n") > 5
         assert "PRIVATE_RPC_TOKEN" in [item["name"] for item in payload["environment_fingerprints"]]
         assert "do-not-write-this-secret" not in evidence.read_text(encoding="utf-8")
         persist_foundry_script_review(review, root, state="APPROVED")

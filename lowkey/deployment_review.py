@@ -194,7 +194,7 @@ def persist_foundry_script_review(
             temp_path = Path(handle.name)
             os.fchmod(handle.fileno(), 0o600)
             json.dump(payload, handle, indent=2, sort_keys=True)
-            handle.write("\\n")
+            handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, path)
@@ -733,7 +733,7 @@ def render_hardhat_script_review(review: HardhatScriptReview) -> str:
     ]
     for warning in review.warnings:
         lines.append("Warning         : " + warning)
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 
 def persist_hardhat_script_review(
@@ -810,7 +810,7 @@ def persist_hardhat_script_review(
             temp_path = Path(handle.name)
             os.fchmod(handle.fileno(), 0o600)
             json.dump(payload, handle, indent=2, sort_keys=True)
-            handle.write("\\n")
+            handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, path)
