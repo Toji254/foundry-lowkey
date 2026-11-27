@@ -66,6 +66,18 @@ class DependencyManifestTests(unittest.TestCase):
         self.assertEqual(result["dependencies"], [])
         self.assertIn("network_identity", result["warnings"][0])
 
+    def test_address_requires_identity_block_hash(self):
+        network = self._network()
+        network.pop("identity_block_hash")
+        self._write({
+            "schema": MANIFEST_SCHEMA,
+            "network_identity": network,
+            "dependencies": [self._entry(address="0x" + "11" * 20)],
+        })
+        result = load_dependency_manifest(self.root).to_dict()
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertIn("identity_block_hash", result["warnings"][0])
+
     def test_bad_address_and_unknown_dependency_kind_fail_closed(self):
         for entry in (self._entry(address="0x1234"), self._entry(kind="magic-address")):
             self._write({

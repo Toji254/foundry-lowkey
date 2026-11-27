@@ -25590,7 +25590,7 @@ def run_deps(args, config=None):
         if isinstance(edge, dict) and edge.get("kind") == "external-infrastructure"
     ]
     if external_edges:
-        print("\\nDeclared external infrastructure (not independently verified):")
+        print("\nDeclared external infrastructure (not independently verified):")
         for edge in external_edges:
             print(
                 f"  [{edge.get('resolution_status', 'UNVERIFIED')}] "

@@ -85,9 +85,7 @@ def _valid_network_identity(value: Any) -> bool:
     if not isinstance(value.get("genesis_hash"), str) or not _HASH_PATTERN.fullmatch(value["genesis_hash"]):
         return False
     identity_block = value.get("identity_block_hash")
-    if identity_block is not None and (
-        not isinstance(identity_block, str) or not _HASH_PATTERN.fullmatch(identity_block)
-    ):
+    if not isinstance(identity_block, str) or not _HASH_PATTERN.fullmatch(identity_block):
         return False
     return True
 

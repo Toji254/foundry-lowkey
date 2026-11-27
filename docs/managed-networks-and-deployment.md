@@ -111,7 +111,8 @@ Compiler evidence can identify a constructor input without proving whether an ad
     "project_id": "PROJECT_ID_FROM_LK",
     "network_session_id": "SESSION_UUID_FROM_LK",
     "chain_id": 31337,
-    "genesis_hash": "0xREPLACE_WITH_32_BYTE_SESSION_GENESIS_HASH"
+    "genesis_hash": "0xREPLACE_WITH_32_BYTE_SESSION_GENESIS_HASH",
+    "identity_block_hash": "0xREPLACE_WITH_32_BYTE_SESSION_IDENTITY_BLOCK_HASH"
   },
   "dependencies": [
     {
@@ -126,6 +127,6 @@ Compiler evidence can identify a constructor input without proving whether an ad
 }
 ```
 
-Supported kinds include `weth`, `erc20-token`, `chainlink-feed`, `router`, `vault`, `factory`, `oracle`, `bridge`, `proxy-admin`, `beacon`, `diamond-facet`, `multisig`, `timelock`, `governance` and `other-contract`. The `consumer` must be a source-qualified compiler contract and `parameter` must match a compiler-reported constructor input. Duplicate or malformed bindings block the manifest. An address requires a complete managed-session identity; a declaration from another session is detached from the active graph.
+Supported kinds include `weth`, `erc20-token`, `chainlink-feed`, `router`, `vault`, `factory`, `oracle`, `bridge`, `proxy-admin`, `beacon`, `diamond-facet`, `multisig`, `timelock`, `governance` and `other-contract`. The `consumer` must be a source-qualified compiler contract and `parameter` must match a compiler-reported constructor input. Duplicate or malformed bindings block the manifest. An address requires a complete managed-session identity including the session's identity-block hash; a declaration from another or incompletely identified session is detached from the active graph.
 
 Run `lk deps --json` to inspect the declaration. Manifest evidence is marked `DECLARED` / `DECLARED_UNVERIFIED`, is never an automatic deployment instruction, and does not prove code presence, runtime identity, token standard, authority, or protocol readiness. The graph remains `REVIEW_REQUIRED` until separate runtime and semantic checks establish the actual dependency.
