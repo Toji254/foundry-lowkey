@@ -187,7 +187,7 @@ def _make_review_leads(nodes: list[dict[str, Any]], edges: list[dict[str, Any]])
             score += 1
         if not signals:
             continue
-        entrypoint = item.get("visibility") in {"external", "public"}
+        entrypoint = item.get("visibility") in {"external", "public"} or item.get("special_function_kind") in {"fallback", "receive"}
         leads.append({
             "id": "lead:" + item["id"], "function": item["id"], "contract": item.get("contract"),
             "label": item["label"], "file": item.get("file"), "line": item.get("line"),
@@ -238,7 +238,11 @@ def build_explorer_model(index: dict[str, Any], root: str | Path = ".") -> dict[
             "origin": provenance, "vendor": _vendor_for(file_name, provenance),
             "scope": "support" if any(part.casefold() in {"test", "tests", "mock", "mocks", "script", "scripts", "fixture", "fixtures"} for part in Path(file_name).parts[:-1]) else "application",
             "evidence": str(raw.get("evidence") or "STATIC_SOURCE"),
-            "visibility": raw.get("visibility"), "mutability": raw.get("mutability"),
+            "visibility": raw.get("visibility"),
+            "special_function_kind": raw.get("special_function_kind"),
+            "entrypoint": raw.get("visibility") in {"external", "public"} or raw.get("special_function_kind") in {"fallback", "receive"},
+            "entrypoint_kind": raw.get("special_function_kind") if raw.get("special_function_kind") in {"fallback", "receive"} else ("function" if raw.get("visibility") in {"external", "public"} else None),
+            "mutability": raw.get("mutability"),
             "signature": raw.get("signature"), "parameters": raw.get("parameters") or [],
             "storage_class": raw.get("storage_class") or raw.get("persistence"),
             "type_text": raw.get("type") or "", "mapping_keys": raw.get("mapping_keys") or [],
@@ -469,14 +473,14 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
 .panel-head{display:flex;align-items:center;justify-content:space-between;color:#b8c8dc;font-size:10px;font-weight:850;letter-spacing:.13em;margin:2px 2px 10px}.count-label{font-variant-numeric:tabular-nums;color:#8fa6c0;font-size:10px}
 .project-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px}.stat{background:#122138;border:1px solid #273d5b;border-radius:8px;padding:8px 6px}.stat b{font-size:16px;display:block;color:#f1f7ff;font-variant-numeric:tabular-nums}.stat span{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}
 .search-box{display:flex;align-items:center;gap:7px;border:1px solid #304764;background:#0a1525;border-radius:8px;padding:0 9px;margin-bottom:9px}.search-box input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:var(--text);padding:9px 0}
-.tree{display:grid;gap:2px;margin-bottom:14px}.folder-row{display:flex;align-items:center;gap:6px;padding:7px 5px;color:#9fb1c8;font-weight:800;font-size:10px;letter-spacing:.07em;text-transform:uppercase;border-radius:6px}.folder-row:hover{background:#172941}.folder-row button{all:unset;cursor:pointer;flex:1}.folder-row span{color:#718ba7}
+.tree{display:grid;gap:2px;margin-bottom:14px}.entrypoint-panel{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:11px 0 12px;margin:0 0 13px}.entrypoint-list{display:grid;gap:4px;max-height:210px;overflow:auto}.entrypoint-contract{color:#7f98b4;font-size:9px;font-weight:850;letter-spacing:.1em;text-transform:uppercase;padding:5px 5px 2px}.entrypoint-row{display:block;width:100%;text-align:left;border:1px solid transparent;background:#101e32;border-radius:7px;padding:7px 8px;color:#dce7f4}.entrypoint-row:hover{border-color:#34718f;background:#142943}.entrypoint-row strong{display:block;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.entrypoint-row small{display:block;color:#8ea7c2;font-size:9px;margin-top:2px;overflow-wrap:anywhere}.entrypoint-empty{font-size:10px;color:#849ab3;padding:5px}.folder-row{display:flex;align-items:center;gap:6px;padding:7px 5px;color:#9fb1c8;font-weight:800;font-size:10px;letter-spacing:.07em;text-transform:uppercase;border-radius:6px}.folder-row:hover{background:#172941}.folder-row button{all:unset;cursor:pointer;flex:1}.folder-row span{color:#718ba7}
 .declaration-row{width:100%;display:flex;align-items:center;gap:7px;text-align:left;padding:7px 7px;border:1px solid transparent;background:transparent;border-radius:7px;color:#dce7f4}.declaration-row:hover{background:#14263e;border-color:#2a4565}.declaration-row.active{background:#15334c;border-color:#2c83a7;box-shadow:inset 2px 0 var(--cyan)}.node-icon{width:19px;height:19px;display:grid;place-items:center;border-radius:5px;background:#173652;color:#70d3f7;font-size:11px;font-weight:850;flex:0 0 auto}.node-icon.interface{background:#2b2145;color:#c2a5ff}.node-icon.library{background:#173c32;color:#70ddb5}.declaration-main{min-width:0;flex:1}.declaration-name{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:650}.declaration-meta{display:block;font-size:10px;color:#8198b4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.declaration-count{font-size:10px;color:#8ca6c1;font-variant-numeric:tabular-nums}
 .filters{border-top:1px solid var(--line);padding-top:12px}.filter-section{margin-bottom:13px}.filter-title{display:flex;justify-content:space-between;font-size:10px;font-weight:850;color:#9eb1c9;letter-spacing:.11em;text-transform:uppercase;margin-bottom:7px}.filter-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.checkline{display:flex;align-items:center;gap:6px;color:#c2d0e2;font-size:10px;min-width:0}.checkline input{accent-color:#38bde9}.vendor-list{display:grid;gap:6px}.vendor-list .checkline{justify-content:space-between}
 .center{min-width:0;min-height:0;display:grid;grid-template-rows:52px minmax(250px,1fr) 105px;position:relative;background:radial-gradient(ellipse at 50% 40%,#142945 0%,#0a1423 68%)}
 .graph-toolbar{display:flex;align-items:center;gap:6px;padding:7px 11px;border-bottom:1px solid #1d314b;background:#0b1728cc}.toolbar-label{font-size:10px;color:#849bb5;font-weight:800;letter-spacing:.1em}.toolbar-spacer{flex:1}.rel-filter{border:1px solid var(--line);background:#0f1d31;color:#b9c9dc;border-radius:7px;padding:7px 8px;max-width:160px}
 .graph-stage{position:relative;min-height:0;overflow:hidden;background-image:radial-gradient(#24405f66 1px,transparent 1px);background-size:22px 22px}#graph{width:100%;height:100%;display:block;touch-action:none;cursor:grab}#graph.dragging{cursor:grabbing}
-.edge{fill:none;stroke:#607f9f;stroke-width:2;opacity:.76;marker-end:url(#arrow);transition:opacity .18s,stroke-width .18s}.edge.CALLS{stroke:#54c6a0}.edge.LIBRARY_CALL,.edge.USES_LIBRARY{stroke:#64c69d}.edge.EXTERNAL_CALL{stroke:#e6a66a;stroke-dasharray:3 4}.edge.APPLIES_MODIFIER{stroke:#9d9fea}.edge.OVERRIDES,.edge.INHERITS,.edge.USES_TYPE{stroke:#a68ef0}.edge.READS,.edge.WRITES,.edge.DELETES{stroke:#64bbd9}.edge.ASSET_FLOW{stroke:#d68ae3;stroke-width:2.5;stroke-dasharray:8 6;animation:flowMotion 1.45s linear infinite}@keyframes flowMotion{to{stroke-dashoffset:-28}}@media(prefers-reduced-motion:reduce){.edge.ASSET_FLOW{animation:none}}.edge.IMPORTS{stroke:#6a829d;stroke-dasharray:5 6}.edge.CONTAINS{stroke:#314a63;stroke-width:1.1;stroke-dasharray:3 5;marker-end:none;opacity:.45}.edge.hot{opacity:1;stroke-width:3.5}.edge-label{font-size:10px;fill:#aebed1;paint-order:stroke;stroke:#091321;stroke-width:4px;pointer-events:none}
-.graph-node{cursor:pointer}.graph-node rect{fill:#14243b;stroke:#55708e;stroke-width:1.5;rx:10;filter:drop-shadow(0 7px 12px #0005)}.graph-node.declaration rect{fill:#112e48;stroke:#399bd0}.graph-node.interface rect{fill:#281f45;stroke:#a88af0}.graph-node.library rect{fill:#143c33;stroke:#57c69c}.graph-node.function rect,.graph-node.modifier rect{fill:#192944;stroke:#7fa6d3}.graph-node.state rect{fill:#19372e;stroke:#64b68e}.graph-node.asset rect{fill:#35213d;stroke:#c58ada}.graph-node.external rect,.graph-node.unresolved_state rect{fill:#38291f;stroke:#d6a55e}.graph-node.group rect{fill:#142b43;stroke:#3e86ae;stroke-width:2}.graph-node.selected rect{stroke:#59ddff;stroke-width:3;filter:drop-shadow(0 0 13px #42c9f888)}.graph-node:hover rect{stroke:#9deaff;stroke-width:2.5}.graph-node text{pointer-events:none}.node-title{font-size:14px;font-weight:800;fill:#eff7ff}.node-subtitle{font-size:10px;fill:#9eb3cc}
+.edge{fill:none;stroke:#607f9f;stroke-width:2;opacity:.76;marker-end:url(#arrow);transition:opacity .18s,stroke-width .18s}.edge.CALLS{stroke:#54c6a0}.edge.LIBRARY_CALL,.edge.USES_LIBRARY{stroke:#64c69d}.edge.EXTERNAL_CALL{stroke:#e6a66a;stroke-dasharray:3 4}.edge.APPLIES_MODIFIER{stroke:#9d9fea}.edge.OVERRIDES,.edge.INHERITS,.edge.USES_TYPE{stroke:#a68ef0}.edge.READS,.edge.WRITES,.edge.DELETES{stroke:#64bbd9}.edge.ASSET_FLOW{stroke:#d68ae3;stroke-width:2.5;stroke-dasharray:8 6;animation:flowMotion 1.45s linear infinite}@keyframes flowMotion{to{stroke-dashoffset:-28}}@media(prefers-reduced-motion:reduce){.edge.ASSET_FLOW{animation:none}}.edge.IMPORTS{stroke:#6a829d;stroke-dasharray:5 6}.edge.CONTAINS{stroke:#314a63;stroke-width:1.1;stroke-dasharray:3 5;marker-end:none;opacity:.45}.edge.hot{opacity:1;stroke-width:3.5}.edge.dimmed{opacity:.12;marker-end:none;animation:none}.edge-label{font-size:10px;fill:#aebed1;paint-order:stroke;stroke:#091321;stroke-width:4px;pointer-events:none}.edge-label.dimmed{opacity:.12}
+.graph-node{cursor:pointer}.graph-node rect{fill:#14243b;stroke:#55708e;stroke-width:1.5;rx:10;filter:drop-shadow(0 7px 12px #0005)}.graph-node.declaration rect{fill:#112e48;stroke:#399bd0}.graph-node.interface rect{fill:#281f45;stroke:#a88af0}.graph-node.library rect{fill:#143c33;stroke:#57c69c}.graph-node.function rect,.graph-node.modifier rect{fill:#192944;stroke:#7fa6d3}.graph-node.state rect{fill:#19372e;stroke:#64b68e}.graph-node.asset rect{fill:#35213d;stroke:#c58ada}.graph-node.external rect,.graph-node.unresolved_state rect{fill:#38291f;stroke:#d6a55e}.graph-node.group rect{fill:#142b43;stroke:#3e86ae;stroke-width:2}.graph-node.selected rect{stroke:#59ddff;stroke-width:3;filter:drop-shadow(0 0 13px #42c9f888)}.graph-node.dimmed{opacity:.2;filter:saturate(.35)}.graph-node.focused rect{stroke-width:2.3}.graph-node:hover rect{stroke:#9deaff;stroke-width:2.5}.graph-node text{pointer-events:none}.node-title{font-size:14px;font-weight:800;fill:#eff7ff}.node-subtitle{font-size:10px;fill:#9eb3cc}
 .graph-empty{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none}.graph-empty span{max-width:420px;text-align:center;color:#9cb0c9;background:#0d1c30e8;border:1px solid #284563;border-radius:12px;padding:16px}
 #minimap{position:absolute;right:12px;bottom:12px;width:154px;height:95px;border:1px solid #36516e;border-radius:8px;background:#091626dd;pointer-events:auto;cursor:crosshair;touch-action:manipulation}.graph-hint{position:absolute;left:13px;bottom:13px;color:#7f96b2;font-size:10px;background:#081523cc;border:1px solid #253e5c;border-radius:6px;padding:5px 8px;pointer-events:none}
 .flow-panel{border-top:1px solid var(--line);background:#0b1728;padding:9px 13px;overflow:hidden}.flow-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px}.flow-title{font-size:10px;font-weight:850;letter-spacing:.12em;color:#9eb3cc}.flow-track{display:flex;align-items:center;gap:7px;overflow-x:auto;padding:2px 0 8px}.flow-step{display:flex;align-items:center;gap:6px;white-space:nowrap;border:1px solid #2a4868;background:#12243b;color:#dceafa;border-radius:8px;padding:7px 9px;font-size:11px;font-weight:650;cursor:pointer}.flow-step:hover{border-color:var(--cyan);background:#18334d}.flow-arrow{color:#5dbde0;font-size:16px;flex:0 0 auto}.flow-note{font-size:10px;color:#8198b3}
@@ -511,6 +515,10 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
     <div class="project-stats" id="project-stats"></div>
     <div class="search-box"><span>⌕</span><input id="sidebar-search" placeholder="Find any declaration…"></div>
     <div class="tree" id="declaration-tree"></div>
+    <section class="entrypoint-panel">
+      <div class="filter-title"><span>Entry points</span><span class="count-label" id="entrypoint-count">0</span></div>
+      <div class="entrypoint-list" id="entrypoint-explorer"></div>
+    </section>
     <div class="filters">
       <div class="filter-section"><div class="filter-title"><span>Declaration types</span><button class="muted" id="reset-filters" style="border:0;background:transparent">Reset</button></div>
         <div class="filter-grid">
@@ -596,6 +604,7 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
 let MODEL=JSON.parse(document.getElementById("graph-data").textContent);
 const SERVER_MODE=__SERVER_MODE__;
 const byId=new Map(),positions=new Map(),hiddenVendors=new Set();
+const nodeElementsById=new Map(),edgeElementsById=new Map(),edgeLabelsById=new Map(),edgeDataById=new Map(),edgeIndicesById=new Map(),incidentEdgesByNode=new Map();
 let mode="architecture",selectedId=null,selectedTab="overview",selectedEdge=null,focusFunctionId=null,history=[];
 let scale=1,tx=0,ty=0,drag=null,pan=null,renderNodes=[],renderEdges=[];
 const svg=document.getElementById("graph"),viewport=document.getElementById("viewport");
@@ -643,6 +652,7 @@ function visibleEdge(e){
 }
 function declarationNodes(){return MODEL.nodes.filter(function(n){return n.type==="declaration"&&visibleNode(n)})}
 function groupNodes(){return MODEL.groups.map(function(g){return node(g.id)}).filter(visibleNode)}
+function isEntryPoint(item){return !!(item&&(item.entrypoint===true||item.visibility==="external"||item.visibility==="public"||item.special_function_kind==="fallback"||item.special_function_kind==="receive"))}
 function folderProjection(folder){
   const group=MODEL.groups.find(function(g){return g.folder===folder});if(!group)return {nodes:[],edges:[]};
   const ids=new Set((group.declarations||[]).filter(function(id){return visibleNode(node(id))}));
@@ -704,7 +714,7 @@ function selectedContractProjection(contractId){
     if(b&&b.contract_id)ids.add(b.contract_id);
   });
   // Retain all externally callable entry points, including functions with no indexed edges.
-  functions.filter(function(fn){return fn.visibility==="external"||fn.visibility==="public"}).forEach(function(fn){
+  functions.filter(isEntryPoint).forEach(function(fn){
     if(visibleNode(fn))ids.add(fn.id);
   });
   const includedContracts=new Set(Array.from(ids).map(function(id){
@@ -724,8 +734,11 @@ function selectedContractProjection(contractId){
 }
 function functionProjection(contractId,focusFunction){
   const functions=MODEL.nodes.filter(function(n){return ["function","modifier"].includes(n.type)&&n.contract_id===contractId&&visibleNode(n)});
-  const root=focusFunction?node(focusFunction):functions.find(function(n){return n.visibility==="external"||n.visibility==="public"})||functions[0];
-  if(!root)return {nodes:[],edges:[],root:null};
+  const root=focusFunction?node(focusFunction):functions.find(isEntryPoint)||functions[0];
+  if(!root){
+    const base=overviewProjection();
+    return {nodes:base.nodes,edges:base.edges,root:null,distance:new Map(),focus_node_ids:[],focus_group_ids:[],focus_edge_ids:[]};
+  }
   const distance=new Map([[root.id,0]]),queue=[root.id],callEdges=[];
   while(queue.length){
     const current=queue.shift();
@@ -739,9 +752,7 @@ function functionProjection(contractId,focusFunction){
       }
     });
   }
-  const distanceMap=distance;
-  const functionIds=new Set(distanceMap.keys());
-  const ids=new Set(functionIds);
+  const functionIds=new Set(distance.keys()),ids=new Set(functionIds);
   const edges=callEdges.filter(function(e){return functionIds.has(e.source)});
   edges.forEach(function(e){ids.add(e.source);ids.add(e.target)});
   MODEL.edges.forEach(function(e){
@@ -755,8 +766,43 @@ function functionProjection(contractId,focusFunction){
   });
   ownership.forEach(function(e){edges.push(e)});
   const kept=new Set(ids);
-  const filteredEdges=Array.from(new Map(edges.filter(function(e){return kept.has(e.source)&&kept.has(e.target)}).map(function(e){return [e.id,e]})).values());
-  return {nodes:Array.from(ids).map(node).filter(Boolean),edges:filteredEdges,root:root,distance:distanceMap};
+  const focusedEdges=Array.from(new Map(edges.filter(function(e){return kept.has(e.source)&&kept.has(e.target)}).map(function(e){return [e.id,e]})).values());
+
+  // Keep the complete folder-level protocol network. The selected entrypoint
+  // path is overlaid at declaration/function resolution instead of replacing
+  // the architecture with a disconnected call tree.
+  const base=overviewProjection();
+  const nodesById=new Map(base.nodes.map(function(item){return [item.id,item]}));
+  Array.from(ids).forEach(function(id){
+    const item=node(id);
+    if(item&&visibleNode(item))nodesById.set(item.id,item);
+  });
+  const focusGroupIds=new Set(),bridgeEdges=[];
+  ownerIds.forEach(function(ownerId){
+    const owner=node(ownerId);
+    if(!owner||owner.type!=="declaration")return;
+    const groupId="group:"+owner.folder,group=node(groupId);
+    if(!group||!visibleNode(group))return;
+    focusGroupIds.add(groupId);
+    bridgeEdges.push({
+      id:"focus-contains:"+groupId+":"+ownerId,source:groupId,target:ownerId,
+      kind:"CONTAINS",label:"CONTAINS",resolution:"DIRECT",
+      evidence:"DECLARATION_OWNERSHIP",file:owner.file,line:owner.line,
+      detail:"Focused contract belongs to this source folder group.",via:[]
+    });
+  });
+  const edgesById=new Map(base.edges.map(function(edge){return [edge.id,edge]}));
+  focusedEdges.concat(bridgeEdges).forEach(function(edge){edgesById.set(edge.id,edge)});
+  const focusEdgeIds=new Set(focusedEdges.concat(bridgeEdges).map(function(edge){return edge.id}));
+  edgesById.forEach(function(edge){
+    if(focusGroupIds.has(edge.source)||focusGroupIds.has(edge.target))focusEdgeIds.add(edge.id);
+  });
+  return {
+    nodes:Array.from(nodesById.values()),edges:Array.from(edgesById.values()),
+    root:root,distance:distance,
+    focus_node_ids:Array.from(ids),focus_group_ids:Array.from(focusGroupIds),
+    focus_edge_ids:Array.from(focusEdgeIds)
+  };
 }
 function storageProjection(contractId){
   if(!contractId||!node(contractId))return {nodes:[],edges:[]};
@@ -892,7 +938,7 @@ function currentProjection(){
   }
   const owner=contractContextForNode(selected);
   if(mode==="functions"){
-    if(!selected)return {nodes:[],edges:[],root:null};
+    if(!selected)return overviewProjection();
     return functionProjection(owner,focusFunctionId||(["function","modifier"].includes(selected.type)?selected.id:null));
   }
   if(mode==="storage")return storageProjection(owner);
@@ -940,81 +986,154 @@ function layoutProjection(projection,rootId){
   return pos;
 }
 function dimensions(n){return {w:Math.max(150,Math.min(270,(n.label||n.id).length*7.2+45)),h:n.type==="group"?76:58}}
-function curve(a,b,index){const dx=b.x-a.x,bend=Math.max(55,Math.min(180,Math.abs(dx)*.28))+((index%3)-1)*22;return "M"+a.x+" "+a.y+" C"+(a.x+Math.sign(dx||1)*bend)+" "+a.y+" "+(b.x-Math.sign(dx||1)*bend)+" "+b.y+" "+b.x+" "+b.y}
+function edgeGeometry(edge){
+  const a=positions.get(edge.source),b=positions.get(edge.target);
+  if(!a||!b)return null;
+  const da=dimensions(node(edge.source)||{}),db=dimensions(node(edge.target)||{});
+  const dx=b.x-a.x,dy=b.y-a.y;
+  const sourceScale=1/Math.max(Math.abs(dx)/(da.w/2),Math.abs(dy)/(da.h/2),1e-6);
+  const targetScale=1/Math.max(Math.abs(dx)/(db.w/2),Math.abs(dy)/(db.h/2),1e-6);
+  return {start:{x:a.x+dx*sourceScale,y:a.y+dy*sourceScale},end:{x:b.x-dx*targetScale,y:b.y-dy*targetScale}};
+}
+function curve(a,b,index){
+  const dx=b.x-a.x,dy=b.y-a.y,length=Math.hypot(dx,dy)||1;
+  const ux=dx/length,uy=dy/length,nx=-uy,ny=ux;
+  const bend=Math.max(42,Math.min(180,length*.23)),offset=((index%5)-2)*8;
+  const c1={x:a.x+ux*bend+nx*offset,y:a.y+uy*bend+ny*offset};
+  const c2={x:b.x-ux*bend+nx*offset,y:b.y-uy*bend+ny*offset};
+  return "M"+a.x+" "+a.y+" C"+c1.x+" "+c1.y+" "+c2.x+" "+c2.y+" "+b.x+" "+b.y;
+}
 function subtitle(n){
   if(n.type==="declaration")return (n.declaration_kind||"contract")+" · "+(n.folder||"");
-  if(n.type==="function"||n.type==="modifier")return (n.visibility||"visibility unknown")+" · "+(n.mutability||"nonpayable");
+  if(n.type==="function"||n.type==="modifier")return (n.special_function_kind||n.visibility||"visibility unknown")+" · "+(n.mutability||"nonpayable");
   if(n.type==="state")return (n.storage_class||"storage")+" · "+(n.type_text||"state");
   if(n.type==="asset")return "asset movement candidate";
   if(n.type==="group")return n.description||n.count+" declarations";
   return n.file||n.type;
 }
 function renderGraph(){
-  const p=currentProjection();renderNodes=p.nodes||[];renderEdges=(p.edges||[]).filter(visibleEdge);
-  positions.clear();
+  const projection=currentProjection();
+  renderNodes=projection.nodes||[];
+  renderEdges=(projection.edges||[]).filter(visibleEdge);
+  const focusNodeIds=new Set(projection.focus_node_ids||[]);
+  const focusGroupIds=new Set(projection.focus_group_ids||[]);
+  const focusEdgeIds=new Set(projection.focus_edge_ids||[]);
+  const focusActive=focusNodeIds.size>0;
   const selected=node(selectedId);
   const root=mode==="functions"?(focusFunctionId||selectedId):((mode==="storage"||mode==="assets")?contractContextForNode(selected):selectedId);
-  layoutProjection({nodes:renderNodes,edges:renderEdges},root).forEach(function(value,key){positions.set(key,value)});
+  layoutProjection({nodes:renderNodes,edges:renderEdges},root).forEach(function(value,key){
+    if(!positions.has(key))positions.set(key,value);
+  });
+  nodeElementsById.clear();edgeElementsById.clear();edgeLabelsById.clear();
+  edgeDataById.clear();edgeIndicesById.clear();incidentEdgesByNode.clear();
   clear(edgeLayer);clear(nodeLayer);
-  const coords=new Map(renderNodes.map(function(n){return [n.id,positions.get(n.id)]}));
   renderEdges.forEach(function(e,i){
-    const a=coords.get(e.source),b=coords.get(e.target);if(!a||!b)return;
-    const da=dimensions(node(e.source)||{}),db=dimensions(node(e.target)||{});
-    const start={x:a.x+da.w/2,y:a.y+da.h/2},end={x:b.x-db.w/2,y:b.y+db.h/2};
-    const path=el("path",{d:curve(start,end,i),class:"edge "+String(e.kind).replace(/[^A-Za-z0-9_-]/g,"_")+(selectedEdge===e.id?" hot":""),"data-edge-id":e.id});
-    const title=el("title");title.textContent=(e.label||e.kind)+" · "+e.resolution+(e.file?" · "+e.file+":"+e.line:"");path.appendChild(title);
+    const geometry=edgeGeometry(e);if(!geometry)return;
+    const focused=!focusActive||focusEdgeIds.has(e.id)||focusGroupIds.has(e.source)||focusGroupIds.has(e.target);
+    const path=el("path",{
+      d:curve(geometry.start,geometry.end,i),
+      class:"edge "+String(e.kind).replace(/[^A-Za-z0-9_-]/g,"_")+
+        (selectedEdge===e.id?" hot":"")+(focusActive?(focused?" focused":" dimmed"):""),
+      "data-edge-id":e.id
+    });
+    const title=el("title");
+    title.textContent=(e.label||e.kind)+" · "+e.resolution+(e.file?" · "+e.file+":"+e.line:"");
+    path.appendChild(title);
     path.addEventListener("click",function(event){event.stopPropagation();showEdgeDetails(e)});
     edgeLayer.appendChild(path);
+    edgeElementsById.set(e.id,path);edgeDataById.set(e.id,e);edgeIndicesById.set(e.id,i);
+    [e.source,e.target].forEach(function(id){
+      if(!incidentEdgesByNode.has(id))incidentEdgesByNode.set(id,[]);
+      incidentEdgesByNode.get(id).push(e.id);
+    });
     if(renderEdges.length<=180&&e.kind!=="CONTAINS"){
-      const text=el("text",{x:(start.x+end.x)/2,y:(start.y+end.y)/2-6,class:"edge-label"});
-      text.textContent=(e.label||e.kind)+(e.count>1?" ×"+e.count:"");edgeLayer.appendChild(text);
+      const label=el("text",{
+        x:(geometry.start.x+geometry.end.x)/2,
+        y:(geometry.start.y+geometry.end.y)/2-6,
+        class:"edge-label"+(focusActive&&!focused?" dimmed":""),
+        "data-edge-id":e.id
+      });
+      label.textContent=(e.label||e.kind)+(e.count>1?" ×"+e.count:"");
+      edgeLayer.appendChild(label);edgeLabelsById.set(e.id,label);
     }
   });
   renderNodes.forEach(function(n){
-    const pnt=coords.get(n.id);if(!pnt)return;
-    const d=dimensions(n),kind=n.type==="declaration"?(n.declaration_kind||"contract").toLowerCase().includes("interface")?"interface":(n.declaration_kind||"").toLowerCase().includes("library")?"library":"declaration":n.type;
-    const group=el("g",{class:"graph-node "+kind+(selectedId===n.id?" selected":""),transform:"translate("+(pnt.x-d.w/2)+","+(pnt.y-d.h/2)+")","data-node-id":n.id});
-    group.appendChild(el("rect",{width:d.w,height:d.h}));
-    const title=el("text",{x:13,y:24,class:"node-title"});title.textContent=n.label.length>34?n.label.slice(0,31)+"…":n.label;
-    const sub=el("text",{x:13,y:43,class:"node-subtitle"});sub.textContent=(subtitle(n)||"").slice(0,43);
+    const point=positions.get(n.id);if(!point)return;
+    const size=dimensions(n);
+    const kind=n.type==="declaration"?(n.declaration_kind||"contract").toLowerCase().includes("interface")?"interface":(n.declaration_kind||"").toLowerCase().includes("library")?"library":"declaration":n.type;
+    const focused=!focusActive||focusNodeIds.has(n.id)||focusGroupIds.has(n.id);
+    const group=el("g",{
+      class:"graph-node "+kind+(selectedId===n.id?" selected":"")+
+        (focusActive?(focused?" focused":" dimmed"):""),
+      transform:"translate("+(point.x-size.w/2)+","+(point.y-size.h/2)+")",
+      "data-node-id":n.id
+    });
+    group.appendChild(el("rect",{width:size.w,height:size.h}));
+    const title=el("text",{x:13,y:24,class:"node-title"});
+    title.textContent=n.label.length>34?n.label.slice(0,31)+"…":n.label;
+    const sub=el("text",{x:13,y:43,class:"node-subtitle"});
+    sub.textContent=(subtitle(n)||"").slice(0,43);
     group.append(title,sub);
     const tip=el("title");tip.textContent=n.label+" · "+(n.location||n.file||n.type);group.appendChild(tip);
     group.addEventListener("click",function(event){event.stopPropagation();openNode(n.id,true)});
-    group.addEventListener("pointerdown",function(event){event.stopPropagation();drag={id:n.id,startX:event.clientX,startY:event.clientY,origin:{x:pnt.x,y:pnt.y}};group.setPointerCapture(event.pointerId)});
+    group.addEventListener("pointerdown",function(event){
+      event.stopPropagation();
+      const current=positions.get(n.id)||point;
+      drag={id:n.id,startX:event.clientX,startY:event.clientY,origin:{x:current.x,y:current.y}};
+      group.setPointerCapture(event.pointerId);
+    });
     group.addEventListener("pointermove",function(event){
       if(!drag||drag.id!==n.id)return;
-      const bounds=svg.getBoundingClientRect();positions.set(n.id,{x:drag.origin.x+(event.clientX-drag.startX)*(1500/bounds.width)/scale,y:drag.origin.y+(event.clientY-drag.startY)*(920/bounds.height)/scale});renderPositionsOnly();
+      const bounds=svg.getBoundingClientRect();
+      positions.set(n.id,{
+        x:drag.origin.x+(event.clientX-drag.startX)*(1500/bounds.width)/scale,
+        y:drag.origin.y+(event.clientY-drag.startY)*(920/bounds.height)/scale
+      });
+      renderPositionsOnly(n.id);
     });
-    group.addEventListener("pointerup",function(){drag=null});group.addEventListener("pointercancel",function(){drag=null});
-    nodeLayer.appendChild(group);
+    group.addEventListener("pointerup",function(){drag=null});
+    group.addEventListener("pointercancel",function(){drag=null});
+    nodeLayer.appendChild(group);nodeElementsById.set(n.id,group);
   });
   document.getElementById("graph-empty").style.display=renderNodes.length?"none":"grid";
   document.getElementById("view-label").textContent=mode.toUpperCase().replace("FUNCTIONS","FUNCTION FLOW").replace("SECURITY","SECURITY REVIEW");
   const empty=document.getElementById("graph-empty");
   if(!renderNodes.length){
-    const message=mode==="functions"&&!selectedId?"Select a contract or function to inspect its call tree.":mode==="storage"&&!selectedId?"Select a contract to inspect function-to-storage relationships.":mode==="assets"&&!selectedId?"Select a contract to inspect its asset-flow paths.":"No visible relationships match these filters. Re-enable a layer or select another node.";
+    const message=mode==="functions"&&!selectedId?"Select an entry point to highlight its relationships in the network.":mode==="storage"&&!selectedId?"Select a contract to inspect function-to-storage relationships.":mode==="assets"&&!selectedId?"Select a contract to inspect its asset-flow paths.":"No visible relationships match these filters. Re-enable a layer or select another node.";
     empty.querySelector("span").textContent=message;
   }
   updateMinimap();applyTransform();
 }
-function renderPositionsOnly(){
-  Array.from(nodeLayer.children).forEach(function(group){
-    const id=group.getAttribute("data-node-id"),p=positions.get(id),n=node(id);if(!p||!n)return;
-    const d=dimensions(n);group.setAttribute("transform","translate("+(p.x-d.w/2)+","+(p.y-d.h/2)+")");
+function renderPositionsOnly(changedNodeId){
+  const changed=changedNodeId?[changedNodeId]:Array.from(nodeElementsById.keys());
+  const affectedEdges=new Set();
+  changed.forEach(function(id){
+    const group=nodeElementsById.get(id),point=positions.get(id),item=node(id);
+    if(group&&point&&item){
+      const size=dimensions(item);
+      group.setAttribute("transform","translate("+(point.x-size.w/2)+","+(point.y-size.h/2)+")");
+    }
+    (incidentEdgesByNode.get(id)||[]).forEach(function(edgeId){affectedEdges.add(edgeId)});
   });
-  Array.from(edgeLayer.children).forEach(function(path){
-    const edge=renderEdges.find(function(e){return e.id===path.getAttribute("data-edge-id")});if(!edge)return;
-    const a=positions.get(edge.source),b=positions.get(edge.target);if(!a||!b)return;
-    const da=dimensions(node(edge.source)||{}),db=dimensions(node(edge.target)||{});
-    path.setAttribute("d",curve({x:a.x+da.w/2,y:a.y+da.h/2},{x:b.x-db.w/2,y:b.y+db.h/2},0));
+  affectedEdges.forEach(function(edgeId){
+    const edge=edgeDataById.get(edgeId),path=edgeElementsById.get(edgeId),geometry=edge&&edgeGeometry(edge);
+    if(!edge||!path||!geometry)return;
+    const index=edgeIndicesById.get(edgeId)||0;
+    path.setAttribute("d",curve(geometry.start,geometry.end,index));
+    const label=edgeLabelsById.get(edgeId);
+    if(label){
+      label.setAttribute("x",(geometry.start.x+geometry.end.x)/2);
+      label.setAttribute("y",(geometry.start.y+geometry.end.y)/2-6);
+    }
   });
   updateMinimap();
 }
 let minimapBounds=null;
 function updateMinimap(){
   const mini=document.getElementById("minimap");clear(mini);
-  if(!positions.size){minimapBounds=null;return}
-  const values=Array.from(positions.values()),xs=values.map(function(p){return p.x}),ys=values.map(function(p){return p.y});
+  const values=renderNodes.map(function(item){return positions.get(item.id)}).filter(Boolean);
+  if(!values.length){minimapBounds=null;return}
+  const xs=values.map(function(p){return p.x}),ys=values.map(function(p){return p.y});
   const minX=Math.min(...xs)-100,maxX=Math.max(...xs)+100,minY=Math.min(...ys)-70,maxY=Math.max(...ys)+70,sx=132/Math.max(1,maxX-minX),sy=73/Math.max(1,maxY-minY);
   minimapBounds={minX:minX,minY:minY,sx:sx,sy:sy};
   renderEdges.forEach(function(e){const a=positions.get(e.source),b=positions.get(e.target);if(a&&b)mini.appendChild(el("line",{x1:10+(a.x-minX)*sx,y1:10+(a.y-minY)*sy,x2:10+(b.x-minX)*sx,y2:10+(b.y-minY)*sy,stroke:"#547493","stroke-width":.6}))});
@@ -1037,8 +1156,9 @@ document.getElementById("minimap").addEventListener("click",function(event){
   if(nearest){openNode(nearest.id,true)}
 });
 function fitGraph(){
-  if(!positions.size)return;
-  const values=Array.from(positions.values()),xs=values.map(function(p){return p.x}),ys=values.map(function(p){return p.y});
+  const values=renderNodes.map(function(item){return positions.get(item.id)}).filter(Boolean);
+  if(!values.length)return;
+  const xs=values.map(function(p){return p.x}),ys=values.map(function(p){return p.y});
   const minX=Math.min(...xs)-190,maxX=Math.max(...xs)+190,minY=Math.min(...ys)-130,maxY=Math.max(...ys)+130,bounds=svg.getBoundingClientRect();
   scale=Math.max(.005,Math.min(1.35,Math.min((bounds.width||1000)/(maxX-minX),(bounds.height||700)/(maxY-minY))));
   tx=(1500/scale-(minX+maxX))/2;ty=(920/scale-(minY+maxY))/2;applyTransform();
@@ -1099,6 +1219,32 @@ function renderVendorFilters(){
     add(label,"span","count-label",count);
   });
 }
+function renderEntrypoints(){
+  const root=document.getElementById("entrypoint-explorer");clear(root);
+  const query=sidebarSearch.value.trim().toLowerCase();
+  const entries=MODEL.nodes.filter(function(item){
+    return item.type==="function"&&isEntryPoint(item)&&visibleNode(item)&&
+      (!query||[item.label,item.contract,item.file].some(function(value){return String(value||"").toLowerCase().includes(query)}));
+  }).sort(function(a,b){return String(a.contract||"").localeCompare(String(b.contract||""))||a.label.localeCompare(b.label)});
+  document.getElementById("entrypoint-count").textContent=String(entries.length);
+  const groups=new Map();
+  entries.forEach(function(item){const key=item.contract_id||item.contract||"Unowned";if(!groups.has(key))groups.set(key,[]);groups.get(key).push(item)});
+  groups.forEach(function(items,ownerId){
+    const owner=node(ownerId),title=owner?owner.label:(items[0].contract||"Unowned contract");
+    add(root,"div","entrypoint-contract",title+" · "+items.length);
+    items.forEach(function(item){
+      const button=add(root,"button","entrypoint-row","");
+      add(button,"strong","",item.label);
+      const kind=item.entrypoint_kind||"function";
+      const mutability=["view","pure"].includes(item.mutability)?"READ ONLY":"MAY MUTATE";
+      const unresolved=MODEL.edges.filter(function(edge){return edge.source===item.id&&["UNRESOLVED","AMBIGUOUS"].includes(edge.resolution)}).length;
+      add(button,"small","",kind.toUpperCase()+" · "+mutability+(unresolved?" · "+unresolved+" unresolved":""));
+      button.title=(item.file||"")+":"+(item.line||"?")+" · "+(item.signature||item.label);
+      button.addEventListener("click",function(){openNode(item.id,true)});
+    });
+  });
+  if(!entries.length)add(root,"div","entrypoint-empty",query?"No entry points match this search.":"No public, external, receive or fallback entry points were indexed.");
+}
 function renderSidebar(){
   const root=document.getElementById("declaration-tree");clear(root);
   const query=sidebarSearch.value.trim().toLowerCase(),groups=new Map();
@@ -1119,6 +1265,7 @@ function renderSidebar(){
     });
   });
   if(!root.children.length)add(root,"p","muted","No declarations match. Reset filters to restore the full inventory.");
+  renderEntrypoints();
   renderVendorFilters();
 }
 function inspectorItem(parent,n,secondary){
@@ -1157,13 +1304,13 @@ function renderInspector(){
   ["overview","functions","state","calls","assets","review"].forEach(function(tab){const button=add(tabs,"button","inspector-tab"+(selectedTab===tab?" active":""),tab.toUpperCase());button.addEventListener("click",function(){selectedTab=tab;renderInspector()})});
   const body=add(root,"div","inspector-body"),owner=contractContextForNode(selected);
   const owned=MODEL.nodes.filter(function(n){return n.contract_id===owner});
-  const functions=owned.filter(function(n){return n.type==="function"||n.type==="modifier"}).sort(function(a,b){return Number(b.visibility==="external"||b.visibility==="public")-Number(a.visibility==="external"||a.visibility==="public")||a.label.localeCompare(b.label)});
+  const functions=owned.filter(function(n){return n.type==="function"||n.type==="modifier"}).sort(function(a,b){return Number(isEntryPoint(b))-Number(isEntryPoint(a))||a.label.localeCompare(b.label)});
   const state=owned.filter(function(n){return n.type==="state"}).sort(function(a,b){return a.label.localeCompare(b.label)});
   if(selectedTab==="overview"){
     add(body,"p","muted",(selected.origin||"source")+" · "+selected.evidence+(selected.vendor!=="First-party"?" · "+selected.vendor:""));
     if(selected.type==="declaration"){
       add(body,"div","section-head","DECLARATION SUMMARY");add(body,"p","inspect-item",functions.length+" functions / modifiers · "+state.length+" state declarations");
-      renderSection(body,"KEY ENTRY POINTS",functions.filter(function(n){return n.visibility==="external"||n.visibility==="public"}),"No public or external functions indexed.");
+      renderSection(body,"KEY ENTRY POINTS",functions.filter(isEntryPoint),"No public, external, receive or fallback entry points indexed.");
       renderSection(body,"STATE SURFACE",state,"No state declarations indexed.");
     }else if(selected.type==="function"||selected.type==="modifier"){
       add(body,"div","section-head","FUNCTION PROFILE");
@@ -1316,14 +1463,14 @@ function openNode(id,push){
   else if(focusFunctionId&&n.type==="external")mode="functions";
   else mode="architecture";
   document.querySelectorAll(".mode-tab").forEach(function(b){b.classList.toggle("active",b.dataset.mode===mode)});
-  renderAll();requestAnimationFrame(fitGraph);
+  renderAll();
 }
-function clearFocus(){selectedId=null;focusFunctionId=null;history=[];selectedEdge=null;selectedTab="overview";mode="architecture";document.querySelectorAll(".mode-tab").forEach(function(b){b.classList.toggle("active",b.dataset.mode===mode)});renderAll();fitGraph()}
-function setMode(next){mode=next;selectedEdge=null;document.querySelectorAll(".mode-tab").forEach(function(b){b.classList.toggle("active",b.dataset.mode===mode)});renderGraph();renderInspector();renderFlow();requestAnimationFrame(fitGraph)}
+function clearFocus(){selectedId=null;focusFunctionId=null;history=[];selectedEdge=null;selectedTab="overview";mode="architecture";document.querySelectorAll(".mode-tab").forEach(function(b){b.classList.toggle("active",b.dataset.mode===mode)});renderAll()}
+function setMode(next){mode=next;selectedEdge=null;document.querySelectorAll(".mode-tab").forEach(function(b){b.classList.toggle("active",b.dataset.mode===mode)});renderGraph();renderInspector();renderFlow()}
 function setServerStatus(text){document.getElementById("import-status").textContent=text}
 function refreshModel(next){
   if(!next||next.schema_version!==2||!Array.isArray(next.nodes)||!Array.isArray(next.edges))throw new Error("The selected file is not a Lowkey graph model.");
-  MODEL=next;hiddenVendors.clear();mapModel();selectedId=null;focusFunctionId=null;history=[];mode="architecture";selectedTab="overview";selectedEdge=null;
+  MODEL=next;positions.clear();scale=1;tx=0;ty=0;hiddenVendors.clear();mapModel();selectedId=null;focusFunctionId=null;history=[];mode="architecture";selectedTab="overview";selectedEdge=null;
   document.getElementById("project-name").textContent=MODEL.project_name||"Imported source workspace";
   renderAll();fitGraph();toast("Graph workspace loaded");
 }
@@ -1417,6 +1564,7 @@ function setupInteractions(){
   svg.addEventListener("dblclick",fitGraph);
   document.addEventListener("keydown",function(event){
     if(event.key==="/"&&!["INPUT","TEXTAREA"].includes(document.activeElement.tagName)){event.preventDefault();search.focus()}
+    if((event.key==="f"||event.key==="F")&&!["INPUT","TEXTAREA"].includes(document.activeElement.tagName)){event.preventDefault();fitGraph()}
     if(event.key==="Escape"){document.getElementById("import-modal").classList.remove("open");search.blur()}
     if(event.key==="Backspace"&&!["INPUT","TEXTAREA"].includes(document.activeElement.tagName)&&history.length){const previous=history.pop();openNode(previous,false)}
   });

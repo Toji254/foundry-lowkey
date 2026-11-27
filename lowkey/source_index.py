@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - package-style import
         source_ast = None
 
 
-CACHE_VERSION = 23
+CACHE_VERSION = 24
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_RELATIONSHIPS = 250_000
 MAX_TRAVERSAL_DEPTH = 10
@@ -1338,6 +1338,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     "provenance": contract["provenance"],
                     "header": header_text,
                     "visibility": visibility_match.group(1) if visibility_match else "UNSPECIFIED",
+                    "special_function_kind": raw_kind if raw_kind in {"fallback", "receive", "constructor"} else None,
                     "mutability": mutability_match.group(1) if mutability_match else "nonpayable",
                     "parameters": sorted(_parameter_names(raw_params)),
                     "parameter_types": {item["name"]: item["type"] for item in _parameter_descriptors(raw_params) if item.get("name")},

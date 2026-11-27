@@ -174,7 +174,7 @@ def main() -> int:
             raise AssertionError("Native deployment was registered under a different network session.")
 
         review_path_match = re.search(
-            r"(?im)^\\s*Review evidence\\s*:\\s*(\\.audit/deployment-reviews/[0-9a-f]{64}\\.json)\\s*$",
+            r"(?im)^\s*Review evidence\s*:\s*(\.audit/deployment-reviews/[0-9a-f]{64}\.json)\s*$",
             lab.stdout,
         )
         if not review_path_match:

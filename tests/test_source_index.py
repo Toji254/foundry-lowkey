@@ -820,6 +820,36 @@ class SourceIndexTests(unittest.TestCase):
         self.assertGreaterEqual(index["summary"]["constants"], 1)
         self.assertGreaterEqual(index["summary"]["immutables"], 1)
 
+    def test_receive_fallback_and_constructor_keep_their_special_function_kind(self):
+        temporary, root = self.fixture()
+        try:
+            self.write(
+                root,
+                "src/Entrypoints.sol",
+                """
+                pragma solidity ^0.8.20;
+                contract Entrypoints {
+                    constructor() {}
+                    receive() external payable {}
+                    fallback() external payable {}
+                    function execute() external {}
+                }
+                """,
+            )
+            index = build_source_index(root, use_cache=False)
+        finally:
+            temporary.cleanup()
+
+        functions = {
+            item["name"]: item
+            for item in index["nodes"]
+            if item.get("contract") == "Entrypoints" and item.get("kind") == "function"
+        }
+        self.assertEqual(functions["receive"]["special_function_kind"], "receive")
+        self.assertEqual(functions["fallback"]["special_function_kind"], "fallback")
+        self.assertEqual(functions["constructor"]["special_function_kind"], "constructor")
+        self.assertIsNone(functions["execute"]["special_function_kind"])
+
     def test_repeated_queries_use_the_content_addressed_cache(self):
         temporary, root = self.fixture()
         try:

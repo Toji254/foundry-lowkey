@@ -165,9 +165,44 @@ class ProtocolExplorerTests(unittest.TestCase):
         self.assertIn('data-filter="library"', document)
         self.assertIn("search-results", document)
         self.assertIn("STATIC_SOURCE", document)
+        self.assertIn('id="entrypoint-explorer"', document)
+        self.assertIn("focus_group_ids", document)
+        self.assertIn("incidentEdgesByNode", document)
+        self.assertIn("function edgeGeometry(edge)", document)
         self.assertNotIn("__GRAPH_DATA__", document)
         self.assertNotIn("__SERVER_MODE__", document)
         self.assertNotIn('<script src="https://', document)
+
+    def test_entrypoint_model_includes_receive_fallback_and_excludes_constructor(self):
+        (self.root / "src" / "Entrypoints.sol").write_text(
+            """
+            pragma solidity ^0.8.20;
+            contract Entrypoints {
+                constructor() {}
+                receive() external payable {}
+                fallback() external payable {}
+                function execute() external {}
+                function inspect() external view returns (uint256) { return 1; }
+            }
+            """,
+            encoding="utf-8",
+        )
+        index = build_source_index(self.root, use_cache=False)
+        model = build_explorer_model(index, root=self.root)
+        functions = {
+            item["name"]: item
+            for item in model["nodes"]
+            if item.get("contract") == "Entrypoints" and item["type"] == "function"
+        }
+        self.assertTrue(functions["receive"]["entrypoint"])
+        self.assertEqual(functions["receive"]["entrypoint_kind"], "receive")
+        self.assertTrue(functions["fallback"]["entrypoint"])
+        self.assertEqual(functions["fallback"]["entrypoint_kind"], "fallback")
+        self.assertTrue(functions["execute"]["entrypoint"])
+        self.assertEqual(functions["execute"]["entrypoint_kind"], "function")
+        self.assertTrue(functions["inspect"]["entrypoint"])
+        self.assertFalse(functions["constructor"]["entrypoint"])
+        self.assertIsNone(functions["constructor"]["entrypoint_kind"])
 
     def test_uploaded_files_keep_project_paths_and_reject_traversal(self):
         destination = self.root / "uploaded"

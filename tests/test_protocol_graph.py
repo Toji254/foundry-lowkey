@@ -203,7 +203,7 @@ class ProtocolGraphTests(unittest.TestCase):
                 "canonical_trace_events": [{
                     "seq": 0,
                     "backend": "anvil-calltracer",
-                    "kind": "CALL",
+                    "kind": "DELEGATECALL",
                     "accessor": "0x" + "1" * 40,
                     "account": "0x" + "2" * 40,
                     "depth": 0,
@@ -222,6 +222,7 @@ class ProtocolGraphTests(unittest.TestCase):
         self.assertEqual(graph["edges"][0]["source"], "0x" + "1" * 40)
         self.assertEqual(graph["edges"][0]["target"], "0x" + "2" * 40)
         self.assertEqual(graph["edges"][0]["run_id"], "unit-fixture")
+        self.assertEqual(graph["edges"][0]["operation_kind"], "DelegateCall")
 
     def test_runtime_graph_rejects_malformed_trace_without_guessing(self):
         with tempfile.TemporaryDirectory() as raw:

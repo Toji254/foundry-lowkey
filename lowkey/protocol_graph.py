@@ -545,6 +545,7 @@ def runtime_trace_graph(root: str | Path) -> dict[str, Any]:
                     continue
                 edges.append({
                     "kind": "runtime_call_observed",
+                    "operation_kind": event["kind"],
                     "source": event["accessor"],
                     "target": event["account"],
                     "depth": event["depth"],
