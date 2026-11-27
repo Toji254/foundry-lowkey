@@ -18,7 +18,10 @@ import {
     UUPSImplementationInitializationFixture,
     ImplementationInitializationActor,
     UUPSReinitializerSecureImplementation,
-    UUPSReinitializerVulnerableImplementation
+    UUPSReinitializerVulnerableImplementation,
+    UUPSInitializationOrderImplementation,
+    LowkeyInitializationOrderProxy,
+    LowkeyAtomicInitializationProxy
 } from "../src/ProxySequentialFixtures.sol";
 
 interface ILowkeyTransparentOwner {
@@ -28,6 +31,11 @@ interface ILowkeyTransparentOwner {
 interface ILowkeyReinitializerState {
     function initializedVersion() external view returns (uint8);
     function migrationOwner() external view returns (address);
+}
+
+interface ILowkeyInitializationOrderState {
+    function owner() external view returns (address);
+    function initializedVersion() external view returns (uint8);
 }
 
 contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
@@ -392,6 +400,119 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
         require(state.initializedVersion() == 2, "VULNERABLE_REINITIALIZER_VERSION_MISMATCH");
         require(state.migrationOwner() == ATTACKER, "VULNERABLE_REINITIALIZER_REPLAY_NOT_APPLIED");
         _lowkeyWriteTrace(".audit/godmode/attack-uups-reinitializer-replay-state-diff.json");
+    }
+
+
+
+    function test_paired_proxy_initialization_ordering() external {
+        address owner = vm.envAddress("P0_OWNER");
+        UUPSInitializationOrderImplementation implementation =
+            UUPSInitializationOrderImplementation(
+                vm.envAddress("P0_INITIALIZATION_ORDER_IMPLEMENTATION")
+            );
+        LowkeyInitializationOrderProxy proxy =
+            LowkeyInitializationOrderProxy(
+                payable(vm.envAddress("P0_INITIALIZATION_ORDER_PROXY"))
+            );
+        ImplementationInitializationActor actor =
+            ImplementationInitializationActor(
+                vm.envAddress("P0_INITIALIZATION_ORDER_ACTOR")
+            );
+        ILowkeyInitializationOrderState state =
+            ILowkeyInitializationOrderState(address(proxy));
+
+        // The implementation's own storage is locked, but the proxy's storage
+        // is separate and starts uninitialized unless deployment supplies data.
+        require(implementation.initializedVersion() == type(uint8).max,
+            "INITIALIZATION_ORDER_IMPLEMENTATION_NOT_LOCKED");
+        require(implementation.owner() == address(0),
+            "INITIALIZATION_ORDER_IMPLEMENTATION_OWNER_NOT_EMPTY");
+        require(proxy.initializedVersion() == 0, "INITIALIZATION_ORDER_PROXY_PREINITIALIZED");
+        require(proxy.owner() == address(0), "INITIALIZATION_ORDER_PROXY_OWNER_PRESET");
+
+        vm.prank(ATTACKER);
+        bool directAccepted = actor.attemptInitialize(address(implementation), ATTACKER);
+        require(!directAccepted, "LOCKED_IMPLEMENTATION_ACCEPTED_DIRECT_INITIALIZATION");
+        require(actor.takeoverAccepted() == 0, "DIRECT_IMPLEMENTATION_METRIC_CHANGED");
+        uint256 baseline = vm.snapshot();
+
+        // Control: the intended owner initializes the proxy before an
+        // untrusted caller submits the same initialize(address) calldata.
+        vm.prank(owner);
+        (bool ownerInitialized, ) = address(proxy).call(
+            abi.encodeWithSignature("initialize(address)", owner)
+        );
+        require(ownerInitialized, "OWNER_FIRST_PROXY_INITIALIZATION_FAILED");
+        _lowkeyStartTrace(address(proxy));
+        require(proxy.implementation() == address(implementation),
+            "INITIALIZATION_ORDER_CONTROL_IMPLEMENTATION_CHANGED");
+        require(implementation.initializedVersion() == type(uint8).max,
+            "INITIALIZATION_ORDER_CONTROL_IMPLEMENTATION_UNLOCKED");
+        require(state.initializedVersion() == 1, "INITIALIZATION_ORDER_CONTROL_VERSION_MISMATCH");
+        require(state.owner() == owner, "INITIALIZATION_ORDER_CONTROL_OWNER_MISMATCH");
+        require(actor.takeoverAccepted() == 0, "INITIALIZATION_ORDER_CONTROL_METRIC_PRESTATE");
+        bool controlAccepted = actor.attemptInitialize(address(proxy), ATTACKER);
+        require(!controlAccepted, "INITIALIZED_PROXY_ACCEPTED_ATTACKER");
+        require(actor.takeoverAccepted() == 0, "INITIALIZATION_ORDER_CONTROL_METRIC_CHANGED");
+        require(state.initializedVersion() == 1, "INITIALIZATION_ORDER_CONTROL_VERSION_CHANGED");
+        require(state.owner() == owner, "INITIALIZATION_ORDER_CONTROL_OWNER_CHANGED");
+        _lowkeyWriteTrace(".audit/godmode/control-proxy-initialization-order-state-diff.json");
+
+        require(vm.revertTo(baseline), "INITIALIZATION_ORDER_BASELINE_REVERT_FAILED");
+
+        // Attack: the same proxy and actor are restored to the uninitialized
+        // prestate. The attacker reaches initialize(address) before the
+        // intended owner and takes control of the proxy's application state.
+        _lowkeyStartTrace(address(proxy));
+        require(proxy.implementation() == address(implementation),
+            "INITIALIZATION_ORDER_ATTACK_IMPLEMENTATION_CHANGED");
+        require(implementation.initializedVersion() == type(uint8).max,
+            "INITIALIZATION_ORDER_ATTACK_IMPLEMENTATION_UNLOCKED");
+        require(state.initializedVersion() == 0, "INITIALIZATION_ORDER_ATTACK_VERSION_PRESTATE");
+        require(state.owner() == address(0), "INITIALIZATION_ORDER_ATTACK_OWNER_PRESTATE");
+        require(actor.takeoverAccepted() == 0, "INITIALIZATION_ORDER_ATTACK_METRIC_PRESTATE");
+        bool attackAccepted = actor.attemptInitialize(address(proxy), ATTACKER);
+        require(attackAccepted, "UNINITIALIZED_PROXY_REJECTED_FRONT_RUN");
+        require(actor.takeoverAccepted() == 1, "INITIALIZATION_ORDER_TAKEOVER_METRIC_MISSING");
+        require(state.initializedVersion() == 1, "INITIALIZATION_ORDER_ATTACK_VERSION_NOT_SET");
+        require(state.owner() == ATTACKER, "INITIALIZATION_ORDER_ATTACK_OWNER_MISMATCH");
+        _lowkeyWriteTrace(".audit/godmode/attack-proxy-initialization-order-state-diff.json");
+    }
+
+    function test_proxy_constructor_initialization_is_atomic_and_implementation_stays_locked() external {
+        address owner = vm.envAddress("P0_OWNER");
+        UUPSInitializationOrderImplementation implementation =
+            UUPSInitializationOrderImplementation(
+                vm.envAddress("P0_INITIALIZATION_ORDER_IMPLEMENTATION")
+            );
+        bytes memory initializationCall = abi.encodeWithSignature("initialize(address)", owner);
+        LowkeyAtomicInitializationProxy proxy =
+            new LowkeyAtomicInitializationProxy(address(implementation), initializationCall);
+        ILowkeyInitializationOrderState state =
+            ILowkeyInitializationOrderState(address(proxy));
+
+        require(proxy.implementation() == address(implementation),
+            "ATOMIC_PROXY_IMPLEMENTATION_MISMATCH");
+        require(state.initializedVersion() == 1, "ATOMIC_PROXY_NOT_INITIALIZED");
+        require(state.owner() == owner, "ATOMIC_PROXY_OWNER_MISMATCH");
+        require(implementation.initializedVersion() == type(uint8).max,
+            "ATOMIC_PROXY_UNLOCKED_IMPLEMENTATION");
+        require(implementation.owner() == address(0),
+            "ATOMIC_PROXY_CHANGED_IMPLEMENTATION_STORAGE");
+
+        vm.prank(ATTACKER);
+        (bool replayAccepted, ) = address(proxy).call(
+            abi.encodeWithSignature("initialize(address)", ATTACKER)
+        );
+        require(!replayAccepted, "ATOMIC_PROXY_ACCEPTED_REINITIALIZATION");
+        require(state.initializedVersion() == 1, "ATOMIC_PROXY_VERSION_CHANGED");
+        require(state.owner() == owner, "ATOMIC_PROXY_OWNER_CHANGED");
+
+        vm.prank(ATTACKER);
+        (bool directAccepted, ) = address(implementation).call(initializationCall);
+        require(!directAccepted, "ATOMIC_PROXY_IMPLEMENTATION_INITIALIZED_DIRECTLY");
+        require(implementation.initializedVersion() == type(uint8).max,
+            "ATOMIC_PROXY_IMPLEMENTATION_LOCK_CHANGED");
     }
 
 }

@@ -360,3 +360,66 @@ contract UUPSReinitializerVulnerableImplementation {
         migrationOwner = nextOwner;
     }
 }
+
+
+// Proxy initialization-order pair. The implementation is locked in its own
+// constructor, while each proxy has independent zeroed storage. Omitting the
+// proxy constructor's initialization calldata leaves a front-runnable window.
+contract UUPSInitializationOrderImplementation {
+    address public owner;
+    uint8 public initializedVersion;
+
+    constructor() {
+        initializedVersion = type(uint8).max;
+    }
+
+    function initialize(address initialOwner) external {
+        require(initializedVersion == 0, "ALREADY_INITIALIZED");
+        require(initialOwner != address(0), "ZERO_OWNER");
+        owner = initialOwner;
+        initializedVersion = 1;
+    }
+}
+
+contract LowkeyInitializationOrderProxy {
+    bytes32 internal constant IMPLEMENTATION_SLOT =
+        0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+
+    constructor(address implementation_) {
+        require(implementation_.code.length > 0, "NO_IMPLEMENTATION_CODE");
+        bytes32 slot = IMPLEMENTATION_SLOT;
+        assembly { sstore(slot, implementation_) }
+    }
+
+    function implementation() external view returns (address value) {
+        bytes32 slot = IMPLEMENTATION_SLOT;
+        assembly { value := sload(slot) }
+    }
+
+    fallback() external payable { _delegate(); }
+    receive() external payable { _delegate(); }
+
+    function _delegate() internal {
+        bytes32 slot = IMPLEMENTATION_SLOT;
+        assembly {
+            let implementation_ := sload(slot)
+            calldatacopy(0, 0, calldatasize())
+            let ok := delegatecall(gas(), implementation_, 0, calldatasize(), 0, 0)
+            returndatacopy(0, 0, returndatasize())
+            switch ok
+            case 0 { revert(0, returndatasize()) }
+            default { return(0, returndatasize()) }
+        }
+    }
+}
+
+contract LowkeyAtomicInitializationProxy is LowkeyInitializationOrderProxy {
+    constructor(address implementation_, bytes memory initializationCall)
+        LowkeyInitializationOrderProxy(implementation_)
+    {
+        if (initializationCall.length != 0) {
+            (bool ok, bytes memory returned) = implementation_.delegatecall(initializationCall);
+            if (!ok) assembly { revert(add(returned, 32), mload(returned)) }
+        }
+    }
+}

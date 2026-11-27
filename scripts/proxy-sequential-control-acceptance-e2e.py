@@ -797,6 +797,118 @@ def make_uups_reinitializer_replay_manifest(
     }
 
 
+
+def packed_owner_version_word(owner: str, version: int) -> str:
+    if not isinstance(owner, str) or len(owner) != 42 or not owner.startswith("0x"):
+        raise AssertionError(f"Invalid owner address for packed initialization state: {owner!r}")
+    if not isinstance(version, int) or not 0 <= version <= 255:
+        raise AssertionError(f"Invalid initialized version: {version!r}")
+    return "0x" + ("00" * 11) + f"{version:02x}" + owner[2:].lower()
+
+
+def make_proxy_initialization_order_manifest(
+    forge: str,
+    cast: str,
+    root: Path,
+    env: dict[str, str],
+    fork_block: int,
+    proxy: str,
+    implementation: str,
+    actor: str,
+    intended_owner: str,
+) -> dict[str, Any]:
+    signature = "initialize(address)"
+    selector = run([cast, "sig", signature], root, env).stdout.strip().lower()
+    if (
+        len(selector) != 10
+        or not selector.startswith("0x")
+        or any(character not in "0123456789abcdef" for character in selector[2:])
+    ):
+        raise AssertionError(f"cast returned an invalid selector for {signature}: {selector!r}")
+
+    test_name = "test_paired_proxy_initialization_ordering"
+    argv = [
+        forge, "test", "--match-path", "test/ProxySequentialControls.t.sol",
+        "--match-test", test_name, "--fork-url", RPC,
+        "--fork-block-number", str(fork_block), "-vv",
+    ]
+    return {
+        "trace_backend": "forge-state-diff",
+        "paired_forge_experiment": True,
+        "target_authenticity": "fixture",
+        "family": "proxy",
+        "proxy_family": "UUPS",
+        "non_economic": True,
+        "expected_chain_id": 31337,
+        "expected_fork_block": fork_block,
+        "target_address": proxy,
+        "function": signature,
+        "same_calls_id": "p0-proxy-initialization-order-v1",
+        "metric_name": "unauthorized_proxy_initialization_takeovers",
+        "prestate_addresses": list(dict.fromkeys(
+            value.lower() for value in (proxy, implementation, actor)
+        )),
+        "prestate_slots": [
+            {"address": proxy, "slot": "0x0"},
+            {"address": proxy, "slot": IMPLEMENTATION_SLOT},
+            {"address": implementation, "slot": "0x0"},
+            {"address": actor, "slot": "0x0"},
+        ],
+        "metric_addresses": [actor],
+        "metric_storage": {
+            "address": actor,
+            "slot": "0x0",
+            "kind": "uint256_delta",
+            "description": "ImplementationInitializationActor.takeoverAccepted; increments only when the attacker initializes the proxy.",
+        },
+        "scenario_parameters": [{
+            "name": "proxy_initialization_order",
+            "address": proxy,
+            "slot": "0x0",
+            "control_value": packed_owner_version_word(intended_owner, 1),
+            "attack_value": "0x" + ("0" * 64),
+            "description": "The only permitted prestate difference: in the control the intended owner initialized the proxy first; in the attack the proxy remained uninitialized until the attacker call.",
+        }],
+        "trace_expectations": [{
+            "address": proxy,
+            "selector": selector,
+            "control_min_calls": 1,
+            "control_max_calls": 1,
+            "attack_min_calls": 1,
+            "attack_max_calls": 1,
+            "description": "The same actor submits identical initialize(address) calldata to the same proxy; only the ordering/prestate of the legitimate initialization differs.",
+        }],
+        "evidence_requirements": {"call_tree": "exact", "calldata": "exact", "storage": "derived"},
+        "require_trace_storage": True,
+        "control": {
+            "harness": "test/ProxySequentialControls.t.sol",
+            "support_files": ["src/ProxySequentialFixtures.sol", "src/LowkeyForgeStateDiffRecorder.sol"],
+            "state_diff_file": ".audit/godmode/control-proxy-initialization-order-state-diff.json",
+            "argv": argv,
+            "semantic_check_argv": argv,
+            "semantic_check_test": test_name,
+        },
+        "attack": {
+            "harness": "test/ProxySequentialControls.t.sol",
+            "support_files": ["src/ProxySequentialFixtures.sol", "src/LowkeyForgeStateDiffRecorder.sol"],
+            "state_diff_file": ".audit/godmode/attack-proxy-initialization-order-state-diff.json",
+            "argv": argv,
+            "semantic_check_argv": argv,
+            "semantic_check_test": test_name,
+        },
+        "fidelity_sources": [
+            "test/ProxySequentialControls.t.sol",
+            "src/ProxySequentialFixtures.sol",
+            "src/LowkeyForgeStateDiffRecorder.sol",
+        ],
+        "notes": (
+            "Fixture-only proxy initialization ordering pair. The intended owner initializes before the attacker in the control; "
+            "the same deployed proxy is reset to the same baseline and the attacker initializes first in the attack. "
+            "The implementation itself remains constructor-locked in both branches. The result remains SIMULATED_BREAK."
+        ),
+    }
+
+
 def run_proxy_paired_campaign(
     lk: str,
     root: Path,
@@ -1117,6 +1229,11 @@ def main() -> int:
         reinitializer_vulnerable_impl = deploy(forge, root, env, "UUPSReinitializerVulnerableImplementation")
         reinitializer_proxy = deploy(forge, root, env, "LowkeyUUPSProxy", reinitializer_vulnerable_impl)
         reinitializer_actor = deploy(forge, root, env, "ProxyUpgradeActor")
+        initialization_order_impl = deploy(forge, root, env, "UUPSInitializationOrderImplementation")
+        initialization_order_proxy = deploy(
+            forge, root, env, "LowkeyInitializationOrderProxy", initialization_order_impl,
+        )
+        initialization_order_actor = deploy(forge, root, env, "ImplementationInitializationActor")
         fork_block = int(run([cast, "block-number", "--rpc-url", RPC], root, env).stdout.strip(), 0)
 
         env.update({
@@ -1133,6 +1250,9 @@ def main() -> int:
             "P0_UUPS_REINITIALIZER_SECURE_IMPLEMENTATION": reinitializer_secure_impl,
             "P0_UUPS_REINITIALIZER_VULNERABLE_IMPLEMENTATION": reinitializer_vulnerable_impl,
             "P0_UUPS_REINITIALIZER_ACTOR": reinitializer_actor,
+            "P0_INITIALIZATION_ORDER_IMPLEMENTATION": initialization_order_impl,
+            "P0_INITIALIZATION_ORDER_PROXY": initialization_order_proxy,
+            "P0_INITIALIZATION_ORDER_ACTOR": initialization_order_actor,
         })
         evidence_root = repo_root / ".audit" / "proxy-sequential-acceptance"
         if evidence_root.exists():
@@ -1289,8 +1409,69 @@ def main() -> int:
         if rpc_storage(cast, root, env, reinitializer_proxy, IMPLEMENTATION_SLOT) != address_word(reinitializer_vulnerable_impl):
             raise AssertionError("UUPS reinitializer fork campaign mutated source Anvil implementation slot.")
 
+        initialization_order_manifest = make_proxy_initialization_order_manifest(
+            forge=forge,
+            cast=cast,
+            root=root,
+            env=env,
+            fork_block=fork_block,
+            proxy=initialization_order_proxy,
+            implementation=initialization_order_impl,
+            actor=initialization_order_actor,
+            intended_owner=OWNER,
+        )
+        initialization_order_manifest_name = "proxy-initialization-order-control.json"
+        (root / initialization_order_manifest_name).write_text(
+            json.dumps(initialization_order_manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        if rpc_storage(cast, root, env, initialization_order_impl, "0x0") != (
+            "0x" + ("00" * 11) + "ff" + ("00" * 20)
+        ):
+            raise AssertionError("Proxy initialization-order implementation is not constructor-locked.")
+        initialization_order_case = run_proxy_paired_campaign(
+            lk,
+            root,
+            env,
+            initialization_order_manifest_name,
+            evidence_root,
+            campaign_name="proxy-initialization-order",
+            campaign_title="Proxy initialization ordering",
+        )
+        if rpc_storage(cast, root, env, initialization_order_impl, "0x0") != (
+            "0x" + ("00" * 11) + "ff" + ("00" * 20)
+        ):
+            raise AssertionError("Proxy initialization-order campaign mutated implementation lock state.")
+
+        atomic_dir = evidence_root / "proxy-initialization-atomic"
+        atomic_dir.mkdir(parents=True, exist_ok=True)
+        atomic_result = subprocess.run(
+            [
+                forge, "test", "--match-path", "test/ProxySequentialControls.t.sol",
+                "--match-test", "test_proxy_constructor_initialization_is_atomic_and_implementation_stays_locked",
+                "--fork-url", RPC, "--fork-block-number", str(fork_block), "-vv",
+            ],
+            cwd=root, env=env, text=True, capture_output=True,
+            timeout=600, check=False,
+        )
+        (atomic_dir / "forge-stdout.txt").write_text(atomic_result.stdout or "", encoding="utf-8")
+        (atomic_dir / "forge-stderr.txt").write_text(atomic_result.stderr or "", encoding="utf-8")
+        atomic_test_name = "test_proxy_constructor_initialization_is_atomic_and_implementation_stays_locked"
+        if atomic_result.returncode != 0 or f"[PASS] {atomic_test_name}()" not in (atomic_result.stdout or ""):
+            raise AssertionError(
+                "Atomic proxy-constructor initialization test did not execute and pass: "
+                + (atomic_result.stdout or "")[-12000:]
+                + "\n" + (atomic_result.stderr or "")[-12000:]
+            )
+        atomic_initialization_case = {
+            "status": "PASS",
+            "test": atomic_test_name,
+            "evidence_path": str(atomic_dir),
+            "meaning": "Constructor-supplied initialization calldata executes through delegatecall in the proxy's deployment transaction; proxy storage is initialized while implementation storage remains locked.",
+        }
+
         report = {
-            "gate": "Lowkey independent P0 UUPS authorization, UUID/lockout, direct implementation initialization, reinitializer replay, ProxyAdmin and Transparent hybrid acceptance",
+            "gate": "Lowkey independent P0 UUPS authorization, initialization ordering, implementation/proxy separation, reinitializer replay, ProxyAdmin and Transparent hybrid acceptance",
             "status": "PASS",
             "source_sha": expected_sha,
             "installed_git_sha": installed.get("git_sha"),
@@ -1310,8 +1491,10 @@ def main() -> int:
             "uups_uuid_lockout": uuid_case,
             "implementation_initialization": initializer_case,
             "uups_reinitializer_replay": reinitializer_case,
+            "proxy_initialization_order": initialization_order_case,
+            "atomic_proxy_initialization": atomic_initialization_case,
             "classification_policy": (
-                "UUPS authorization, UUID/lockout, direct implementation initialization, UUPS reinitializer replay, ProxyAdmin and Transparent hybrid results are fixture-only paired experiments. "
+                "UUPS authorization, UUID/lockout, direct implementation initialization, proxy initialization ordering, atomic proxy initialization and UUPS reinitializer replay are fixture-only paired experiments; ProxyAdmin and Transparent hybrid results are also fixture-only. "
                 "The secure and vulnerable paths use equivalent fork snapshots, the same proxy, actor and "
                 "encoded upgrade calldata where paired. Transparent routing and a non-admin UUPS second "
                 "upgrade surface are demonstrated only for this fixture. Results remain SIMULATED_BREAK "
@@ -1320,7 +1503,7 @@ def main() -> int:
         }
         (evidence_root / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(json.dumps(report, indent=2, sort_keys=True))
-        print("PASS: UUPS authorization, UUID/lockout, implementation-initializer locking, reinitializer replay, ProxyAdmin, Transparent routing and hybrid paired controls verified.")
+        print("PASS: UUPS authorization, initialization ordering, atomic proxy initialization, UUID/lockout, implementation-initializer locking, reinitializer replay, ProxyAdmin, Transparent routing and hybrid paired controls verified.")
         run([lk, "target", "reset"], root, env)
     return 0
 
