@@ -6306,7 +6306,9 @@ def run_receipt(config, tx_hash=None, args=None):
             target=config.get("target"),
             command="receipt",
         )
-    cast_rpc_args = ["--rpc-url", rpc_override] if rpc_override else []
+    # Pin every follow-up Cast request to the exact endpoint resolved above,
+    # including when it came from the selected managed network.
+    cast_rpc_args = ["--rpc-url", rpc]
     # Explicit hashes may come from sibling workspaces. Do not replace this
     # project's latest transaction until its active target is confirmed as
     # the transaction's top-level destination.
@@ -6602,14 +6604,17 @@ def run_trace(config,args=None):
         i=args.index("--grep")
         if i+1>=len(args): return fail("Usage: lk trace [tx] [--quick] [--decode-internal] [--trace-printer] [--grep text]")
         grep=args[i+1]; del args[i:i+2]
+    # Pin Cast to the already resolved endpoint so trace output and the
+    # subsequent transaction metadata lookup cannot drift to another session.
+    trace_args = args if explicit_rpc else [*args, "--rpc-url", rpc]
     if grep:
-        output=run_cast(["run",tx_hash]+args,config,capture=True)
+        output=run_cast(["run",tx_hash]+trace_args,config,capture=True)
         text_output=getattr(output, "text", str(output or ""))
         matched=[line for line in text_output.splitlines() if grep.lower() in line.lower()]
         print("\n".join(matched) if matched else f"No trace lines matched '{grep}'.")
         return getattr(output, "code", 0)
 
-    result=run_cast(["run",tx_hash]+args,config,capture=True)
+    result=run_cast(["run",tx_hash]+trace_args,config,capture=True)
     result_code=getattr(result, "code", result if isinstance(result, int) else 1)
     trace_text=getattr(result, "text", str(result or ""))
 

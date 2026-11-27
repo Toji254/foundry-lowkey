@@ -481,3 +481,38 @@ def test_detect_anvil_rpc_keeps_unavailable_chain_id_unverified():
     assert info["url"] == endpoint
     assert info["chain_id"] is None
 
+def test_raw_receipt_pins_cast_to_resolved_managed_network_without_override():
+    tx_hash = "0x" + "c" * 64
+    endpoint = "http://127.0.0.1:18553"
+    config = {}
+    with patch.object(lk, "effective_rpc", return_value=endpoint) as resolver, patch.object(
+        lk, "_transaction_target_for_hash", return_value=None
+    ), patch.object(lk, "run_cast", return_value=0) as cast, patch.object(
+        lk.audit_context, "record_tool"
+    ):
+        result = lk.run_receipt(config, tx_hash=tx_hash, args=["--raw"])
+
+    assert result == 0
+    resolver.assert_called_once_with(config, explicit_rpc=None)
+    cast.assert_called_once_with(
+        ["receipt", tx_hash, "--async", "--rpc-url", endpoint],
+        config,
+    )
+
+
+def test_trace_pins_cast_to_resolved_managed_network_without_override():
+    tx_hash = "0x" + "d" * 64
+    endpoint = "http://127.0.0.1:18554"
+    config = {}
+    with patch.object(lk, "effective_rpc", return_value=endpoint) as resolver, patch.object(
+        lk, "run_cast", return_value=lk.CommandResult("trace output", 0)
+    ) as cast, patch.object(lk, "rpc_json", return_value=None) as rpc, patch.object(
+        lk.audit_context, "record_tool"
+    ), patch("builtins.print"):
+        result = lk.run_trace(config, [tx_hash])
+
+    assert result == 0
+    resolver.assert_called_once_with(config, explicit_rpc=None)
+    assert cast.call_args.args[0] == ["run", tx_hash, "--rpc-url", endpoint]
+    rpc.assert_called_once_with(endpoint, "eth_getTransactionByHash", [tx_hash])
+
