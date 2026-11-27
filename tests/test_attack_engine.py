@@ -323,6 +323,7 @@ class AttackEngineTests(unittest.TestCase):
                     "value_delta_usd_18": 10 * 10**18,
                     "oracle": {
                         "feed_code_source_verified": True,
+                        "feed_identity_sha256": "c" * 64,
                         "source_round_verified": True,
                     },
                 }],

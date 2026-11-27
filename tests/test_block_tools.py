@@ -214,7 +214,7 @@ class BlockToolsTests(unittest.TestCase):
 
     def test_installer_stages_compiles_installs_and_hashes_block_module(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")
-        self.assertIn("finding_explainer.py block_tools.py proxy_engine.py; do", script)
+        self.assertIn("finding_explainer.py block_tools.py proxy_engine.py opcode_intelligence.py token_economics.py; do", script)
         self.assertIn('"$STAGE_DIR/block_tools.py"', script)
         self.assertIn('"$STAGE_DIR/proxy_engine.py"', script)
         self.assertIn('cp "$STAGE_DIR/block_tools.py" "$TARGET_LOWKEY_DIR/block_tools.py"', script)

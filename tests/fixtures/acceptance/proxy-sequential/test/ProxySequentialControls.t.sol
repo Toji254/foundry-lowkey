@@ -30,6 +30,9 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
         vm.prank(owner);
         proxy.setImplementationForLab(secureImplementation);
         _lowkeyStartTrace(address(proxy));
+        // Record the same owner slot in both paired scenarios. The secure
+        // implementation reads it for authorization; the vulnerable one does not.
+        require(vm.load(address(proxy), bytes32(0)) == bytes32(uint256(uint160(owner))), "CONTROL_OWNER_PRESTATE_MISMATCH");
         require(vm.load(address(proxy), IMPLEMENTATION_SLOT) == bytes32(uint256(uint160(secureImplementation))), "CONTROL_START_IMPLEMENTATION_MISMATCH");
         vm.prank(ATTACKER);
         bool controlCallSucceeded = actor.execute(address(proxy), upgradeCall);
@@ -42,6 +45,7 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
         vm.prank(owner);
         proxy.setImplementationForLab(vulnerableImplementation);
         _lowkeyStartTrace(address(proxy));
+        require(vm.load(address(proxy), bytes32(0)) == bytes32(uint256(uint160(owner))), "ATTACK_OWNER_PRESTATE_MISMATCH");
         require(vm.load(address(proxy), IMPLEMENTATION_SLOT) == bytes32(uint256(uint160(vulnerableImplementation))), "ATTACK_START_IMPLEMENTATION_MISMATCH");
         vm.prank(ATTACKER);
         bool attackCallSucceeded = actor.execute(address(proxy), upgradeCall);

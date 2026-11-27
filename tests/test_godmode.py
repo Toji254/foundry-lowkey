@@ -1822,6 +1822,11 @@ class GodmodeTests(unittest.TestCase):
 
         spec = {
             "prestate_addresses": [target, actor],
+            "prestate_slots": [
+                {"address": target, "slot": scenario_slot},
+                {"address": target, "slot": shared_slot},
+                {"address": actor, "slot": zero},
+            ],
             "scenario_parameters": [{
                 "name": "implementation", "address": target, "slot": scenario_slot,
                 "control_value": "0x1", "attack_value": "0x2",

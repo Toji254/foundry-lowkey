@@ -1912,7 +1912,32 @@ class CommandHelpTests(unittest.TestCase):
                 "opcodes", ["--tx", tx_hash, "--fork", "cancun"], {}
             )
         self.assertEqual(code, 17)
-        run_trace.assert_called_once_with({}, ["--tx", tx_hash, "--fork", "cancun"])
+        run_trace.assert_called_once()
+        self.assertEqual(
+            run_trace.call_args.args[1],
+            ["--tx", tx_hash, "--fork", "cancun"],
+        )
+
+    def test_opcodes_transaction_trace_accepts_an_explicit_rpc_url(self):
+        tx_hash = "0x" + "a" * 64
+        rpc_url = "http://127.0.0.1:8545"
+        with (
+            patch.object(lk, "effective_rpc", return_value=rpc_url) as resolve_rpc,
+            patch.object(lk, "_rpc_json_response", return_value={"result": {"structLogs": []}}),
+            patch.object(lk, "rpc_json", return_value=None),
+            patch.object(
+                lk.opcode_intelligence,
+                "normalize_struct_logs",
+                return_value={"supported": True, "steps": [{"schema": "OpcodeStep"}]},
+            ),
+            patch("builtins.print"),
+        ):
+            code = lk.run_opcodes(
+                {}, ["--tx", tx_hash, "--fork", "cancun", "--rpc-url", rpc_url]
+            )
+        self.assertEqual(code, 0)
+        resolve_rpc.assert_called_once()
+        self.assertEqual(resolve_rpc.call_args.kwargs["explicit_rpc"], rpc_url)
 
     def test_opcodes_static_inspection_uses_the_opcode_registry(self):
         registry = SimpleNamespace(run_cli=lambda args: 23)

@@ -269,7 +269,7 @@ print("LOWKEY_TRACE_TX_HASH " + match.group(0))
             if not isinstance(tx_hash, str) or not re.fullmatch(r"0x[0-9a-fA-F]{64}", tx_hash):
                 raise AssertionError("Reproof did not retain the mined transaction hash for opcode tracing.")
             opcode_output = run(
-                [lk, "opcodes", "--tx", tx_hash, "--fork", "cancun"],
+                [lk, "opcodes", "--tx", tx_hash, "--fork", "cancun", "--rpc-url", url],
                 project, env=env, timeout=180,
             )
             json_start = opcode_output.find("{")

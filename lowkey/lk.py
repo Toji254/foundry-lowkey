@@ -6199,7 +6199,7 @@ def run_opcodes(config, args=None):
 
     index = args.index("--tx")
     if index + 1 >= len(args):
-        return fail("Usage: lk opcodes --tx <transaction-hash> [--fork <fork>] [--stack] [--memory] [--learn]")
+        return fail("Usage: lk opcodes --tx <transaction-hash> [--fork <fork>] [--rpc-url <url>] [--stack] [--memory] [--learn]")
     tx_hash = args[index + 1]
     del args[index:index + 2]
     if not is_tx_hash(tx_hash):
@@ -6209,6 +6209,7 @@ def run_opcodes(config, args=None):
     include_stack = False
     include_memory = False
     learn = False
+    rpc_override = None
     max_steps = 10000
     cursor = 0
     while cursor < len(args):
@@ -6216,6 +6217,15 @@ def run_opcodes(config, args=None):
         if option == "--fork" and cursor + 1 < len(args):
             fork = args[cursor + 1]
             cursor += 2
+        elif option == "--rpc-url" and cursor + 1 < len(args):
+            if rpc_override is not None:
+                return fail("--rpc-url may be supplied only once.")
+            rpc_override = str(args[cursor + 1]).strip()
+            if not rpc_override:
+                return fail("--rpc-url requires a non-empty URL.")
+            cursor += 2
+        elif option == "--rpc-url":
+            return fail("--rpc-url requires a URL.")
         elif option == "--stack":
             include_stack = True
             cursor += 1
@@ -6236,9 +6246,9 @@ def run_opcodes(config, args=None):
         else:
             return fail(f"Unknown opcode trace option: {option}")
 
-    rpc = effective_rpc(config)
+    rpc = effective_rpc(config, explicit_rpc=rpc_override)
     if not rpc:
-        return fail("No RPC is selected. Configure a project RPC or pass a connected local Anvil context.")
+        return fail("No RPC is selected. Configure a project RPC or pass --rpc-url <url> for this read-only transaction trace.")
     trace_options = {
         "disableStack": not include_stack,
         "disableMemory": not include_memory,
@@ -28856,9 +28866,14 @@ COMMAND_HELP = {
     "disasm": _help_entry("Disassemble bytecode into EVM instructions.", "lk disasm [args...]", "lk disasm 0x...", "Use it when source or ABI evidence is unavailable.", related=["lk selectors", "lk tx"]),
     "opcodes": _help_entry(
         "Inspect opcode metadata, decode supplied bytecode, or trace instructions executed by a mined transaction.",
-        "lk opcodes --spec <OPCODE> | --bytecode <0x...> | --tx <HASH> [--fork <fork>] [--stack] [--memory] [--learn]",
-        "lk opcodes --tx 0x... --fork cancun --stack --learn",
-        "Use --tx with an RPC-configured project for a bounded transaction trace. Static bytecode decoding is not execution evidence or a vulnerability verdict.",
+        "lk opcodes --spec <OPCODE> | --bytecode <0x...> | --tx <HASH> [--fork <fork>] [--rpc-url <url>] [--stack] [--memory] [--learn]",
+        "lk opcodes --tx 0x... --fork cancun --rpc-url http://127.0.0.1:8545 --stack --learn",
+        "Use --tx with a configured project RPC or explicit --rpc-url for a bounded read-only transaction trace. Static bytecode decoding is not execution evidence or a vulnerability verdict.",
+        forms=[
+            ("lk opcodes --spec <OPCODE>", "Inspect metadata, fork availability, stack effects and bytecode for one opcode.", "lk opcodes --spec SLOAD"),
+            ("lk opcodes --bytecode <0x...> [--fork <fork>]", "Decode instructions from supplied runtime bytecode.", "lk opcodes --bytecode 0x6001 --fork cancun"),
+            ("lk opcodes --tx <HASH> [--fork <fork>] [--rpc-url <url>] [--stack] [--memory] [--learn]", "Trace a mined transaction through debug_traceTransaction. Stack and memory are opt-in; --rpc-url selects the read-only RPC explicitly.", "lk opcodes --tx 0x... --fork cancun --rpc-url http://127.0.0.1:8545 --stack --learn"),
+        ],
         related=["lk disasm", "lk trace", "lk tx"],
     ),
     "txpool": _help_entry("Inspect the local transaction pool.", "lk txpool [args...]", "lk txpool status", "Use it when debugging pending local transactions.", related=["lk chain", "lk trace"]),

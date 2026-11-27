@@ -76,6 +76,14 @@ def make_manifest(target: str, function_signature: str, actor: str, proxy: str, 
         "same_calls_id": f"p0-{prefix}-same-target-same-call-v1",
         "metric_name": "successful_unauthorized_upgrade_calls",
         "prestate_addresses": list(dict.fromkeys(x.lower() for x in (target, proxy, actor, scenario_address))),
+        # Compare the same concrete storage locations in both traces. UUPS
+        # owner slot zero is explicitly read in both branches because only the
+        # secure implementation naturally reads it during authorization.
+        "prestate_slots": [
+            {"address": scenario_address, "slot": scenario_slot},
+            {"address": proxy, "slot": IMPLEMENTATION_SLOT},
+            {"address": actor, "slot": "0x0"},
+        ] + ([{"address": proxy, "slot": "0x0"}] if target.lower() == proxy.lower() else []),
         "metric_addresses": [actor],
         "metric_storage": {
             "address": actor, "slot": "0x0", "kind": "uint256_delta",
