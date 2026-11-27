@@ -1787,6 +1787,93 @@ class GodmodeTests(unittest.TestCase):
                 self.assertTrue(persisted.is_file(), persisted)
                 self.assertEqual(json.loads(persisted.read_text(encoding="utf-8")), artifact)
 
+    def test_forge_scenario_prestate_compares_declared_participants_not_dynamic_implementation_accounts(self):
+        target = "0x" + "1" * 40
+        actor = "0x" + "2" * 40
+        control_impl = "0x" + "3" * 40
+        attack_impl = "0x" + "4" * 40
+        scenario_slot = "0x" + "0" * 63 + "1"
+        shared_slot = "0x" + "0" * 63 + "2"
+        zero = "0x" + "0" * 64
+
+        def state(implementation, scenario_value):
+            return {
+                "prestate": [
+                    {
+                        "address": target, "balance_wei": 100, "nonce": 1,
+                        "code_hash": "0x" + "a" * 64,
+                        "storage": [
+                            {"slot": scenario_slot, "value": scenario_value},
+                            {"slot": shared_slot, "value": "0x" + "0" * 63 + "7"},
+                        ],
+                    },
+                    {
+                        "address": actor, "balance_wei": 50, "nonce": 1,
+                        "code_hash": "0x" + "b" * 64,
+                        "storage": [{"slot": zero, "value": zero}],
+                    },
+                    {
+                        "address": implementation, "balance_wei": 0, "nonce": 1,
+                        "code_hash": "0x" + ("c" if implementation == control_impl else "d") * 64,
+                        "storage": [],
+                    },
+                ]
+            }
+
+        spec = {
+            "prestate_addresses": [target, actor],
+            "scenario_parameters": [{
+                "name": "implementation", "address": target, "slot": scenario_slot,
+                "control_value": "0x1", "attack_value": "0x2",
+            }],
+        }
+        control = godmode._forge_scenario_prestate(state(control_impl, "0x1"), spec, "control")
+        attack = godmode._forge_scenario_prestate(state(attack_impl, "0x2"), spec, "attack")
+        self.assertEqual(control[0], attack[0])
+        self.assertEqual(control[4]["policy"], "manifest_declared_accounts")
+        self.assertEqual(control[4]["excluded_trace_accounts"], [control_impl])
+        self.assertEqual(attack[4]["excluded_trace_accounts"], [attack_impl])
+        self.assertEqual(control[4]["compared_account_count"], 2)
+        self.assertEqual(control[4]["compared_storage_slot_count"], 2)
+        self.assertEqual(control[3], [target + ":" + scenario_slot])
+        self.assertEqual(attack[3], [target + ":" + scenario_slot])
+
+    def test_forge_scenario_prestate_fails_closed_for_missing_declared_participants_or_slots(self):
+        target = "0x" + "1" * 40
+        missing = "0x" + "2" * 40
+        normalized = {
+            "prestate": [{
+                "address": target, "balance_wei": 0, "nonce": 1,
+                "code_hash": "0x" + "a" * 64,
+                "storage": [],
+            }]
+        }
+        with self.assertRaisesRegex(ValueError, "prestate_addresses were not observed"):
+            godmode._forge_scenario_prestate(
+                normalized, {"prestate_addresses": [target, missing]}, "control"
+            )
+        with self.assertRaisesRegex(ValueError, "prestate_slots were not observed"):
+            godmode._forge_scenario_prestate(
+                normalized,
+                {
+                    "prestate_addresses": [target],
+                    "prestate_slots": [{"address": target, "slot": "0x" + "0" * 64}],
+                },
+                "control",
+            )
+
+    def test_forge_trace_call_count_uses_selector_to_distinguish_upgrade_from_readback(self):
+        target = "0x" + "1" * 40
+        calls = [
+            {"to": target, "input": "0x3659cfe6" + "0" * 64},
+            {"to": target, "input": "0x5c60da1b"},
+            {"to": "0x" + "2" * 40, "input": "0x3659cfe6" + "0" * 64},
+        ]
+        self.assertEqual(godmode._forge_trace_call_count(calls, target), 2)
+        self.assertEqual(godmode._forge_trace_call_count(calls, target, "0x3659cfe6"), 1)
+        with self.assertRaisesRegex(ValueError, "four-byte hex calldata"):
+            godmode._forge_trace_call_count(calls, target, "0x1234")
+
     def test_forge_control_adapter_consumes_real_forge_artifact_without_claiming_eoa_profit(self):
         import subprocess
         from unittest.mock import patch

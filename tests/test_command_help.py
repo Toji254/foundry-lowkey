@@ -1905,5 +1905,19 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("List deployment history only; does not deploy.", rendered)
 
 
+    def test_opcodes_transaction_trace_dispatches_to_rpc_trace_adapter(self):
+        tx_hash = "0x" + "a" * 64
+        with patch.object(lk, "run_opcodes", return_value=17) as run_trace:
+            code = lk.dispatch_command(
+                "opcodes", ["--tx", tx_hash, "--fork", "cancun"], {}
+            )
+        self.assertEqual(code, 17)
+        run_trace.assert_called_once_with({}, ["--tx", tx_hash, "--fork", "cancun"])
+
+    def test_opcodes_static_inspection_uses_the_opcode_registry(self):
+        registry = SimpleNamespace(run_cli=lambda args: 23)
+        with patch.object(lk, "opcode_intelligence", registry):
+            self.assertEqual(lk.run_opcodes({}, ["--spec", "PUSH1"]), 23)
+
 if __name__ == "__main__":
     unittest.main()

@@ -4442,11 +4442,82 @@ def _forge_source_verification(source_url, fork_url, normalized, spec):
 
 
 
+def _forge_trace_call_count(calls, address, selector=None):
+    """Count calls to an address, optionally restricted to one four-byte selector."""
+    expected_address = addr(address)
+    expected_selector = None
+    if selector is not None:
+        expected_selector = str(selector).strip().lower()
+        if not re.fullmatch(r"0x[0-9a-f]{8}", expected_selector):
+            raise ValueError("Trace expectation selector must be exactly four-byte hex calldata.")
+    count = 0
+    for call in calls or []:
+        if not isinstance(call, dict):
+            continue
+        if str(call.get("to") or "").lower() != expected_address:
+            continue
+        if expected_selector is not None:
+            calldata = str(call.get("input") or call.get("data") or "").lower()
+            if not calldata.startswith(expected_selector):
+                continue
+        count += 1
+    return count
+
+
 def _forge_scenario_prestate(normalized, spec, scenario_name):
-    """Verify declared per-scenario state, then exclude only those slots from equivalence."""
+    """Verify scenario slots, then hash only the manifest-declared common participants."""
     prestate = json.loads(json.dumps(normalized.get("prestate") or []))
+    if not isinstance(prestate, list) or not prestate:
+        raise ValueError("Forge state diff contains no normalized pre-state accounts.")
     exclusions = set()
     verified = []
+    observed_addresses = {
+        addr(row.get("address")) for row in prestate if isinstance(row, dict)
+    }
+
+    declared_addresses_raw = spec.get("prestate_addresses")
+    if declared_addresses_raw is None:
+        comparable_addresses = set(observed_addresses)
+        address_policy = "all_trace_observed_accounts"
+    else:
+        if not isinstance(declared_addresses_raw, list) or not declared_addresses_raw:
+            raise ValueError("prestate_addresses must be a non-empty array when supplied.")
+        comparable_addresses = {addr(value) for value in declared_addresses_raw}
+        missing_addresses = sorted(comparable_addresses - observed_addresses)
+        if missing_addresses:
+            raise ValueError(
+                "Manifest-declared prestate_addresses were not observed in the Forge trace: "
+                + ", ".join(missing_addresses)
+            )
+        address_policy = "manifest_declared_accounts"
+
+    declared_slots_raw = spec.get("prestate_slots")
+    declared_slots = None
+    if declared_slots_raw is not None:
+        if not isinstance(declared_slots_raw, list) or not declared_slots_raw:
+            raise ValueError("prestate_slots must be a non-empty array when supplied.")
+        declared_slots = set()
+        for item in declared_slots_raw:
+            if not isinstance(item, dict):
+                raise ValueError("prestate_slots entries must be objects.")
+            slot_address = addr(item.get("address"))
+            slot = storage_slot_key(item.get("slot"))
+            if slot_address not in comparable_addresses:
+                raise ValueError(
+                    "Every prestate_slots address must also appear in prestate_addresses."
+                )
+            declared_slots.add((slot_address, slot))
+        observed_slots = {
+            (addr(account.get("address")), storage_slot_key(row.get("slot")))
+            for account in prestate
+            for row in (account.get("storage") or [])
+        }
+        missing_slots = sorted(declared_slots - observed_slots)
+        if missing_slots:
+            raise ValueError(
+                "Manifest-declared prestate_slots were not observed in the Forge trace: "
+                + ", ".join(address + ":" + slot for address, slot in missing_slots)
+            )
 
     def word(value, label):
         try:
@@ -4462,6 +4533,10 @@ def _forge_scenario_prestate(normalized, spec, scenario_name):
             raise ValueError("scenario_parameters entries must be objects.")
         address = addr(item.get("address"))
         slot = storage_slot_key(item.get("slot"))
+        if address not in comparable_addresses:
+            raise ValueError(
+                "Every scenario_parameters address must also appear in prestate_addresses."
+            )
         expected_raw = item.get(scenario_name + "_value")
         if expected_raw is None:
             raise ValueError(
@@ -4493,19 +4568,56 @@ def _forge_scenario_prestate(normalized, spec, scenario_name):
             "description": item.get("description"),
         })
 
-    comparison = json.loads(json.dumps(prestate))
-    for account in comparison:
-        account["storage"] = [
-            row for row in account.get("storage", [])
-            if (account.get("address"), row.get("slot")) not in exclusions
-        ]
+    comparison = []
+    for account in prestate:
+        account_address = addr(account.get("address"))
+        if account_address not in comparable_addresses:
+            continue
+        projected = {
+            key: account.get(key)
+            for key in ("address", "balance_wei", "nonce", "code_hash")
+        }
+        selected_storage = []
+        for row in account.get("storage", []) or []:
+            slot = storage_slot_key(row.get("slot"))
+            key = (account_address, slot)
+            if declared_slots is not None and key not in declared_slots:
+                continue
+            if key in exclusions:
+                continue
+            selected_storage.append({
+                "slot": slot,
+                "value": word(row.get("value"), "prestate"),
+            })
+        projected["storage"] = sorted(selected_storage, key=lambda row: row["slot"])
+        comparison.append(projected)
+    comparison.sort(key=lambda row: row["address"])
+
+    excluded_accounts = sorted(observed_addresses - comparable_addresses)
+    excluded_scenario_slots = sorted(
+        address + ":" + slot for address, slot in exclusions
+    )
+    comparison_metadata = {
+        "policy": address_policy,
+        "addresses": sorted(comparable_addresses),
+        "slots": (
+            sorted(address + ":" + slot for address, slot in declared_slots)
+            if declared_slots is not None else
+            "all trace-observed storage slots on declared addresses"
+        ),
+        "excluded_scenario_slots": excluded_scenario_slots,
+        "excluded_trace_accounts": excluded_accounts,
+        "compared_account_count": len(comparison),
+        "compared_storage_slot_count": sum(len(row["storage"]) for row in comparison),
+        "limitations": [
+            "Only trace-observed storage slots are compared; unaccessed mapping keys and dynamic-array elements are not enumerated.",
+            "Full trace-observed account and storage evidence remains in prestate; accounts outside the declared equivalence set are not silently treated as equal.",
+        ],
+    }
     digest = hashlib.sha256(
         json.dumps(comparison, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    return digest, prestate, verified, sorted(
-        address + ":" + slot for address, slot in exclusions
-    )
-
+    return digest, prestate, verified, excluded_scenario_slots, comparison_metadata
 
 
 def _forge_storage_metric(normalized, metric_spec):
@@ -4704,7 +4816,7 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
             shutil.copy2(artifact_path, persisted_artifact)
             raw = json.loads(artifact_path.read_text(encoding="utf-8"))
             normalized = normalize_forge_state_diff(raw, expected_target=target)
-            prestate_digest, full_prestate, scenario_parameters, excluded_scenario_slots = (
+            prestate_digest, full_prestate, scenario_parameters, excluded_scenario_slots, prestate_comparison = (
                 _forge_scenario_prestate(normalized, spec, scenario_name)
             )
             semantic_check = None
@@ -4758,6 +4870,7 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
                 "prestate_sha256": prestate_digest, "prestate": full_prestate,
                 "scenario_parameters": scenario_parameters,
                 "comparison_excluded_scenario_slots": excluded_scenario_slots,
+                "prestate_comparison": prestate_comparison,
                 "derived_storage_accesses": normalized["storage_accesses"],
                 "derived_storage_slots": [
                     {"address": item["account"], "slot": item["slot"],
@@ -5162,6 +5275,16 @@ def control(args):
             trace_checks.append({"verified":False,"reason":"trace_expectation must be an object"})
             continue
         address=addr(expectation.get("address"))
+        selector=expectation.get("selector")
+        if selector is not None:
+            selector=str(selector).strip().lower()
+            if not re.fullmatch(r"0x[0-9a-f]{8}",selector):
+                trace_delta_verified=False
+                trace_checks.append({
+                    "address":address,"selector":selector,"verified":False,
+                    "reason":"selector must be exactly four-byte hex calldata",
+                })
+                continue
         counts={}
         expected={}
         names=["control","attack"]
@@ -5169,7 +5292,7 @@ def control(args):
             names.append("negative_control")
         for name in names:
             calls=rows.get(name,{}).get("call_trace") or []
-            counts[name]=sum(1 for call in calls if str(call.get("to") or "").lower()==address)
+            counts[name]=_forge_trace_call_count(calls,address,selector)
             lo=expectation.get(name+"_min_calls")
             hi=expectation.get(name+"_max_calls")
             if lo is None or hi is None or int(lo)<0 or int(hi)<int(lo):
@@ -5184,7 +5307,7 @@ def control(args):
                 if not expected[name]["matched"]:
                     trace_delta_verified=False
         trace_checks.append({
-            "address":address,"description":expectation.get("description"),
+            "address":address,"selector":selector,"description":expectation.get("description"),
             "observed_call_counts":counts,"expected":expected,
             "verified":all(item.get("matched",True) is not False for item in expected.values()),
         })

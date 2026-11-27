@@ -54,6 +54,13 @@ def address_word(address: str) -> str:
 def make_manifest(target: str, function_signature: str, actor: str, proxy: str, scenario_address: str, scenario_slot: str,
                   control_value: str, attack_value: str, prefix: str, test_name: str,
                   fork_block: int, forge: str) -> dict[str, Any]:
+    selector_by_signature = {
+        "upgradeTo(address)": "0x3659cfe6",
+        "upgradeAndCall(address,address,bytes)": "0x9623609d",
+    }
+    selector = selector_by_signature.get(function_signature)
+    if selector is None:
+        raise AssertionError(f"Unsupported P0 proxy upgrade selector: {function_signature}")
     argv = [forge, "test", "--match-path", "test/ProxySequentialControls.t.sol",
             "--match-test", test_name, "--fork-url", RPC, "-vv"]
     return {
@@ -80,9 +87,10 @@ def make_manifest(target: str, function_signature: str, actor: str, proxy: str, 
             "description": "The only declared scenario difference; selected through the fixture owner's gated configuration method before tracing.",
         }],
         "trace_expectations": [{
-            "address": target, "control_min_calls": 1, "control_max_calls": 1,
+            "address": target, "selector": selector,
+            "control_min_calls": 1, "control_max_calls": 1,
             "attack_min_calls": 1, "attack_max_calls": 1,
-            "description": "Both scenarios invoke the same actor entrypoint with identical encoded upgrade calldata.",
+            "description": "Count the actual upgrade selector only; read-only implementation getters remain in the full trace but do not inflate the upgrade-call count.",
         }],
         "evidence_requirements": {"call_tree": "exact", "calldata": "exact", "storage": "derived"},
         "require_trace_storage": True,
@@ -113,7 +121,17 @@ def check_pair_result(root: Path, report_prefix: str, evidence_dir: Path) -> dic
     if not control_report.is_file():
         raise AssertionError("Independent control runner did not write .audit/godmode/control.json.")
     payload = json.loads(control_report.read_text(encoding="utf-8"))
+    destination = evidence_dir / report_prefix
+    destination.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(control_report, destination / "control-report.json")
     runs = payload.get("runs") or {}
+    for scenario_name in ("control", "attack"):
+        row = runs.get(scenario_name) or {}
+        artifact_name = row.get("state_diff_file")
+        if isinstance(artifact_name, str) and artifact_name:
+            artifact_path = (root / artifact_name).resolve()
+            if artifact_path.is_relative_to(root.resolve()) and artifact_path.is_file():
+                shutil.copy2(artifact_path, destination / f"{scenario_name}-state-diff.json")
     control_metric = (runs.get("control") or {}).get("metric")
     attack_metric = (runs.get("attack") or {}).get("metric")
     if control_metric != 0 or attack_metric != 1 or payload.get("control_delta") != 1:
@@ -130,9 +148,6 @@ def check_pair_result(root: Path, report_prefix: str, evidence_dir: Path) -> dic
                   "trace_delta_verified", "evidence_requirements_verified", "semantic_invariant_verified"):
         if payload.get(field) is not True:
             raise AssertionError(f"Independent paired control did not verify {field}: {payload}")
-    destination = evidence_dir / report_prefix
-    destination.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(control_report, destination / "control-report.json")
     return payload
 
 
@@ -167,6 +182,10 @@ def run_controlled_break(lk: str, root: Path, env: dict[str, str], contract: str
     if len(results) != 1:
         raise AssertionError(f"Expected one {contract} result, observed {len(results)}: {campaign}")
     result = results[0]
+    destination = evidence_root / contract
+    destination.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(reports[-1], destination / "break-campaign.json")
+    paired_report = check_pair_result(root, contract, evidence_root)
     detail = result.get("detail") or {}
     gate = detail.get("control_gate") or {}
     fidelity = gate.get("fidelity") or {}
@@ -184,7 +203,6 @@ def run_controlled_break(lk: str, root: Path, env: dict[str, str], contract: str
     if fidelity.get("confirmation_eligible") is not False:
         raise AssertionError(f"{contract}: fixture/caller-impersonation fidelity was incorrectly confirmation eligible: {fidelity}")
 
-    paired_report = check_pair_result(root, contract, evidence_root)
     source_slot = rpc_storage(cast, root, env, proxy, IMPLEMENTATION_SLOT)
     if source_slot != expected_slot.lower():
         raise AssertionError(f"{contract}: source Anvil implementation slot changed: expected={expected_slot} actual={source_slot}")

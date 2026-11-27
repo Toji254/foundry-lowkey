@@ -6192,10 +6192,10 @@ def run_receipt(config, tx_hash=None, args=None):
 def run_opcodes(config, args=None):
     """Run static opcode inspection or an explicitly requested transaction opcode trace."""
     args = list(args or [])
+    if opcode_intelligence is None:
+        return fail("Opcode intelligence is not installed. Re-run install.sh.")
     if "--tx" not in args:
-        if opcode_intelligence is None:
-            return fail("Opcode intelligence is not installed. Re-run install.sh.")
-        return run_opcodes(config, args)
+        return opcode_intelligence.run_cli(args)
 
     index = args.index("--tx")
     if index + 1 >= len(args):
@@ -28855,10 +28855,10 @@ COMMAND_HELP = {
     ),
     "disasm": _help_entry("Disassemble bytecode into EVM instructions.", "lk disasm [args...]", "lk disasm 0x...", "Use it when source or ABI evidence is unavailable.", related=["lk selectors", "lk tx"]),
     "opcodes": _help_entry(
-        "Inspect fork-aware EVM opcode metadata or decode supplied bytecode without executing it.",
+        "Inspect opcode metadata, decode supplied bytecode, or trace instructions executed by a mined transaction.",
         "lk opcodes --spec <OPCODE> | --bytecode <0x...> | --tx <HASH> [--fork <fork>] [--stack] [--memory] [--learn]",
         "lk opcodes --tx 0x... --fork cancun --stack --learn",
-        "Use it for explicit opcode/fork inspection. Static bytecode decoding is not a transaction execution trace or vulnerability verdict.",
+        "Use --tx with an RPC-configured project for a bounded transaction trace. Static bytecode decoding is not execution evidence or a vulnerability verdict.",
         related=["lk disasm", "lk trace", "lk tx"],
     ),
     "txpool": _help_entry("Inspect the local transaction pool.", "lk txpool [args...]", "lk txpool status", "Use it when debugging pending local transactions.", related=["lk chain", "lk trace"]),
@@ -30948,6 +30948,7 @@ _PROXY_HELP_GUIDES["proxy"].update({
                 ("--freeze", "Freeze the manifest and its commands without executing either scenario.", "lk proxy campaign --manifest .audit/proxy/beacon-control.json --freeze"),
                 ("--validate", "Validate frozen expectations without executing either scenario.", "lk proxy campaign --manifest .audit/proxy/beacon-control.json --validate"),
                 ("--rpc-url <url>", "Select the local Anvil or explicitly configured fork RPC for the Forge experiment.", "lk proxy campaign --manifest .audit/proxy/beacon-control.json --rpc-url http://127.0.0.1:8545"),
+                ("--root <dir>", "Resolve the manifest and evidence paths within an explicit project root.", "lk proxy campaign --manifest .audit/proxy/beacon-control.json --freeze --root ."),
             ],
             related=["lk proxy audit", "lk proxy plan", "lk control", "lk break"],
         ),
@@ -32762,9 +32763,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         else: print("Usage: lk label <address> <name>")
     elif cmd=="recon": run_recon(config)
     elif cmd=="opcodes":
-        if opcode_intelligence is None:
-            return fail("Opcode intelligence is not installed. Re-run install.sh.")
-        return opcode_intelligence.run_cli(args)
+        return run_opcodes(config, args)
     elif cmd=="proxy":
         return proxy_engine.run_cli(
             config,
