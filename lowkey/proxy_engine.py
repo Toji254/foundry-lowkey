@@ -1559,7 +1559,23 @@ def audit_proxy(
     source_names = {row.get("signal") for row in source_signals}
     hypotheses = []
     architecture = report.get("architecture")
-    if architecture in {"ERC1967_IMPLEMENTATION_PROXY", "CONFLICTING_EIP1967_SLOTS"}:
+    implementation_architectures = {
+        "ERC1967_IMPLEMENTATION_PROXY",
+        "ERC1967_IMPLEMENTATION_PROXY_CANDIDATE",
+        "ERC1967_IMPLEMENTATION_SLOT_CANDIDATE",
+        "CONFLICTING_EIP1967_SLOTS",
+    }
+    beacon_architectures = {
+        "ERC1967_BEACON_PROXY",
+        "ERC1967_BEACON_PROXY_CANDIDATE",
+        "ERC1967_BEACON_SLOT_CANDIDATE",
+    }
+    diamond_architectures = {
+        "DIAMOND_LOUPE_CONFIRMED",
+        "DIAMOND_LOUPE_AND_DELEGATECALL_CANDIDATE",
+        "DIAMOND_LOUPE_INTERFACE_CANDIDATE",
+    }
+    if architecture in implementation_architectures:
         if "uups_authorization_hook" in source_names or "UUPS_COMPATIBLE_IMPLEMENTATION" in report.get("upgrade_mechanisms", []):
             hypotheses.append({
                 "id": "PROXY-UUPS-AUTH",
@@ -1584,7 +1600,7 @@ def audit_proxy(
                 "reason": "Source includes delegatecall or manual storage operations; exact slot effects need compiler/trace-backed analysis.",
                 "next": "Trace writes to ERC-1967 slots and application authorization/accounting slots.",
             })
-    if architecture == "ERC1967_BEACON_PROXY":
+    if architecture in beacon_architectures:
         hypotheses.append({
             "id": "PROXY-BEACON-AUTH",
             "title": "Verify beacon ownership and implementation integrity",
@@ -1592,7 +1608,7 @@ def audit_proxy(
             "reason": "A beacon-controlled implementation path was observed; beacon owner permissions and upgrade effects were not tested.",
             "next": "Trace beacon upgrade authority and enumerate dependent proxies.",
         })
-    if architecture == "DIAMOND_LOUPE_CONFIRMED":
+    if architecture in diamond_architectures:
         hypotheses.append({
             "id": "PROXY-DIAMOND-CUT",
             "title": "Verify diamondCut authority and facet replacement safety",
@@ -1664,8 +1680,22 @@ def build_attack_plan(report: dict[str, Any]) -> dict[str, Any]:
         "DIAMOND_LOUPE_INTERFACE_CANDIDATE",
     }
     custom_architectures = {"CUSTOM_DELEGATECALL_CANDIDATE"}
+    proxy_like = (
+        architecture not in {"DIRECT_OR_UNKNOWN", "NO_CODE", "UNKNOWN", "UNVERIFIED_EIP1967"}
+        or bool(report.get("slot_candidates", {}).get("implementation"))
+        or bool(report.get("slot_candidates", {}).get("beacon"))
+        or bool((report.get("checks") or {}).get("diamond_loupe))
+    )
+    proxy_only_scenarios = {
+        "PROXY-INIT-001",
+        "PROXY-INIT-002",
+        "PROXY-STORAGE-001",
+        "PROXY-STORAGE-002",
+    }
     applicable = []
     for key, title, invariant in _ATTACK_SCENARIOS:
+        if key in proxy_only_scenarios and not proxy_like:
+            continue
         if "UUPS" in key and architecture not in implementation_architectures:
             continue
         if "TRANSPARENT" in key and architecture not in implementation_architectures:
@@ -1706,30 +1736,6 @@ def build_attack_plan(report: dict[str, Any]) -> dict[str, Any]:
             ],
         })
 
-    # Generic initialization and storage tests apply to all recognized proxy-like targets.
-    proxy_like = (
-        architecture not in {"DIRECT_OR_UNKNOWN", "NO_CODE", "UNKNOWN", "UNVERIFIED_EIP1967"}
-        or bool(report.get("slot_candidates", {}).get("implementation"))
-        or bool(report.get("slot_candidates", {}).get("beacon"))
-        or bool((report.get("checks") or {}).get("diamond_loupe"))
-    )
-    if proxy_like:
-        applicable.extend([
-            {
-                "id": "PROXY-INIT-001",
-                "title": "Uninitialized proxy takeover",
-                "invariant_to_test": "initializer state, owner/role capture and first-caller control",
-                "status": "NOT_EXECUTED",
-                "required_evidence": ["target-specific initializer", "control actor", "attacker actor", "state diff"],
-            },
-            {
-                "id": "PROXY-STORAGE-001",
-                "title": "Storage layout regression",
-                "invariant_to_test": "state preservation across implementation upgrade",
-                "status": "NOT_EXECUTED",
-                "required_evidence": ["V1/V2 compiler storage layouts", "upgrade route", "state invariants", "paired control"],
-            },
-        ])
     if (report.get("erc7201_namespaces") or {}).get("namespaces"):
         applicable.append({
             "id": "PROXY-ERC7201-001",
