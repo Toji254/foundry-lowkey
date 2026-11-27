@@ -54,6 +54,7 @@ IGNORED_PARTS = {
 MAX_UPLOAD_FILES = 1500
 MAX_UPLOAD_BYTES = 128 * 1024 * 1024
 MAX_UPLOAD_FILE_BYTES = 2 * 1024 * 1024
+MAX_EMBEDDED_SOURCE_BYTES = 8 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES = 3000
 
 
@@ -130,6 +131,47 @@ def _source_excerpt(root: Path, file_name: str, line: Any, radius: int = 3) -> s
         f"{'>' if number == line else ' '} {number:>5}  {lines[number - 1]}"
         for number in range(start, end + 1)
     )[:1800]
+
+
+def _source_file_inventory(root: Path, paths: set[str]) -> list[dict[str, Any]]:
+    """Embed bounded, project-relative Solidity files for offline inspection."""
+    root_path = root.resolve()
+    total_embedded = 0
+    records: list[dict[str, Any]] = []
+    for file_name in sorted(paths):
+        if not file_name or Path(file_name).suffix.lower() != ".sol":
+            continue
+        candidate = Path(file_name)
+        if not candidate.is_absolute():
+            candidate = root_path / candidate
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(root_path)
+            relative = resolved.relative_to(root_path).as_posix()
+            size = resolved.stat().st_size
+            if size > MAX_UPLOAD_FILE_BYTES:
+                records.append({"path": relative, "status": "FILE_SIZE_LIMIT", "byte_size": size, "sha256": None, "line_count": None, "content": None})
+                continue
+            raw = resolved.read_bytes()
+            if len(raw) > MAX_UPLOAD_FILE_BYTES:
+                records.append({"path": relative, "status": "FILE_SIZE_LIMIT", "byte_size": len(raw), "sha256": None, "line_count": None, "content": None})
+                continue
+            source = raw.decode("utf-8-sig", errors="replace")
+            digest = hashlib.sha256(raw).hexdigest()
+            line_count = len(source.splitlines())
+            if total_embedded + len(raw) > MAX_EMBEDDED_SOURCE_BYTES:
+                status, embedded_content = "EMBEDDING_BUDGET", None
+            else:
+                total_embedded += len(raw)
+                status, embedded_content = "EMBEDDED", source
+            records.append({
+                "path": relative, "status": status, "byte_size": len(raw),
+                "sha256": digest, "line_count": line_count, "content": embedded_content,
+            })
+        except (OSError, RuntimeError, ValueError):
+            # Never expose an absolute path or a symlink outside the project.
+            continue
+    return records
 
 
 def _owner_contract_id(
@@ -351,6 +393,12 @@ def build_explorer_model(index: dict[str, Any], root: str | Path = ".") -> dict[
             nodes_by_id[parent]["outgoing"] += 1
             node["incoming"] += 1
 
+    source_paths = {
+        str(raw.get("file") or "") for raw in raw_nodes.values()
+        if str(raw.get("file") or "").lower().endswith(".sol")
+    }
+    sources = _source_file_inventory(root_path, source_paths)
+    source_bytes = sum(int(item.get("byte_size") or 0) for item in sources if item.get("status") == "EMBEDDED")
     nodes = list(nodes_by_id.values())
     groups: dict[str, dict[str, Any]] = {}
     for node in nodes:
@@ -423,7 +471,9 @@ def build_explorer_model(index: dict[str, Any], root: str | Path = ".") -> dict[
         "parser": index.get("parser", "LEXICAL"), "ast": index.get("ast") or {},
         "effect_propagation": index.get("effect_propagation") or {},
         "nodes": sorted(nodes, key=lambda item: (item["folder"], item["type"], item["label"].casefold(), item["id"])),
-        "edges": edges, "overview_edges": list(overview.values()),
+        "edges": edges, "sources": sources,
+        "source_inventory": {"files": len(sources), "embedded_files": sum(1 for item in sources if item.get("status") == "EMBEDDED"), "embedded_bytes": source_bytes, "embedding_budget_bytes": MAX_EMBEDDED_SOURCE_BYTES},
+        "overview_edges": list(overview.values()),
         "groups": sorted(groups.values(), key=lambda item: item["folder"].casefold()),
         "review_leads": leads,
         "vendors": sorted({item["vendor"] for item in nodes if item["origin"] == "third-party"}),
