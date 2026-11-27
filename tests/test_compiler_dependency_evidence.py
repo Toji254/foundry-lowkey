@@ -88,7 +88,27 @@ class CompilerDependencyEvidenceTests(unittest.TestCase):
                             {"start": 178, "length": 20},
                         ]}
                     }
-                compiled_contracts[name] = {"evm": evm}
+                compiled_contracts[name] = {
+                    "evm": evm,
+                    "abi": ([
+                        {
+                            "type": "constructor",
+                            "inputs": [
+                                {"name": "source", "type": "address", "internalType": "contract IPriceSource"},
+                                {"name": "treasury", "type": "address", "internalType": "address"},
+                                {"name": "feeBps", "type": "uint16", "internalType": "uint16"},
+                                {"name": "tokens", "type": "address[]", "internalType": "address[]"},
+                                {
+                                    "name": "config", "type": "tuple", "internalType": "struct Widget.Config",
+                                    "components": [
+                                        {"name": "oracle", "type": "address", "internalType": "contract IPriceSource"},
+                                        {"name": "threshold", "type": "uint96", "internalType": "uint96"},
+                                    ],
+                                },
+                            ],
+                        }
+                    ] if name == "Widget" else []),
+                }
             contracts[path] = compiled_contracts
         build_info = {
             "input": {"sources": sources},
@@ -140,6 +160,55 @@ class CompilerDependencyEvidenceTests(unittest.TestCase):
             self.assertEqual(typed[0]["to"], "src/Interfaces.sol:IPriceSource")
             self.assertEqual(typed[0]["confidence"], "INFERRED")
             self.assertFalse(typed[0]["auto_deploy"])
+
+            typed_parameters = [
+                edge for edge in widget_edges
+                if edge.get("kind") == "typed-parameter-reference"
+            ]
+            self.assertEqual(len(typed_parameters), 1)
+            self.assertEqual(typed_parameters[0]["parameter_name"], "source")
+            self.assertEqual(typed_parameters[0]["to"], "src/Interfaces.sol:IPriceSource")
+
+            compiled_widget = next(
+                row for row in compiler_report["contracts"]
+                if row["id"] == "src/Widget.sol:Widget"
+            )
+            self.assertEqual(compiled_widget["constructor_inputs_status"], "CONFIRMED")
+            inputs = compiled_widget["constructor_inputs"]
+            self.assertEqual(
+                [(item["name"], item["value_kind"]) for item in inputs],
+                [
+                    ("source", "contract-typed-reference"),
+                    ("treasury", "address-value-unclassified"),
+                    ("feeBps", "primitive-value"),
+                    ("tokens", "address-value-unclassified"),
+                    ("config", "tuple-or-struct"),
+                ],
+            )
+            self.assertEqual(inputs[0]["resolution_status"], "CONTRACT_INSTANCE_UNRESOLVED")
+            self.assertEqual(inputs[1]["resolution_status"], "ADDRESS_SEMANTICS_UNCLASSIFIED")
+            self.assertEqual(inputs[3]["array_dimensions"], ["[]"])
+            self.assertEqual(
+                [(item["name"], item["value_kind"]) for item in inputs[4]["components"]],
+                [("oracle", "contract-typed-reference"), ("threshold", "primitive-value")],
+            )
+            constructor_argument_edges = [
+                edge for edge in widget_edges if edge.get("kind") == "constructor-input"
+            ]
+            self.assertEqual(len(constructor_argument_edges), 7)
+            self.assertTrue(all(edge["requires_resolution"] for edge in constructor_argument_edges))
+            self.assertTrue(all(edge["auto_deploy"] is False for edge in constructor_argument_edges))
+            self.assertEqual(
+                {edge["resolution_status"] for edge in constructor_argument_edges},
+                {
+                    "CONTRACT_INSTANCE_UNRESOLVED",
+                    "ADDRESS_SEMANTICS_UNCLASSIFIED",
+                    "CONSTRUCTOR_VALUE_REQUIRED",
+                    "COMPONENTS_REQUIRE_RESOLUTION",
+                },
+            )
+            self.assertEqual(compiler_report["constructor_input_count"], 7)
+            self.assertEqual(compiler_report["unavailable_constructor_abi_count"], 0)
 
             constructor_edges = [edge for edge in widget_edges if edge.get("function") == "constructor"]
             self.assertTrue(constructor_edges)

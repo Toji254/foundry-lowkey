@@ -349,6 +349,71 @@ def compiler_dependency_evidence(
                 if isinstance(contract_output, dict):
                     compiled_contracts[(build_name, f"{source_key}:{contract_name}")] = contract_output
 
+    def abi_value_kind(abi_type: str, internal_type: str) -> str:
+        declared = internal_type.strip()
+        if declared.startswith("contract "):
+            return "contract-typed-reference"
+        if declared.startswith("struct ") or abi_type.split("[", 1)[0] == "tuple":
+            return "tuple-or-struct"
+        base_type = abi_type.split("[", 1)[0]
+        if base_type == "address":
+            return "address-value-unclassified"
+        if (
+            base_type in {"bool", "string", "bytes", "function"}
+            or re.fullmatch(r"(?:u?int)(?:[0-9]+)?", base_type)
+            or re.fullmatch(r"(?:u?fixed)(?:[0-9]+x[0-9]+)?", base_type)
+            or re.fullmatch(r"bytes(?:[1-9]|[12][0-9]|3[0-2])", base_type)
+        ):
+            return "primitive-value"
+        return "abi-value"
+
+    def describe_abi_parameter(
+        parameter: Any,
+        index_path: list[int],
+        value_path: str,
+    ) -> dict[str, Any]:
+        if not isinstance(parameter, dict):
+            parameter = {}
+        abi_type = str(parameter.get("type") or "unknown")
+        internal_type = str(parameter.get("internalType") or "")
+        name = str(parameter.get("name") or "")
+        kind = abi_value_kind(abi_type, internal_type)
+        if kind == "contract-typed-reference":
+            resolution_status = "CONTRACT_INSTANCE_UNRESOLVED"
+        elif kind == "address-value-unclassified":
+            resolution_status = "ADDRESS_SEMANTICS_UNCLASSIFIED"
+        elif kind == "tuple-or-struct":
+            resolution_status = "COMPONENTS_REQUIRE_RESOLUTION"
+        elif kind == "primitive-value":
+            resolution_status = "CONSTRUCTOR_VALUE_REQUIRED"
+        else:
+            resolution_status = "ABI_VALUE_REQUIRES_REVIEW"
+        components = []
+        raw_components = parameter.get("components")
+        if isinstance(raw_components, list):
+            for component_index, component in enumerate(raw_components):
+                component_name = (
+                    str(component.get("name") or "")
+                    if isinstance(component, dict) else ""
+                ) or f"component_{component_index}"
+                component_path = f"{value_path}.{component_name}" if value_path else component_name
+                components.append(describe_abi_parameter(
+                    component, index_path + [component_index], component_path,
+                ))
+        return {
+            "index_path": list(index_path),
+            "path": value_path,
+            "name": name or None,
+            "type": abi_type,
+            "internal_type": internal_type or None,
+            "value_kind": kind,
+            "array_dimensions": re.findall(r"\[[0-9]*\]", abi_type),
+            "requires_resolution": True,
+            "resolution_status": resolution_status,
+            "auto_deploy": False,
+            "components": components,
+        }
+
     definitions: dict[tuple[str, int], dict[str, Any]] = {}
     contract_rows: dict[tuple[str, str], dict[str, Any]] = {}
     for (build_name, source_key), unit in units.items():
@@ -361,6 +426,35 @@ def compiler_dependency_evidence(
                 continue
             identity = f"{unit['path']}:{name}"
             kind = str(declaration.get("contractKind") or "contract").lower()
+            compiled_output = compiled_contracts.get(
+                (build_name, f"{source_key}:{name}"), {}
+            )
+            abi = compiled_output.get("abi") if isinstance(compiled_output, dict) else None
+            constructor_entries = [
+                item for item in abi
+                if isinstance(item, dict) and item.get("type") == "constructor"
+            ] if isinstance(abi, list) else []
+            if not isinstance(abi, list):
+                constructor_status = "UNAVAILABLE"
+                constructor_inputs = []
+            elif len(constructor_entries) > 1:
+                constructor_status = "REVIEW_REQUIRED"
+                constructor_inputs = []
+            elif not constructor_entries:
+                constructor_status = "CONFIRMED_NO_ARGUMENTS"
+                constructor_inputs = []
+            else:
+                constructor_inputs = [
+                    describe_abi_parameter(
+                        parameter,
+                        [index],
+                        str(parameter.get("name") or f"arg_{index}"),
+                    )
+                    for index, parameter in enumerate(
+                        constructor_entries[0].get("inputs") or []
+                    )
+                ]
+                constructor_status = "CONFIRMED"
             row = {
                 "id": identity,
                 "source": unit["path"],
@@ -368,6 +462,8 @@ def compiler_dependency_evidence(
                 "contract_kind": kind,
                 "compiler_build_info": build_name,
                 "declaration_id": declaration.get("id"),
+                "constructor_inputs_status": constructor_status,
+                "constructor_inputs": constructor_inputs,
             }
             contract_rows[(build_name, identity)] = row
             try:
@@ -389,6 +485,42 @@ def compiler_dependency_evidence(
         if key not in seen_edges:
             seen_edges.add(key)
             edges.append(edge)
+
+    # ABI constructor entries describe values the deployer must supply.
+    # They are not address identities and never imply automatic deployments.
+    def emit_constructor_input(row: dict[str, Any], parameter: dict[str, Any]) -> None:
+        identity = str(row.get("id") or "")
+        value_path = str(parameter.get("path") or "argument")
+        add_edge({
+            "from": identity,
+            "to": f"{identity}#constructor.{value_path}",
+            "kind": "constructor-input",
+            "confidence": "CONFIRMED",
+            "source": "solc-output:abi.constructor.inputs",
+            "line": None,
+            "parameter_name": parameter.get("name"),
+            "parameter_path": value_path,
+            "abi_index_path": list(parameter.get("index_path") or []),
+            "abi_type": parameter.get("type"),
+            "internal_type": parameter.get("internal_type"),
+            "value_kind": parameter.get("value_kind"),
+            "resolution_status": parameter.get("resolution_status"),
+            "requires_resolution": True,
+            "auto_deploy": False,
+            "evidence": {
+                "build_info": row.get("compiler_build_info"),
+                "source_path": row.get("source"),
+                "contract": identity,
+                "abi_index_path": list(parameter.get("index_path") or []),
+            },
+        })
+        for component in parameter.get("components") or []:
+            if isinstance(component, dict):
+                emit_constructor_input(row, component)
+
+    for contract_row in contract_rows.values():
+        for constructor_parameter in contract_row.get("constructor_inputs") or []:
+            emit_constructor_input(contract_row, constructor_parameter)
 
     def referenced_contract(value: Any, build_name: str) -> dict[str, Any] | None:
         if isinstance(value, dict):
@@ -472,6 +604,7 @@ def compiler_dependency_evidence(
                                 add_edge({
                                     "from": from_identity, "to": target["identity"],
                                     "kind": relation, "confidence": confidence,
+                                    "parameter_name": str(node.get("name") or "") or None,
                                     "source": "solc-ast:VariableDeclaration",
                                     "line": source_line(source_text, node),
                                     "function": current_function,
@@ -613,6 +746,11 @@ def compiler_dependency_evidence(
     library_cycles.sort(key=lambda component: tuple(component))
     cycle_nodes = {node for component in library_cycles for node in component}
     ordering_complete = not library_cycles and len(library_order) == len(library_nodes)
+    def _walk_constructor_parameters(parameters: list[dict[str, Any]]):
+        for parameter in parameters:
+            yield parameter
+            yield from _walk_constructor_parameters(parameter.get("components") or [])
+
     return {
         "available": bool(manifest.get("files")),
         "build_info_files": len(manifest.get("files") or []),
@@ -621,6 +759,14 @@ def compiler_dependency_evidence(
         "source_units": source_units_seen,
         "contracts": sorted(contract_rows.values(), key=lambda item: item["id"]),
         "edges": edges,
+        "constructor_input_count": sum(
+            sum(1 for _ in _walk_constructor_parameters(row.get("constructor_inputs") or []))
+            for row in contract_rows.values()
+        ),
+        "unavailable_constructor_abi_count": sum(
+            1 for row in contract_rows.values()
+            if row.get("constructor_inputs_status") == "UNAVAILABLE"
+        ),
         "library_deployment_order": library_order if ordering_complete else [],
         "library_order_complete": ordering_complete,
         "library_cycles": library_cycles,

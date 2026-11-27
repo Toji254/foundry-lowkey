@@ -1517,6 +1517,12 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
             "external_call_sites": sum(len(node.get("calls", [])) for node in nodes),
             "compiler_contracts": len(compiler_dependencies.get("contracts") or []),
             "typed_relationships": len(typed_edges),
+            "constructor_inputs": int(compiler_dependencies.get("constructor_input_count") or 0),
+            "constructor_abis_unavailable": int(compiler_dependencies.get("unavailable_constructor_abi_count") or 0),
+            "unresolved_constructor_inputs": sum(
+                1 for edge in typed_edges
+                if edge.get("kind") == "constructor-input" and edge.get("requires_resolution")
+            ),
             "confirmed_library_links": sum(
                 1 for edge in typed_edges
                 if edge.get("kind") == "solidity-library-link" and edge.get("confidence") == "CONFIRMED"
