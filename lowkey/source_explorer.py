@@ -895,8 +895,8 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
 let MODEL=JSON.parse(document.getElementById("graph-data").textContent);
 const SERVER_MODE=__SERVER_MODE__;
 const byId=new Map(),positions=new Map(),hiddenVendors=new Set(),sourceFilesByPath=new Map();
-const bookmarkedIds=new Set(),investigatedEntrypoints=new Set();
-let workspaceStorageAvailable=true;
+const bookmarkedIds=new Set(),investigatedEntrypoints=new Set(),manualPositionIds=new Set();
+let workspaceStorageAvailable=true,restoredWorkspaceState=false;
 const nodeElementsById=new Map(),edgeElementsById=new Map(),edgeLabelsById=new Map(),edgeDataById=new Map(),edgeIndicesById=new Map(),incidentEdgesByNode=new Map();
 let mode="architecture",selectedId=null,selectedTab="overview",selectedEdge=null,focusFunctionId=null,history=[];
 let scale=1,tx=0,ty=0,drag=null,pan=null,renderNodes=[],renderEdges=[];
@@ -915,7 +915,14 @@ function saveWorkspaceState(){
     localStorage.setItem(workspaceStorageKey(),JSON.stringify({
       version:1,
       bookmarks:Array.from(bookmarkedIds),
-      investigated:Array.from(investigatedEntrypoints)
+      investigated:Array.from(investigatedEntrypoints),
+      selected_id:selectedId,
+      mode:mode,
+      inspector_tab:selectedTab,
+      viewport:{scale:scale,tx:tx,ty:ty},
+      manual_positions:Array.from(manualPositionIds).slice(0,1500).map(function(id){return [id,positions.get(id)]}).filter(function(row){return row[1]&&Number.isFinite(row[1].x)&&Number.isFinite(row[1].y)}),
+      hidden_vendors:Array.from(hiddenVendors),
+      filters:Array.from(document.querySelectorAll("[data-filter],[data-edge]")).map(function(input){return {key:input.dataset.filter!==undefined?"filter":"edge",name:input.dataset.filter!==undefined?input.dataset.filter:input.dataset.edge,checked:input.checked}})
     }));
     workspaceStorageAvailable=true;
   }catch(error){
@@ -924,7 +931,7 @@ function saveWorkspaceState(){
   }
 }
 function loadWorkspaceState(){
-  bookmarkedIds.clear();investigatedEntrypoints.clear();
+  bookmarkedIds.clear();investigatedEntrypoints.clear();manualPositionIds.clear();restoredWorkspaceState=false;
   try{
     const raw=localStorage.getItem(workspaceStorageKey());
     if(!raw)return;
@@ -932,6 +939,29 @@ function loadWorkspaceState(){
     if(!saved||saved.version!==1)return;
     (Array.isArray(saved.bookmarks)?saved.bookmarks:[]).forEach(function(id){if(node(id))bookmarkedIds.add(id)});
     (Array.isArray(saved.investigated)?saved.investigated:[]).forEach(function(id){const item=node(id);if(item&&isEntryPoint(item))investigatedEntrypoints.add(id)});
+    (Array.isArray(saved.manual_positions)?saved.manual_positions:[]).slice(0,1500).forEach(function(row){
+      if(!Array.isArray(row)||row.length!==2||!node(row[0]))return;
+      const point=row[1];
+      if(!point||!Number.isFinite(point.x)||!Number.isFinite(point.y))return;
+      positions.set(row[0],{x:point.x,y:point.y});manualPositionIds.add(row[0]);
+    });
+    (Array.isArray(saved.hidden_vendors)?saved.hidden_vendors:[]).forEach(function(vendor){if((MODEL.vendors||[]).includes(vendor))hiddenVendors.add(vendor)});
+    if(saved.viewport&&Number.isFinite(saved.viewport.scale)&&Number.isFinite(saved.viewport.tx)&&Number.isFinite(saved.viewport.ty)){
+      scale=Math.max(.2,Math.min(2.8,saved.viewport.scale));tx=saved.viewport.tx;ty=saved.viewport.ty;
+    }
+    if(node(saved.selected_id))selectedId=saved.selected_id;
+    if(["architecture","functions","storage","assets","security"].includes(saved.mode))mode=saved.mode;
+    if(["overview","functions","state","calls","assets","review"].includes(saved.inspector_tab))selectedTab=saved.inspector_tab;
+    (Array.isArray(saved.filters)?saved.filters:[]).forEach(function(item){
+      if(!item||typeof item.name!=="string")return;
+      const selector=item.key==="edge"?"[data-edge]":"[data-filter]";
+      document.querySelectorAll(selector).forEach(function(input){
+        const value=item.key==="edge"?input.dataset.edge:input.dataset.filter;
+        if(value===item.name)input.checked=!!item.checked;
+      });
+    });
+    if(selectedId)focusFunctionId=functionContextForNode(node(selectedId));
+    restoredWorkspaceState=true;
     workspaceStorageAvailable=true;
   }catch(error){
     workspaceStorageAvailable=false;
@@ -1422,8 +1452,14 @@ function renderGraph(){
       });
       renderPositionsOnly(n.id);
     });
-    group.addEventListener("pointerup",function(){drag=null});
-    group.addEventListener("pointercancel",function(){drag=null});
+    group.addEventListener("pointerup",function(){
+      if(drag&&drag.id===n.id){manualPositionIds.add(n.id);saveWorkspaceState()}
+      drag=null;
+    });
+    group.addEventListener("pointercancel",function(){
+      if(drag&&drag.id===n.id){manualPositionIds.add(n.id);saveWorkspaceState()}
+      drag=null;
+    });
     nodeLayer.appendChild(group);nodeElementsById.set(n.id,group);
   });
   document.getElementById("graph-empty").style.display=renderNodes.length?"none":"grid";
@@ -1492,7 +1528,7 @@ function fitGraph(){
   const xs=values.map(function(p){return p.x}),ys=values.map(function(p){return p.y});
   const minX=Math.min(...xs)-190,maxX=Math.max(...xs)+190,minY=Math.min(...ys)-130,maxY=Math.max(...ys)+130,bounds=svg.getBoundingClientRect();
   scale=Math.max(.005,Math.min(1.35,Math.min((bounds.width||1000)/(maxX-minX),(bounds.height||700)/(maxY-minY))));
-  tx=(1500/scale-(minX+maxX))/2;ty=(920/scale-(minY+maxY))/2;applyTransform();
+  tx=(1500/scale-(minX+maxX))/2;ty=(920/scale-(minY+maxY))/2;applyTransform();saveWorkspaceState();
 }
 function showEdgeDetails(e){
   selectedEdge=e.id;clear(document.getElementById("inspector"));const root=document.getElementById("inspector");
@@ -1952,16 +1988,16 @@ function openNode(id,push){
   else if(focusFunctionId&&n.type==="external")mode="functions";
   else mode="architecture";
   document.querySelectorAll(".mode-tab").forEach(function(b){b.classList.toggle("active",b.dataset.mode===mode)});
-  renderAll();
+  renderAll();saveWorkspaceState();
 }
-function clearFocus(){selectedId=null;focusFunctionId=null;history=[];selectedEdge=null;selectedTab="overview";mode="architecture";document.querySelectorAll(".mode-tab").forEach(function(b){b.classList.toggle("active",b.dataset.mode===mode)});renderAll()}
-function setMode(next){mode=next;selectedEdge=null;document.querySelectorAll(".mode-tab").forEach(function(b){b.classList.toggle("active",b.dataset.mode===mode)});renderGraph();renderInspector();renderFlow()}
+function clearFocus(){selectedId=null;focusFunctionId=null;history=[];selectedEdge=null;selectedTab="overview";mode="architecture";document.querySelectorAll(".mode-tab").forEach(function(b){b.classList.toggle("active",b.dataset.mode===mode)});renderAll();saveWorkspaceState()}
+function setMode(next){mode=next;selectedEdge=null;document.querySelectorAll(".mode-tab").forEach(function(b){b.classList.toggle("active",b.dataset.mode===mode)});renderGraph();renderInspector();renderFlow();saveWorkspaceState()}
 function setServerStatus(text){document.getElementById("import-status").textContent=text}
 function refreshModel(next){
   if(!next||next.schema_version!==2||!Array.isArray(next.nodes)||!Array.isArray(next.edges))throw new Error("The selected file is not a Lowkey graph model.");
-  MODEL=next;positions.clear();scale=1;tx=0;ty=0;hiddenVendors.clear();mapModel();loadWorkspaceState();selectedId=null;focusFunctionId=null;history=[];mode="architecture";selectedTab="overview";selectedEdge=null;
+  MODEL=next;positions.clear();scale=1;tx=0;ty=0;hiddenVendors.clear();mapModel();loadWorkspaceState();if(!restoredWorkspaceState){selectedId=null;focusFunctionId=null;history=[];mode="architecture";selectedTab="overview";selectedEdge=null;}
   document.getElementById("project-name").textContent=MODEL.project_name||"Imported source workspace";
-  renderAll();fitGraph();toast("Graph workspace loaded");
+  renderAll();if(!restoredWorkspaceState)fitGraph();toast("Graph workspace loaded");
 }
 async function importFiles(fileList){
   if(!SERVER_MODE){toast("Source import needs the local workspace. Run lk link --serve");return}
@@ -2028,15 +2064,15 @@ function resetFilters(){
 }
 function setupInteractions(){
   document.querySelectorAll(".mode-tab").forEach(function(button){button.addEventListener("click",function(){setMode(button.dataset.mode)})});
-  document.querySelectorAll("[data-filter],[data-edge]").forEach(function(input){input.addEventListener("change",function(){renderSidebar();renderGraph();renderInspector()})});
+  document.querySelectorAll("[data-filter],[data-edge]").forEach(function(input){input.addEventListener("change",function(){renderSidebar();renderGraph();renderInspector();saveWorkspaceState()})});
   document.getElementById("reset-filters").addEventListener("click",resetFilters);
   document.getElementById("edge-select").addEventListener("change",renderGraph);
   sidebarSearch.addEventListener("input",renderSidebar);
   search.addEventListener("input",function(){sidebarSearch.value=search.value;renderSidebar();renderSearchResults()});
   search.addEventListener("focus",renderSearchResults);
   document.addEventListener("click",function(event){if(!event.target.closest(".global-search")&&!event.target.closest("#search-results"))document.getElementById("search-results").hidden=true});
-  document.getElementById("zoom-in").addEventListener("click",function(){scale=Math.min(2.8,scale*1.2);applyTransform()});
-  document.getElementById("zoom-out").addEventListener("click",function(){scale=Math.max(.2,scale/1.2);applyTransform()});
+  document.getElementById("zoom-in").addEventListener("click",function(){scale=Math.min(2.8,scale*1.2);applyTransform();saveWorkspaceState()});
+  document.getElementById("zoom-out").addEventListener("click",function(){scale=Math.max(.2,scale/1.2);applyTransform();saveWorkspaceState()});
   document.getElementById("fit-graph").addEventListener("click",fitGraph);
   document.getElementById("clear-focus").addEventListener("click",clearFocus);
   document.getElementById("back-graph").addEventListener("click",function(){
@@ -2054,10 +2090,10 @@ function setupInteractions(){
   });
   const open=add(document.querySelector(".top-actions"),"button","tool-button","Open graph JSON");
   open.addEventListener("click",function(){const input=document.createElement("input");input.type="file";input.accept=".json,application/json";input.addEventListener("change",function(){if(input.files[0])openGraphFile(input.files[0])});input.click()});
-  svg.addEventListener("wheel",function(event){event.preventDefault();scale=Math.max(.2,Math.min(2.8,scale*(event.deltaY<0?1.12:.89)));applyTransform()},{passive:false});
+  svg.addEventListener("wheel",function(event){event.preventDefault();scale=Math.max(.2,Math.min(2.8,scale*(event.deltaY<0?1.12:.89)));applyTransform();saveWorkspaceState()},{passive:false});
   svg.addEventListener("pointerdown",function(event){if(event.target.closest&&event.target.closest(".graph-node"))return;pan={x:event.clientX,y:event.clientY,tx:tx,ty:ty};svg.classList.add("dragging")});
   svg.addEventListener("pointermove",function(event){if(!pan)return;const bounds=svg.getBoundingClientRect();tx=pan.tx+(event.clientX-pan.x)*(1500/bounds.width)/scale;ty=pan.ty+(event.clientY-pan.y)*(920/bounds.height)/scale;applyTransform()});
-  svg.addEventListener("pointerup",function(){pan=null;svg.classList.remove("dragging")});svg.addEventListener("pointercancel",function(){pan=null;svg.classList.remove("dragging")});
+  svg.addEventListener("pointerup",function(){pan=null;svg.classList.remove("dragging");saveWorkspaceState()});svg.addEventListener("pointercancel",function(){pan=null;svg.classList.remove("dragging");saveWorkspaceState()});
   svg.addEventListener("dblclick",fitGraph);
   document.addEventListener("keydown",function(event){
     if(event.key==="/"&&!["INPUT","TEXTAREA"].includes(document.activeElement.tagName)){event.preventDefault();search.focus()}
@@ -2096,7 +2132,7 @@ function initialise(){
   setupImport();setupInteractions();
   const wanted=String(MODEL.initial_selection||"").toLowerCase();
   const initial=MODEL.nodes.find(function(n){return n.id===MODEL.initial_selection||n.label.toLowerCase()===wanted||String(n.qualified_name||"").toLowerCase()===wanted});
-  if(initial){openNode(initial.id,false);requestAnimationFrame(fitGraph)}else{renderAll();requestAnimationFrame(fitGraph)}
+  if(restoredWorkspaceState&&selectedId){renderAll()}else if(initial){openNode(initial.id,false);if(!restoredWorkspaceState)requestAnimationFrame(fitGraph)}else{renderAll();if(!restoredWorkspaceState)requestAnimationFrame(fitGraph)}
 }
 initialise();
 })();
