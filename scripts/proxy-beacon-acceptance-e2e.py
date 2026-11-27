@@ -392,6 +392,16 @@ def main() -> int:
         proxy_a = deploy(forge, root, env, "BeaconProxyFixture", beacon)
         proxy_b = deploy(forge, root, env, "BeaconProxyFixture", beacon)
         actor = deploy(forge, root, env, "BeaconUpgradeActor")
+
+        # This second EVM topology intentionally breaks the Beacon
+        # caller-independence expectation while retaining deployed code at
+        # both possible implementation destinations.
+        caller_dependent_beacon = deploy(
+            forge, root, env, "CallerDependentBeacon", implementation_v1, implementation_v2
+        )
+        caller_dependent_proxy = deploy(
+            forge, root, env, "BeaconProxyFixture", caller_dependent_beacon
+        )
         cast_send(cast, root, env, proxy_a, "setValue(uint256)", "111")
         cast_send(cast, root, env, proxy_b, "setValue(uint256)", "222")
 
@@ -405,6 +415,7 @@ def main() -> int:
             "BEACON_ATTACKER": ATTACKER,
             "BEACON_IMPLEMENTATION_V1": implementation_v1,
             "BEACON_IMPLEMENTATION_V2": implementation_v2,
+            "CALLER_DEPENDENT_BEACON": caller_dependent_beacon,
         })
 
         # Exercise all Beacon fixtures against an exact Anvil snapshot before
@@ -413,6 +424,55 @@ def main() -> int:
             forge, "test", "--match-path", "test/BeaconControls.t.sol",
             "--fork-url", RPC, "--fork-block-number", str(fork_block), "-vv",
         ], root, env, timeout=900)
+
+        inspection_result = run(
+            [
+                lk, "proxy", "inspect", caller_dependent_proxy,
+                "--rpc-url", RPC, "--json",
+            ],
+            root,
+            env,
+            timeout=180,
+        )
+        try:
+            caller_dependent_report = json.loads(inspection_result.stdout)
+        except json.JSONDecodeError as error:
+            raise AssertionError(
+                "Beacon reconnaissance did not emit machine-readable JSON: "
+                + inspection_result.stdout[-8000:]
+            ) from error
+        caller_probe = (
+            caller_dependent_report.get("checks", {}).get("beacon_caller_independence")
+        )
+        implementation_probes = (
+            caller_dependent_report.get("checks", {}).get("beacon_implementation") or []
+        )
+        observed_implementations = {
+            str(row.get("implementation") or "").lower()
+            for row in implementation_probes
+            if row.get("implementation")
+        }
+        if caller_probe != "CALLER_DEPENDENT":
+            raise AssertionError(
+                f"Lowkey did not identify the caller-dependent Beacon response: {caller_dependent_report}"
+            )
+        if caller_dependent_report.get("status") != "REVIEW_REQUIRED":
+            raise AssertionError(
+                f"Caller-dependent Beacon must remain REVIEW_REQUIRED: {caller_dependent_report}"
+            )
+        if len(observed_implementations) != 2:
+            raise AssertionError(
+                f"Expected two distinct implementation responses, got {implementation_probes}"
+            )
+        if caller_dependent_report.get("addresses", {}).get("implementation"):
+            raise AssertionError(
+                "Lowkey must not choose one implementation for a caller-dependent Beacon."
+            )
+        caller_dependent_report_path = evidence_root / "caller-dependent-beacon-inspection.json"
+        caller_dependent_report_path.write_text(
+            json.dumps(caller_dependent_report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
         manifest = make_manifest(
             forge, fork_block, beacon, proxy_a, proxy_b, actor, implementation_v1, implementation_v2,
@@ -466,6 +526,16 @@ def main() -> int:
             "proxy_storage_after_fork_attack": {"proxy_a": 111, "proxy_b": 222},
             "source_anvil_implementation_unchanged": True,
             "control_report": control_report,
+            "caller_dependent_beacon_probe": {
+                "status": "PASS",
+                "proxy": caller_dependent_proxy,
+                "beacon": caller_dependent_beacon,
+                "implementation_responses": sorted(observed_implementations),
+                "lowkey_check": caller_probe,
+                "lowkey_status": caller_dependent_report.get("status"),
+                "chosen_implementation": caller_dependent_report.get("addresses", {}).get("implementation"),
+                "report": str(caller_dependent_report_path.relative_to(repo_root)),
+            },
             "classification_policy": (
                 "Fixture-only execution. Secure control rejected the matching unauthorized beacon upgrade; "
                 "vulnerable branch upgraded the shared beacon and changed both proxy routes while preserving "
@@ -474,7 +544,7 @@ def main() -> int:
         }
         (evidence_root / "report.json").write_text(json.dumps(final, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(json.dumps(final, indent=2, sort_keys=True))
-        print("PASS: secure Beacon control rejected; vulnerable Beacon changed both shared-proxy routes.")
+        print("PASS: shared Beacon controls and real Anvil caller-dependent Beacon detection verified.")
     return 0
 
 

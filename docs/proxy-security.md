@@ -91,6 +91,7 @@ CI now accepts fixture-level paired-control campaigns for:
 - Transparent admin/non-admin selector routing and a UUPS second upgrade surface behind a Transparent proxy.
 - OpenZeppelin-style ProxyAdmin upgrade routes with authorized and unauthorized controls.
 - A shared Beacon controlling two proxies, including implementation replacement and independent application-storage preservation.
+- A caller-dependent Beacon whose implementation() returns different deployed implementations for Lowkey's two sentinel callers; live Anvil inspection must return CALLER_DEPENDENT and REVIEW_REQUIRED without selecting one address.
 - EIP-2535 Diamond unauthorized cuts, selector removal and malicious initializer delegatecall takeover.
 
 The Beacon and Diamond campaigns remain `SIMULATED_BREAK` with fixture authenticity. They demonstrate the tested mechanisms and Lowkey's paired evidence pipeline; they are not production-target exploit confirmation.
@@ -105,7 +106,7 @@ The live-deployment inspector and broader proxy subsystem still do not provide:
 - Full ERC-7201 compiler-backed namespace compatibility and migration proof.
 - Generic production broadcast, deployment or upgrade execution.
 
-The following executable attack areas remain pending: proxy-versus-implementation initialization ordering; caller-dependent Beacon behavior and automatic dependent-proxy fan-out discovery; nested-clone and custom-proxy attack campaigns; and broader target-specific storage migration/invariant campaigns.
+The following executable attack areas remain pending: proxy-versus-implementation initialization ordering; automatic dependent-proxy fan-out discovery for shared Beacons; nested-clone and custom-proxy attack campaigns; and broader target-specific storage migration/invariant campaigns. Caller-dependent Beacon responses are now exercised against a real local Anvil deployment and must remain unclassified as a single implementation.
 
 These remain partial until the relevant deployment-specific adapters, paired controls, trace-backed assertions and adversarial CI fixtures exist. A source pattern, ABI method name, coherent Loupe response or storage comparison is never automatically reported as a vulnerability.
 

@@ -136,6 +136,24 @@ contract BeaconProxyFixture {
     }
 }
 
+contract CallerDependentBeacon {
+    address public immutable implementationForCallerOne;
+    address public immutable implementationForCallerTwo;
+
+    constructor(address first, address second) {
+        require(first.code.length > 0 && second.code.length > 0, "NO_IMPLEMENTATION_CODE");
+        implementationForCallerOne = first;
+        implementationForCallerTwo = second;
+    }
+
+    // Deliberately violates the Beacon caller-independence requirement.
+    function implementation() external view returns (address) {
+        if (msg.sender == address(1)) return implementationForCallerOne;
+        if (msg.sender == address(2)) return implementationForCallerTwo;
+        return implementationForCallerOne;
+    }
+}
+
 contract BeaconUpgradeActor {
     // Slot zero is the paired metric consumed by Lowkey's control manifest.
     uint256 public successfulCalls;

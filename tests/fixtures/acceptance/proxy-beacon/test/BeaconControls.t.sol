@@ -8,6 +8,7 @@ import {
     BeaconProxyFixture,
     BeaconLogicV1,
     BeaconLogicV2,
+    CallerDependentBeacon,
     BeaconUpgradeActor,
     IBeaconProxyLogic
 } from "../src/BeaconFixtures.sol";
@@ -85,6 +86,24 @@ contract BeaconControlsTest is LowkeyForgeStateDiffRecorder {
         // it does not change either proxy's EIP-1967 beacon slot.
         require(_slotAddress(address(proxyA), BEACON_SLOT) == address(beacon), "PROXY_A_BEACON_SLOT_CHANGED");
         require(_slotAddress(address(proxyB), BEACON_SLOT) == address(beacon), "PROXY_B_BEACON_SLOT_CHANGED");
+    }
+
+    function test_caller_dependent_beacon_returns_distinct_implementations() external {
+        CallerDependentBeacon beacon = CallerDependentBeacon(
+            vm.envAddress("CALLER_DEPENDENT_BEACON")
+        );
+        address implementationV1 = vm.envAddress("BEACON_IMPLEMENTATION_V1");
+        address implementationV2 = vm.envAddress("BEACON_IMPLEMENTATION_V2");
+
+        vm.prank(address(1));
+        address first = beacon.implementation();
+        vm.prank(address(2));
+        address second = beacon.implementation();
+
+        require(first == implementationV1, "CALLER_ONE_IMPLEMENTATION_MISMATCH");
+        require(second == implementationV2, "CALLER_TWO_IMPLEMENTATION_MISMATCH");
+        require(first != second, "CALLER_DEPENDENT_BEACON_NOT_DISTINCT");
+        require(first.code.length > 0 && second.code.length > 0, "IMPLEMENTATION_CODE_MISSING");
     }
 
     function test_beacon_rejects_an_address_without_implementation_code() external {
