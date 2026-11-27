@@ -123,6 +123,7 @@ class DependencyGraph:
     execution_status: str
     network_identity: Mapping[str, Any] | None
     warnings: tuple[str, ...]
+    external_manifest: Mapping[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -150,6 +151,7 @@ class DependencyGraph:
                 "cycles": len(self.cycles),
             },
             "warnings": list(self.warnings),
+            "external_manifest": dict(self.external_manifest),
         }
 
 
@@ -158,6 +160,7 @@ def build_dependency_graph(
     *,
     network_identity: Mapping[str, Any] | None = None,
     deployment_records: Iterable[Mapping[str, Any]] | Mapping[str, Mapping[str, Any]] | None = None,
+    external_manifest: Mapping[str, Any] | None = None,
 ) -> DependencyGraph:
     """Convert source-matched compiler evidence into typed nodes and edges.
 
@@ -167,7 +170,24 @@ def build_dependency_graph(
     """
     report = compiler_report if isinstance(compiler_report, Mapping) else {}
     network = _network_identity(network_identity)
+    manifest = external_manifest if isinstance(external_manifest, Mapping) else {
+        "status": "NOT_PRESENT", "path": ".audit/dependencies.json",
+        "schema": None, "sha256": None, "network_identity": None,
+        "dependencies": [], "warnings": [],
+    }
+    manifest_status = str(manifest.get("status") or "BLOCKED").upper()
     warnings = [str(item) for item in (report.get("warnings") or []) if isinstance(item, str)]
+    warnings.extend(str(item) for item in (manifest.get("warnings") or []) if isinstance(item, str))
+    manifest_summary = {
+        "status": manifest_status,
+        "path": str(manifest.get("path") or ".audit/dependencies.json"),
+        "schema": manifest.get("schema"),
+        "sha256": manifest.get("sha256"),
+        "dependency_count": (
+            len(manifest.get("dependencies") or [])
+            if isinstance(manifest.get("dependencies"), list) else 0
+        ),
+    }
     if not report.get("available"):
         warnings.append("Source-matched compiler dependency evidence is unavailable.")
 
@@ -379,6 +399,106 @@ def build_dependency_graph(
             },
         ))
 
+    # Explicit project declarations classify dependencies, but never prove
+    # runtime code identity or protocol readiness.
+    manifest_dependencies = manifest.get("dependencies")
+    if manifest_status == "VALID" and isinstance(manifest_dependencies, list):
+        manifest_network = manifest.get("network_identity")
+        for entry in manifest_dependencies:
+            if not isinstance(entry, Mapping):
+                warnings.append("External dependency manifest contains a malformed normalized entry.")
+                continue
+            identifier = str(entry.get("id") or "")
+            consumer = str(entry.get("consumer") or "")
+            parameter = str(entry.get("parameter") or "")
+            kind = str(entry.get("kind") or "other-contract")
+            declared_address = entry.get("address") if _is_address(entry.get("address")) else None
+            binding_target = f"{consumer}#constructor.{parameter}"
+            has_compiler_binding = (
+                consumer in contract_by_id
+                and any(
+                    str(raw_edge.get("from") or "") == consumer
+                    and str(raw_edge.get("to") or "") == binding_target
+                    and str(raw_edge.get("kind") or "") == "constructor-input"
+                    for raw_edge in evidence_edges
+                    if isinstance(raw_edge, Mapping)
+                )
+            )
+            address = declared_address
+            if consumer not in contract_by_id:
+                status = "CONSUMER_NOT_FOUND"
+                warnings.append(
+                    f"External dependency {identifier} references a consumer absent from compiler evidence: {consumer}."
+                )
+                address = None
+            elif not has_compiler_binding:
+                status = "CONSTRUCTOR_PARAMETER_NOT_FOUND"
+                warnings.append(
+                    f"External dependency {identifier} does not match a compiler-reported constructor input: {binding_target}."
+                )
+                address = None
+            elif declared_address is not None and network is None:
+                status = "NETWORK_CONTEXT_REQUIRED"
+                warnings.append(
+                    f"External dependency {identifier} has a declared address but no verified managed network context; address was detached."
+                )
+                address = None
+            elif declared_address is not None and not _same_network(
+                network, manifest_network if isinstance(manifest_network, Mapping) else {}
+            ):
+                status = "NETWORK_IDENTITY_MISMATCH"
+                warnings.append(
+                    f"External dependency {identifier} was declared for a different or incomplete network identity; address was detached."
+                )
+                address = None
+            elif declared_address is not None:
+                status = "DECLARED_UNVERIFIED"
+            else:
+                status = "ADDRESS_REQUIRED"
+
+            external_id = f"external:{identifier}"
+            provenance = {
+                "origin": "project-dependency-manifest",
+                "manifest_path": manifest_summary["path"],
+                "manifest_sha256": manifest_summary["sha256"],
+                "manifest_schema": manifest_summary["schema"],
+                "entry_id": identifier,
+                "dependency_kind": kind,
+                "consumer": consumer,
+                "constructor_parameter": parameter,
+                "description": str(entry.get("description") or ""),
+                "address_declared": declared_address is not None,
+                "network_identity_matched": status == "DECLARED_UNVERIFIED",
+            }
+            consumer_row = contract_by_id.get(consumer)
+            nodes[external_id] = DependencyNode(
+                id=external_id,
+                category=f"external-infrastructure:{kind}",
+                source_identity=consumer or None,
+                source_path=(
+                    str(consumer_row.get("source") or "") or None
+                    if isinstance(consumer_row, Mapping) else None
+                ),
+                resolution_status=status,
+                deployment_status="DECLARED_UNVERIFIED" if address is not None else "NOT_TESTED",
+                address=str(address) if address is not None else None,
+                network_identity=network,
+                evidence=(provenance,),
+            )
+            typed_edges.append(DependencyEdge(
+                source=consumer or "<unresolved-consumer>",
+                target=external_id,
+                kind="external-infrastructure",
+                confidence="DECLARED",
+                resolution_status=status,
+                requires_resolution=True,
+                auto_deploy=False,
+                creation_phase=None,
+                function=parameter or None,
+                link_references=(),
+                origin=provenance,
+            ))
+
     raw_cycles = report.get("library_cycles")
     cycles = tuple(
         tuple(str(node) for node in cycle if node)
@@ -393,7 +513,7 @@ def build_dependency_graph(
         and (not edge.auto_deploy or edge.confidence != "CONFIRMED")
         for edge in typed_edges
     )
-    if not report.get("available") or cycles or unresolved_library:
+    if not report.get("available") or cycles or unresolved_library or manifest_status == "BLOCKED":
         planning_status = "BLOCKED"
     elif any(edge.requires_resolution for edge in typed_edges):
         planning_status = "REVIEW_REQUIRED"
@@ -409,4 +529,5 @@ def build_dependency_graph(
         execution_status="NOT_EXECUTED",
         network_identity=network,
         warnings=tuple(dict.fromkeys(warnings)),
+        external_manifest=manifest_summary,
     )

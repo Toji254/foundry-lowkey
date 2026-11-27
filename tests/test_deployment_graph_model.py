@@ -177,6 +177,109 @@ class DeploymentGraphModelTests(unittest.TestCase):
         self.assertEqual(len(graph["cycles"]), 1)
         self.assertTrue(any("cycle blocks" in item.lower() for item in graph["warnings"]))
 
+
+
+    def test_external_dependency_declaration_is_typed_and_never_runtime_verified(self):
+        consumer = "src/Widget.sol:Widget"
+        parameter = "_vault"
+        report = {
+            "available": True,
+            "contracts": [{"id": consumer, "source": "src/Widget.sol", "contract_kind": "contract"}],
+            "edges": [{
+                "from": consumer,
+                "to": f"{consumer}#constructor.{parameter}",
+                "kind": "constructor-input",
+                "confidence": "CONFIRMED",
+                "requires_resolution": True,
+                "resolution_status": "ADDRESS_SEMANTICS_UNCLASSIFIED",
+                "source": "solc-output:abi.constructor.inputs",
+                "evidence": {"build_info": "build.json", "source_path": "src/Widget.sol"},
+            }],
+            "library_cycles": [],
+            "library_deployment_order": [],
+        }
+        network = self._network()
+        manifest = {
+            "status": "VALID",
+            "path": ".audit/dependencies.json",
+            "schema": "lowkey.external-dependencies.v1",
+            "sha256": "a" * 64,
+            "network_identity": network,
+            "dependencies": [{
+                "id": "widget-vault", "consumer": consumer, "parameter": parameter,
+                "kind": "vault", "address": "0x" + "11" * 20,
+                "description": "Local Vault fixture",
+            }],
+            "warnings": [],
+        }
+        graph = build_dependency_graph(
+            report, network_identity=network, external_manifest=manifest
+        ).to_dict()
+
+        node = next(item for item in graph["nodes"] if item["id"] == "external:widget-vault")
+        edge = next(item for item in graph["edges"] if item["kind"] == "external-infrastructure")
+        self.assertEqual(node["category"], "external-infrastructure:vault")
+        self.assertEqual(node["resolution_status"], "DECLARED_UNVERIFIED")
+        self.assertEqual(node["deployment_status"], "DECLARED_UNVERIFIED")
+        self.assertEqual(node["address"], "0x" + "11" * 20)
+        self.assertFalse(edge["auto_deploy"])
+        self.assertEqual(edge["confidence"], "DECLARED")
+        self.assertEqual(edge["origin"]["manifest_sha256"], "a" * 64)
+        self.assertEqual(graph["planning_status"], "REVIEW_REQUIRED")
+
+    def test_external_dependency_address_is_detached_when_session_identity_differs(self):
+        consumer = "src/Widget.sol:Widget"
+        parameter = "_router"
+        report = {
+            "available": True,
+            "contracts": [{"id": consumer, "source": "src/Widget.sol", "contract_kind": "contract"}],
+            "edges": [{
+                "from": consumer,
+                "to": f"{consumer}#constructor.{parameter}",
+                "kind": "constructor-input",
+                "confidence": "CONFIRMED",
+                "requires_resolution": True,
+                "source": "solc-output:abi.constructor.inputs",
+                "evidence": {"build_info": "build.json", "source_path": "src/Widget.sol"},
+            }],
+        }
+        manifest_network = self._network("session-b")
+        active_network = self._network("session-a")
+        manifest = {
+            "status": "VALID",
+            "path": ".audit/dependencies.json",
+            "schema": "lowkey.external-dependencies.v1",
+            "sha256": "b" * 64,
+            "network_identity": manifest_network,
+            "dependencies": [{
+                "id": "widget-router", "consumer": consumer, "parameter": parameter,
+                "kind": "router", "address": "0x" + "22" * 20,
+                "description": "Router declared for another session",
+            }],
+            "warnings": [],
+        }
+        graph = build_dependency_graph(
+            report, network_identity=active_network, external_manifest=manifest
+        ).to_dict()
+
+        node = next(item for item in graph["nodes"] if item["id"] == "external:widget-router")
+        self.assertIsNone(node["address"])
+        self.assertEqual(node["resolution_status"], "NETWORK_IDENTITY_MISMATCH")
+        self.assertTrue(any("different or incomplete network identity" in item for item in graph["warnings"]))
+
+    def test_invalid_external_dependency_manifest_blocks_planning(self):
+        graph = build_dependency_graph(
+            {"available": True, "contracts": [], "edges": []},
+            external_manifest={
+                "status": "BLOCKED", "path": ".audit/dependencies.json",
+                "schema": None, "sha256": None, "network_identity": None,
+                "dependencies": [], "warnings": ["invalid schema"],
+            },
+        ).to_dict()
+        self.assertEqual(graph["planning_status"], "BLOCKED")
+        self.assertIn("invalid schema", graph["warnings"])
+
+
     def test_missing_compiler_evidence_is_blocked_not_an_empty_safe_graph(self):
         graph = build_dependency_graph({"available": False, "contracts": [], "edges": []}).to_dict()
         self.assertEqual(graph["planning_status"], "BLOCKED")
