@@ -19,7 +19,7 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
 
     function test_paired_uups_upgrade() external {
         address owner = vm.envAddress("P0_OWNER");
-        LowkeyUUPSProxy proxy = LowkeyUUPSProxy(vm.envAddress("P0_UUPS_PROXY"));
+        LowkeyUUPSProxy proxy = LowkeyUUPSProxy(payable(vm.envAddress("P0_UUPS_PROXY")));
         address secureImplementation = vm.envAddress("P0_SECURE_IMPLEMENTATION");
         address vulnerableImplementation = vm.envAddress("P0_VULNERABLE_IMPLEMENTATION");
         ProxyUpgradeActor actor = ProxyUpgradeActor(vm.envAddress("P0_ACTOR"));
@@ -57,7 +57,7 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
     function test_paired_proxy_admin_upgrade() external {
         address owner = vm.envAddress("P0_OWNER");
         PairedProxyAdmin admin = PairedProxyAdmin(vm.envAddress("P0_PROXY_ADMIN"));
-        LowkeyTransparentProxy proxy = LowkeyTransparentProxy(vm.envAddress("P0_TRANSPARENT_PROXY"));
+        LowkeyTransparentProxy proxy = LowkeyTransparentProxy(payable(vm.envAddress("P0_TRANSPARENT_PROXY")));
         ProxyUpgradeActor actor = ProxyUpgradeActor(vm.envAddress("P0_ACTOR"));
         LowkeyProxyReplacement replacement = new LowkeyProxyReplacement();
         bytes memory upgradeCall = abi.encodeWithSignature("upgradeAndCall(address,address,bytes)", address(proxy), address(replacement), bytes(""));
