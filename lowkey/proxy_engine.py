@@ -2235,7 +2235,10 @@ def _parse_cli(args: list[str]) -> tuple[list[str], dict[str, str], set[str]]:
     index = 0
     while index < len(args):
         token = str(args[index])
-        if token in {"--json", "--verbose"}:
+        if token in {
+            "--json", "--verbose", "--freeze", "--validate",
+            "--require-frozen", "--non-economic",
+        }:
             flags.add(token[2:])
             index += 1
         elif token.startswith("--"):
@@ -2383,6 +2386,172 @@ def _save_report(root: str | Path | None, target: str, filename: str, payload: d
     return path
 
 
+def _run_proxy_campaign_cli(
+    config: dict[str, Any],
+    positional: list[str],
+    values: dict[str, str],
+    flags: set[str],
+    *,
+    rpc_resolver=None,
+    root_resolver=None,
+) -> int:
+    """Execute a paired proxy experiment through Lowkey's existing frozen control gate."""
+    if "freeze" in flags and "validate" in flags:
+        print("LOWKEY ERROR: --freeze and --validate are separate campaign operations.")
+        return 2
+
+    manifest_name = values.get("--manifest") or (positional[0] if positional else None)
+    if not manifest_name:
+        print(
+            "Usage: lk proxy campaign --manifest <paired-control.json> "
+            "[--freeze | --validate] [--rpc-url URL] [--root DIR]"
+        )
+        return 2
+
+    try:
+        root_value = values.get("--root")
+        if root_value:
+            root = Path(root_value).expanduser().resolve()
+        elif callable(root_resolver):
+            root = Path(root_resolver()).expanduser().resolve()
+        else:
+            root = Path.cwd().resolve()
+        if not root.is_dir():
+            raise ProxyError(f"Project root does not exist: {root}")
+
+        manifest_path = Path(manifest_name).expanduser()
+        manifest_path = (
+            (root / manifest_path).resolve()
+            if not manifest_path.is_absolute() else manifest_path.resolve()
+        )
+        if not manifest_path.is_relative_to(root) or not manifest_path.is_file():
+            raise ProxyError("Campaign manifest must be an existing file inside the active project.")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ProxyError(f"Could not read proxy campaign manifest: {exc}") from exc
+        if not isinstance(manifest, dict):
+            raise ProxyError("Proxy campaign manifest must contain a JSON object.")
+        target = manifest.get("target_address")
+        if not is_address(target):
+            raise ProxyError("Proxy campaign manifest requires a valid target_address.")
+        if str(manifest.get("family") or "").lower() != "proxy":
+            raise ProxyError("Proxy campaign manifest must declare family='proxy'.")
+        if not str(manifest.get("same_calls_id") or "").strip():
+            raise ProxyError("Proxy campaign manifest requires same_calls_id.")
+        if not isinstance(manifest.get("control"), dict) or not isinstance(manifest.get("attack"), dict):
+            raise ProxyError("Proxy campaign requires both control and attack execution entries.")
+
+        rpc = values.get("--rpc-url")
+        if not rpc and callable(rpc_resolver):
+            try:
+                rpc = rpc_resolver(config, explicit_rpc=None, target=target)
+            except TypeError:
+                rpc = rpc_resolver(config)
+        if not rpc:
+            rpc = config.get("rpc_url") or config.get("rpc")
+
+        output_name = values.get("--output") or ".audit/godmode/proxy-campaign.json"
+        freeze_name = values.get("--freeze-file") or ".audit/godmode/proxy-campaign.freeze.json"
+        for label, raw_path in (("output", output_name), ("freeze file", freeze_name)):
+            candidate = Path(raw_path).expanduser()
+            candidate = (
+                (root / candidate).resolve()
+                if not candidate.is_absolute() else candidate.resolve()
+            )
+            if not candidate.is_relative_to(root):
+                raise ProxyError(f"Proxy campaign {label} path must remain inside the active project.")
+
+        try:
+            from . import godmode as godmode_module
+        except ImportError:
+            import godmode as godmode_module
+
+        control_args = [
+            str(manifest_path.relative_to(root)),
+            "--root", str(root),
+            "--output", output_name,
+            "--freeze-file", freeze_name,
+        ]
+        if rpc:
+            control_args.extend(["--rpc-url", str(rpc)])
+        if values.get("--source-rpc-url"):
+            control_args.extend(["--source-rpc-url", values["--source-rpc-url"]])
+        if "freeze" in flags:
+            control_args.append("--freeze")
+        elif "validate" in flags:
+            control_args.append("--validate")
+        else:
+            # Execution is never allowed to infer a missing or stale control freeze.
+            control_args.append("--require-frozen")
+        if "non-economic" in flags:
+            control_args.append("--non-economic")
+
+        exit_code = int(godmode_module.control(control_args))
+        if "freeze" in flags or "validate" in flags:
+            return exit_code
+
+        output_path = (root / output_name).resolve()
+        if not output_path.is_file():
+            if exit_code == 0:
+                raise ProxyError("Control runner returned success but wrote no evidence report.")
+            return exit_code
+        try:
+            control_report = json.loads(output_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ProxyError(f"Control runner evidence report is unreadable: {exc}") from exc
+        if not isinstance(control_report, dict):
+            raise ProxyError("Control runner evidence report is not a JSON object.")
+
+        proxy_family = (
+            manifest.get("proxy_family")
+            or manifest.get("proxy_type")
+            or manifest.get("upgrade_mechanism")
+            or "UNSPECIFIED"
+        )
+        campaign = {
+            "schema": "lowkey.proxy.campaign.v1",
+            "target": str(target).lower(),
+            "proxy_family": str(proxy_family),
+            "same_calls_id": manifest["same_calls_id"],
+            "manifest": str(manifest_path.relative_to(root)),
+            "control_report_path": str(output_path.relative_to(root)),
+            "status": control_report.get("status", "UNVERIFIED"),
+            "proof_axes": control_report.get("proof_axes"),
+            "runs": control_report.get("runs"),
+            "target_authenticity": control_report.get("target_authenticity", "unknown"),
+            "control_report": control_report,
+            "limitations": [
+                "The report is bounded to the declared manifest, call sequences and trace expectations.",
+                "Fixture, caller-impersonation or injected-code evidence remains simulated and cannot confirm production exploitability.",
+                "Mappings, dynamic arrays, selectors or migration state not enumerated by the harness are not considered verified.",
+            ],
+        }
+        identity = hashlib.sha256(
+            json.dumps(control_report, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:12]
+        campaign_dir = root / ".audit" / "proxy" / str(target).lower()
+        campaign_dir.mkdir(parents=True, exist_ok=True)
+        campaign_path = campaign_dir / f"campaign-control-{identity}.json"
+        campaign_path.write_text(
+            json.dumps(campaign, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        print(
+            "LOWKEY / PROXY PAIRED CAMPAIGN\n"
+            f"TARGET       {campaign['target']}\n"
+            f"FAMILY       {campaign['proxy_family']}\n"
+            f"STATUS       {campaign['status']}\n"
+            f"FIDELITY     {(campaign['proof_axes'] or {}).get('fidelity', 'see control report')}\n"
+            f"EVIDENCE     {campaign_path.relative_to(root)}\n"
+            "NOTE         Result classification is inherited from the existing independent control gate."
+        )
+        return exit_code
+    except (ProxyError, OSError, ValueError) as exc:
+        print("LOWKEY BLOCKED: " + str(exc))
+        return 2
+
+
 def run_cli(
     config: dict[str, Any],
     args: list[str],
@@ -2397,8 +2566,14 @@ def run_cli(
         print("LOWKEY ERROR: " + str(exc))
         return 2
     action = positional.pop(0).lower() if positional and positional[0].lower() in {
-        "inspect", "audit", "report", "plan", "attack", "validate", "diff", "history", "simulate",
+        "inspect", "audit", "report", "plan", "attack", "campaign",
+        "validate", "diff", "history", "simulate",
     } else "inspect"
+    if action == "campaign":
+        return _run_proxy_campaign_cli(
+            config, positional, values, flags,
+            rpc_resolver=rpc_resolver, root_resolver=root_resolver,
+        )
     address = next((item for item in positional if is_address(item)), None) or config.get("target")
     if action in {"validate", "diff"}:
         reference = values.get("--reference")

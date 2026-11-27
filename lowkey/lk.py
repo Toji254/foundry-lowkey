@@ -30761,7 +30761,7 @@ _PROXY_HELP_GUIDES = {
 }
 _PROXY_HELP_GUIDES["proxy"].update({
     "summary": "Evidence-first proxy reconnaissance, upgrade-surface review and storage-layout validation.",
-    "usage": "lk proxy [inspect|audit|plan|history|validate|simulate] [address] [options]",
+    "usage": "lk proxy [inspect|audit|plan|campaign|history|validate|simulate] [address] [options]",
     "example": "lk proxy audit 0x... --rpc-url $FOUNDRY_ETH_RPC_URL",
     "forms": [
         ("Inspect runtime architecture", "Pin RPC reads to one block and inspect ERC-1967 slots, beacon behavior, ERC-1167 clones, Diamond Loupe data and delegatecall candidates.", "lk proxy inspect 0xTarget"),
@@ -30769,6 +30769,7 @@ _PROXY_HELP_GUIDES["proxy"].update({
         ("Generate attack plan", "Create architecture-specific, not-executed proxy hypotheses for later target-specific Foundry adapters.", "lk proxy plan 0xTarget"),
         ("Reconstruct upgrade history", "Read bounded EIP-1967 Upgraded, BeaconUpgraded and AdminChanged events, then reconcile the latest observed events with current slots.", "lk proxy history 0xTarget --from-block 18000000"),
         ("Compare storage layouts", "Conservatively compare compiler storageLayout data from V1 and V2 artifacts.", "lk proxy validate --reference out/V1.json --candidate out/V2.json"),
+        ("Execute a paired campaign", "Freeze, validate and execute a caller-supplied vulnerable/control Forge experiment through the existing independent control and fidelity gate.", "lk proxy campaign --manifest .audit/proxy/beacon-control.json --freeze"),
         ("Upgrade simulation", "Fail closed until a deployment-specific adapter, implementation artifact, initializer calldata and invariants are provided.", "lk proxy simulate 0xTarget"),
     ],
     "options": [
@@ -30820,6 +30821,19 @@ _PROXY_HELP_GUIDES["proxy"].update({
                 ("--json", "Emit the attack hypotheses as JSON.", "lk proxy plan 0xTarget --json"),
             ],
             related=["lk break", "lk test", "lk proxy audit"],
+        ),
+        "campaign": _help_entry(
+            "Execute a paired proxy-family campaign through Lowkey's existing frozen control and fidelity gate.",
+            "lk proxy campaign --manifest <paired-control.json> [--freeze | --validate] [--rpc-url URL] [--root DIR]",
+            "lk proxy campaign --manifest .audit/proxy/beacon-control.json --freeze",
+            "Execution requires a frozen manifest with matching vulnerable and secure calls. Fixture and impersonated-caller evidence remains simulated.",
+            options=[
+                ("--manifest <file>", "Paired experiment manifest inside the active project.", "lk proxy campaign --manifest .audit/proxy/beacon-control.json --freeze"),
+                ("--freeze", "Freeze the manifest and its commands without executing either scenario.", "lk proxy campaign --manifest .audit/proxy/beacon-control.json --freeze"),
+                ("--validate", "Validate frozen expectations without executing either scenario.", "lk proxy campaign --manifest .audit/proxy/beacon-control.json --validate"),
+                ("--rpc-url <url>", "Select the local Anvil or explicitly configured fork RPC for the Forge experiment.", "lk proxy campaign --manifest .audit/proxy/beacon-control.json --rpc-url http://127.0.0.1:8545"),
+            ],
+            related=["lk proxy audit", "lk proxy plan", "lk control", "lk break"],
         ),
         "history": _help_entry(
             "Reconstruct bounded standard EIP-1967 upgrade/admin/beacon events and reconcile them with current slots.",
