@@ -526,7 +526,24 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
 .tree{display:grid;gap:2px;margin-bottom:14px}.entrypoint-panel{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:11px 0 12px;margin:0 0 13px}.entrypoint-list{display:grid;gap:4px;max-height:210px;overflow:auto}.entrypoint-contract{color:#7f98b4;font-size:9px;font-weight:850;letter-spacing:.1em;text-transform:uppercase;padding:5px 5px 2px}.entrypoint-row{display:block;width:100%;text-align:left;border:1px solid transparent;background:#101e32;border-radius:7px;padding:7px 8px;color:#dce7f4}.entrypoint-row:hover{border-color:#34718f;background:#142943}.entrypoint-row strong{display:block;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.entrypoint-row small{display:block;color:#8ea7c2;font-size:9px;margin-top:2px;overflow-wrap:anywhere}.entrypoint-empty{font-size:10px;color:#849ab3;padding:5px}.folder-row{display:flex;align-items:center;gap:6px;padding:7px 5px;color:#9fb1c8;font-weight:800;font-size:10px;letter-spacing:.07em;text-transform:uppercase;border-radius:6px}.folder-row:hover{background:#172941}.folder-row button{all:unset;cursor:pointer;flex:1}.folder-row span{color:#718ba7}
 .declaration-row{width:100%;display:flex;align-items:center;gap:7px;text-align:left;padding:7px 7px;border:1px solid transparent;background:transparent;border-radius:7px;color:#dce7f4}.declaration-row:hover{background:#14263e;border-color:#2a4565}.declaration-row.active{background:#15334c;border-color:#2c83a7;box-shadow:inset 2px 0 var(--cyan)}.node-icon{width:19px;height:19px;display:grid;place-items:center;border-radius:5px;background:#173652;color:#70d3f7;font-size:11px;font-weight:850;flex:0 0 auto}.node-icon.interface{background:#2b2145;color:#c2a5ff}.node-icon.library{background:#173c32;color:#70ddb5}.declaration-main{min-width:0;flex:1}.declaration-name{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:650}.declaration-meta{display:block;font-size:10px;color:#8198b4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.declaration-count{font-size:10px;color:#8ca6c1;font-variant-numeric:tabular-nums}
 .filters{border-top:1px solid var(--line);padding-top:12px}.filter-section{margin-bottom:13px}.filter-title{display:flex;justify-content:space-between;font-size:10px;font-weight:850;color:#9eb1c9;letter-spacing:.11em;text-transform:uppercase;margin-bottom:7px}.filter-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.checkline{display:flex;align-items:center;gap:6px;color:#c2d0e2;font-size:10px;min-width:0}.checkline input{accent-color:#38bde9}.vendor-list{display:grid;gap:6px}.vendor-list .checkline{justify-content:space-between}
-.center{min-width:0;min-height:0;display:grid;grid-template-rows:52px minmax(250px,1fr) 105px;position:relative;background:radial-gradient(ellipse at 50% 40%,#142945 0%,#0a1423 68%)}
+.center{min-width:0;min-height:0;display:grid;grid-template-rows:52px minmax(250px,1fr) auto 105px;position:relative;background:radial-gradient(ellipse at 50% 40%,#142945 0%,#0a1423 68%)}
+.source-drawer{display:grid;grid-template-rows:auto minmax(0,1fr);height:270px;min-height:160px;max-height:42vh;resize:vertical;overflow:hidden;border-top:1px solid #38516d;background:#091523}
+.source-drawer[hidden]{display:none}
+.source-drawer-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 10px;background:#101f33;border-bottom:1px solid #263e59}
+.source-drawer-heading{min-width:0;display:grid;gap:2px}
+.source-drawer-heading strong{font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.source-drawer-heading small{font-size:9px;color:#8ea5bf;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.source-drawer-actions{display:flex;align-items:center;gap:5px;flex:0 0 auto}
+.source-drawer-actions .tool-button{font-size:9px;padding:5px 7px}
+.source-view{overflow:auto;min-height:0;background:#081321;font:11px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace}
+.source-empty,.source-status{padding:16px;color:#91a7c0;font:11px/1.5 Inter,ui-sans-serif,system-ui,sans-serif}
+.source-status{color:#d8ba7a}
+.source-line{display:grid;grid-template-columns:52px minmax(0,1fr);min-height:18px;white-space:pre}
+.source-line.selected{background:#123550;border-left:2px solid #58d9ff}
+.source-line-number{padding:0 9px 0 0;text-align:right;color:#607b97;user-select:none;border-right:1px solid #1b3048}
+.source-line-code{padding:0 12px;min-width:0;color:#c6d8e9;white-space:pre}
+.src-keyword{color:#8abdf5}.src-string{color:#a9d58b}.src-comment{color:#738ba4;font-style:italic}.src-number{color:#dfb476}
+.source-line.selected .source-line-number{color:#8bdcf9}
 .graph-toolbar{display:flex;align-items:center;gap:6px;padding:7px 11px;border-bottom:1px solid #1d314b;background:#0b1728cc}.toolbar-label{font-size:10px;color:#849bb5;font-weight:800;letter-spacing:.1em}.toolbar-spacer{flex:1}.rel-filter{border:1px solid var(--line);background:#0f1d31;color:#b9c9dc;border-radius:7px;padding:7px 8px;max-width:160px}
 .graph-stage{position:relative;min-height:0;overflow:hidden;background-image:radial-gradient(#24405f66 1px,transparent 1px);background-size:22px 22px}#graph{width:100%;height:100%;display:block;touch-action:none;cursor:grab}#graph.dragging{cursor:grabbing}
 .edge{fill:none;stroke:#607f9f;stroke-width:2;opacity:.76;marker-end:url(#arrow);transition:opacity .18s,stroke-width .18s}.edge.CALLS{stroke:#54c6a0}.edge.LIBRARY_CALL,.edge.USES_LIBRARY{stroke:#64c69d}.edge.EXTERNAL_CALL{stroke:#e6a66a;stroke-dasharray:3 4}.edge.APPLIES_MODIFIER{stroke:#9d9fea}.edge.OVERRIDES,.edge.INHERITS,.edge.USES_TYPE{stroke:#a68ef0}.edge.READS,.edge.WRITES,.edge.DELETES{stroke:#64bbd9}.edge.ASSET_FLOW{stroke:#d68ae3;stroke-width:2.5;stroke-dasharray:8 6;animation:flowMotion 1.45s linear infinite}@keyframes flowMotion{to{stroke-dashoffset:-28}}@media(prefers-reduced-motion:reduce){.edge.ASSET_FLOW{animation:none}}.edge.IMPORTS{stroke:#6a829d;stroke-dasharray:5 6}.edge.CONTAINS{stroke:#314a63;stroke-width:1.1;stroke-dasharray:3 5;marker-end:none;opacity:.45}.edge.hot{opacity:1;stroke-width:3.5}.edge.dimmed{opacity:.12;marker-end:none;animation:none}.edge-label{font-size:10px;fill:#aebed1;paint-order:stroke;stroke:#091321;stroke-width:4px;pointer-events:none}.edge-label.dimmed{opacity:.12}
@@ -624,6 +641,18 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
       <div class="graph-hint">DRAG TO PAN · WHEEL TO ZOOM · CLICK A NODE TO EXPAND</div>
       <svg id="minimap" viewBox="0 0 154 95"></svg>
     </div>
+    <section class="source-drawer" id="source-drawer" hidden aria-label="Solidity source viewer">
+      <div class="source-drawer-head">
+        <div class="source-drawer-heading"><strong id="source-title">Solidity source</strong><small id="source-meta">Select a declaration or call relationship</small></div>
+        <div class="source-drawer-actions">
+          <button class="tool-button" id="source-prev" disabled>Earlier 500</button>
+          <button class="tool-button" id="source-next" disabled>Later 500</button>
+          <button class="tool-button" id="source-center" disabled>Selected line</button>
+          <button class="icon-button" id="source-close" aria-label="Close source viewer">×</button>
+        </div>
+      </div>
+      <div class="source-view" id="source-view"><div class="source-empty">Choose a Solidity declaration or call relationship to inspect its source.</div></div>
+    </section>
     <div class="flow-panel">
       <div class="flow-head"><span class="flow-title" id="flow-title">SELECTED WORKFLOW</span><span class="flow-note" id="flow-note">Choose a function to follow its call and effect path</span></div>
       <div class="flow-track" id="flow-track"></div>
