@@ -400,6 +400,24 @@ def _attach_compiler_dispatch_facts(
                     if isinstance(details, dict):
                         details["compiler_ast_reference"] = raw_edge.get("source_span")
                         details["compiler_ast_evidence"] = "COMPILER_AST"
+                        details["compiler_ast_edge_kind"] = raw_kind
+                    detail = (
+                        "Solidity compiler AST identifies this declaration as a base-function override. "
+                        "This is a static declaration relationship, not proof of a deployed runtime target."
+                        if kind == "OVERRIDES"
+                        else "Solidity compiler AST resolves this source call expression to a declaration. "
+                             "This does not establish that the call executed at runtime."
+                    )
+                    existing["evidence"] = "COMPILER_AST"
+                    existing["resolution"] = "DIRECT"
+                    existing["source_kind"] = raw_kind
+                    existing["file"] = source_path
+                    existing["line"] = line
+                    existing["detail"] = detail
+                    existing["call_kind"] = "compiler_ast"
+                    existing["source_excerpt"] = _source_excerpt(root, source_path, line) if line else ""
+                    if kind == "OVERRIDES":
+                        added_override_edges += 1
                     break
             continue
         digest = hashlib.sha256(
@@ -492,6 +510,8 @@ def build_explorer_model(index: dict[str, Any], root: str | Path = ".") -> dict[
             "signature": raw.get("signature"), "parameters": raw.get("parameters") or [],
             "storage_class": raw.get("storage_class") or raw.get("persistence"),
             "type_text": raw.get("type") or raw.get("underlying_type") or "",
+            "struct": raw.get("struct") or "",
+            "enum": raw.get("enum") or "",
             "underlying_type": raw.get("underlying_type") or "",
             "return_parameters": raw.get("return_parameters") or [],
             "mapping_keys": raw.get("mapping_keys") or [],
