@@ -11,6 +11,13 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Compile at import time so malformed target parsing is caught before the
+# acceptance creates Anvil or starts a deployment broadcast.
+TARGET_LINE_RE = re.compile(
+    r"(?im)^\s*Target\s*:\s*NativeTarget\s*(?:->|@)\s*"
+    r"(?:NativeTarget\s*)?\(?\s*(0x[0-9a-fA-F]{40})\s*\)?\s*$"
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -120,10 +127,7 @@ def main() -> int:
         }
 
         lab = run([lk, "lab"], root, env, timeout=300)
-        target_match = re.search(
-                        r"(?im)^\s*Target\s*:\s*NativeTarget\s*(?:->|@)\s*(?:NativeTarget\s*)?\(?\s*(0x[0-9a-fA-F]{40})\s*\)?\s*$",
-            lab.stdout,
-        )
+        target_match = TARGET_LINE_RE.search(lab.stdout)
         if not target_match:
             raise AssertionError(
                 "Lowkey did not preserve the project-native LOWKEY_TARGET marker as its primary target.\n"
