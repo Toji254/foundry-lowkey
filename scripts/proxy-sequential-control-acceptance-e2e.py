@@ -574,15 +574,24 @@ def main() -> int:
         # Independently exercise the Transparent selector split:
         # the immutable ProxyAdmin cannot call implementation getters or the
         # implementation's UUPS selector, while an ordinary caller is delegated.
-        dispatch_result = run([
-            forge, "test", "--match-path", "test/ProxySequentialControls.t.sol",
-            "--match-test", "test_transparent_admin_non_admin_selector_routing",
-            "--fork-url", RPC, "--fork-block-number", str(fork_block), "-vv",
-        ], root, env, timeout=600)
-        if "[PASS] test_transparent_admin_non_admin_selector_routing()" not in dispatch_result.stdout:
+        dispatch_dir = evidence_root / "transparent-dispatch"
+        dispatch_dir.mkdir(parents=True, exist_ok=True)
+        dispatch_result = subprocess.run(
+            [
+                forge, "test", "--match-path", "test/ProxySequentialControls.t.sol",
+                "--match-test", "test_transparent_admin_non_admin_selector_routing",
+                "--fork-url", RPC, "--fork-block-number", str(fork_block), "-vv",
+            ],
+            cwd=root, env=env, text=True, capture_output=True,
+            timeout=600, check=False,
+        )
+        (dispatch_dir / "forge-stdout.txt").write_text(dispatch_result.stdout or "", encoding="utf-8")
+        (dispatch_dir / "forge-stderr.txt").write_text(dispatch_result.stderr or "", encoding="utf-8")
+        if dispatch_result.returncode != 0 or "[PASS] test_transparent_admin_non_admin_selector_routing()" not in (dispatch_result.stdout or ""):
             raise AssertionError(
                 "Transparent admin/non-admin selector routing test did not execute and pass: "
-                + dispatch_result.stdout[-12000:]
+                + (dispatch_result.stdout or "")[-12000:]
+                + "\\n" + (dispatch_result.stderr or "")[-12000:]
             )
 
         hybrid_manifest = make_transparent_hybrid_manifest(
@@ -624,6 +633,7 @@ def main() -> int:
                     "The immutable ProxyAdmin caller is rejected for owner() and upgradeTo(address), "
                     "while an ordinary caller reaches the delegated owner() getter."
                 ),
+                "evidence_path": str(dispatch_dir),
             },
             "transparent_uups_second_surface": hybrid_case,
             "classification_policy": (
