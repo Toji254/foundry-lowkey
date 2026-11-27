@@ -1745,6 +1745,24 @@ def remember_project_target(config, root, name, address, *, runtime_state=None):
     }
     if provenance:
         project_record["provenance"] = provenance
+
+    # Bind the remembered target to the managed session that was active when
+    # it was selected. Chain ID alone is insufficient: two isolated Anvil
+    # sessions commonly share chain ID 31337 and may even share genesis state.
+    active_session = (
+        config.get("_active_network_session")
+        if not config.get("_explicit_rpc_unscoped") else None
+    )
+    if isinstance(active_session, dict) and active_session.get("id"):
+        project_record["network"] = {
+            "project_id": active_session.get("project_id"),
+            "network_session_id": str(active_session.get("id")),
+            "chain_id": active_session.get("chain_id"),
+            "genesis_hash": active_session.get("genesis_hash"),
+            "identity_block_hash": active_session.get("identity_block_hash")
+                or active_session.get("genesis_hash"),
+            "identity_block_number": active_session.get("identity_block_number"),
+        }
     project_entries[str(name)] = project_record
 
     # Legacy maps remain for compatibility with older Lowkey commands. They
@@ -1762,12 +1780,21 @@ def resolve_target_ref(config,ref,root=None):
         if ref is None:
             return None
         return str(ref) if is_address(ref) else None
-    if ref is None:
-        return active_project_target(config, root) if root is not None else config.get("target")
-
     project_root = audit_context.foundry_project_root(root) if root is not None else audit_context.foundry_project_root()
+    if ref is None:
+        return active_project_target(config, project_root)
+
+    def allowed_remembered_address(address):
+        if isinstance(config, dict) and config.get("_network_selection_error"):
+            return False
+        return _project_target_belongs_to_session(config, project_root, address)
+
     entries = _project_target_entries(config, project_root)
-    protocol_entries = [entry for entry in entries if _target_entry_is_protocol(project_root, entry)]
+    protocol_entries = [
+        entry for entry in entries
+        if _target_entry_is_protocol(project_root, entry)
+        and allowed_remembered_address(entry.get("address"))
+    ]
 
     if str(ref).isdigit():
         index = int(ref) - 1
@@ -1777,7 +1804,10 @@ def resolve_target_ref(config,ref,root=None):
         if not isinstance(project_roots, dict) or not project_roots:
             legacy_aliases = config.get("aliases", {})
             if isinstance(legacy_aliases, dict):
-                values = [value for value in legacy_aliases.values() if is_address(value)]
+                values = [
+                    value for value in legacy_aliases.values()
+                    if is_address(value) and allowed_remembered_address(value)
+                ]
                 if 0 <= index < len(values):
                     return values[index]
         return None
@@ -1794,14 +1824,14 @@ def resolve_target_ref(config,ref,root=None):
 
     aliases = target_aliases(config, project_root)
     resolved = aliases.get(str(ref))
-    if resolved:
+    if resolved and allowed_remembered_address(resolved):
         return resolved
     # Backward-compatible fallback for a config that predates project ownership
     # metadata. Do not use this path once project_roots contains ownership data.
     project_roots = config.get("project_roots")
     if not isinstance(project_roots, dict) or not project_roots:
         legacy = config.get("aliases", {}).get(str(ref))
-        if is_address(legacy):
+        if is_address(legacy) and allowed_remembered_address(legacy):
             return legacy
     return None
 
@@ -2341,14 +2371,98 @@ def project_context_target(root=None):
         return None
     return target
 
+
+def _project_target_belongs_to_session(config, root, address, session=None):
+    """Require a remembered target's persisted deployment identity to match the active session."""
+    if not is_address(address):
+        return False
+    selected = session if isinstance(session, dict) else (
+        config.get("_active_network_session") if isinstance(config, dict) else None
+    )
+    if not isinstance(selected, dict) or not selected.get("id"):
+        # A target already bound to a managed session is never portable to an
+        # unscoped/manual RPC just because no session is currently selected.
+        if isinstance(config, dict) and config.get("_network_selection_error"):
+            return False
+        try:
+            project_root = Path(audit_context.foundry_project_root(root)).expanduser().resolve()
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return False
+        registry = config.get("project_target_registry") if isinstance(config, dict) else None
+        rows = registry.get(str(project_root), {}) if isinstance(registry, dict) else {}
+        if isinstance(rows, dict):
+            for record in rows.values():
+                if (
+                    isinstance(record, dict)
+                    and str(record.get("address") or "").lower() == str(address).lower()
+                    and isinstance(record.get("network"), dict)
+                    and record["network"].get("network_session_id")
+                ):
+                    return False
+        return True
+
+    try:
+        project_root = Path(audit_context.foundry_project_root(root)).expanduser().resolve()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+    registry = config.get("project_target_registry") if isinstance(config, dict) else None
+    project_records = (
+        registry.get(str(project_root), {})
+        if isinstance(registry, dict) else {}
+    )
+    if not isinstance(project_records, dict):
+        return False
+
+    expected_project = selected.get("project_id")
+    expected_session = str(selected.get("id"))
+    expected_chain = selected.get("chain_id")
+    expected_genesis = str(selected.get("genesis_hash") or "").lower()
+    if not expected_project or expected_chain is None or not expected_genesis:
+        return False
+
+    for record in project_records.values():
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("address") or "").lower() != str(address).lower():
+            continue
+        network = record.get("network")
+        if not isinstance(network, dict):
+            continue
+        try:
+            recorded_chain = str(network.get("chain_id") or "").strip()
+            active_chain = str(expected_chain).strip()
+            recorded_chain_id = int(recorded_chain, 16) if recorded_chain.lower().startswith("0x") else int(recorded_chain)
+            active_chain_id = int(active_chain, 16) if active_chain.lower().startswith("0x") else int(active_chain)
+            chain_matches = recorded_chain_id == active_chain_id
+        except (TypeError, ValueError):
+            chain_matches = False
+        if (
+            str(network.get("network_session_id") or "") == expected_session
+            and str(network.get("project_id") or "") == str(expected_project)
+            and chain_matches
+            and str(network.get("genesis_hash") or "").lower() == expected_genesis
+        ):
+            expected_identity_block = selected.get("identity_block_hash")
+            recorded_identity_block = network.get("identity_block_hash")
+            if expected_identity_block and str(recorded_identity_block or "").lower() != str(expected_identity_block).lower():
+                continue
+            return True
+    return False
+
+
 def active_project_target(config, root=None):
     """Resolve a target for the current Foundry project before using global config."""
     if isinstance(config, dict) and config.get("_explicit_rpc_unscoped"):
         return None
     project_root = audit_context.foundry_project_root(root)
+    if isinstance(config, dict) and config.get("_network_selection_error"):
+        return None
     target = project_context_target(project_root)
     if target:
-        return target.get("address")
+        address = target.get("address")
+        if _project_target_belongs_to_session(config, project_root, address):
+            return address
+        return None
 
     global_target = config.get("target")
     if not is_address(global_target):
@@ -2371,7 +2485,10 @@ def active_project_target(config, root=None):
                 artifact_data = read_artifact(str(artifact_path))
                 if artifact_data and artifact_is_project_application(Path(project_root), str(artifact_path), artifact_data):
                     artifact_contract = artifact_contract_name(str(artifact_path), artifact_data)
-                    if not contract or str(contract).lower() == str(artifact_contract).lower():
+                    if (
+                        (not contract or str(contract).lower() == str(artifact_contract).lower())
+                        and _project_target_belongs_to_session(config, project_root, global_target)
+                    ):
                         return global_target
     return None
 
@@ -2387,6 +2504,7 @@ def resolve_runtime_context(config, root=None, *, explicit_target=None, explicit
     network_actors = {}
     session_actor = None
     managed_error = None
+    registered_sessions = []
     try:
         manager = _project_network_manager(project_root)
         registered_sessions = manager.list()
@@ -2430,7 +2548,25 @@ def resolve_runtime_context(config, root=None, *, explicit_target=None, explicit
         config.pop("_active_network_session", None)
 
     validated_target = project_context_target(project_root)
-    if validated_target is None:
+    target_selection_error = None
+    if validated_target and not explicit_target:
+        remembered_address = validated_target.get("address")
+        if managed_error:
+            target_selection_error = (
+                "A managed network is registered, but Lowkey could not establish the active "
+                "session identity. The remembered target remains unselected."
+            )
+            validated_target = None
+        elif managed_session and not _project_target_belongs_to_session(
+            config, project_root, remembered_address, managed_session
+        ):
+            target_selection_error = (
+                f"Remembered target {remembered_address} is not proven to belong to active "
+                f"network session {managed_session.get('name') or managed_session.get('id')}. "
+                "Re-select the target explicitly on this network; chain ID equality is not enough."
+            )
+            validated_target = None
+    if validated_target is None and not target_selection_error:
         current = active_project_target(config, project_root)
         if current and str(config.get("target") or "").lower() == str(current).lower():
             validated_target = {
@@ -2477,12 +2613,16 @@ def resolve_runtime_context(config, root=None, *, explicit_target=None, explicit
             "project_id": managed_session.get("project_id"),
             "chain_id": managed_session.get("chain_id"),
             "genesis_hash": managed_session.get("genesis_hash"),
+            "identity_block_hash": managed_session.get("identity_block_hash"),
+            "identity_block_number": managed_session.get("identity_block_number"),
             "rpc": managed_session.get("rpc"),
             "actors": network_actors,
             "active_actor": session_actor,
         }
     elif managed_error:
         resolved["network_selection_error"] = managed_error
+    if target_selection_error:
+        resolved["target_selection_error"] = target_selection_error
     return resolved
 
 def activate_project_context(config, root=None):
@@ -2533,6 +2673,10 @@ def activate_project_context(config, root=None):
         config["_network_selection_error"] = resolved["network_selection_error"]
     else:
         config.pop("_network_selection_error", None)
+    if resolved.get("target_selection_error"):
+        config["_target_selection_error"] = resolved["target_selection_error"]
+    else:
+        config.pop("_target_selection_error", None)
     config["_resolved_project_context"] = resolved
     return resolved
 
@@ -12027,6 +12171,14 @@ def _project_target_entries(config, root=None):
             "contract": contract,
             "source": "broadcast",
         }))
+    if isinstance(config, dict) and config.get("_network_selection_error"):
+        return []
+    if isinstance(config, dict) and isinstance(config.get("_active_network_session"), dict):
+        entries = [
+            entry for entry in entries
+            if entry.get("source") == "broadcast"
+            or _project_target_belongs_to_session(config, project_root, entry.get("address"))
+        ]
     return entries
 
 def _target_entry_is_protocol(root, entry):
@@ -26999,6 +27151,10 @@ def run_status(config):
         print(f"Target : {contract} @ {apply_labels(target, config)}")
     else:
         print("Target : none")
+    target_scope_error = config.get("_target_selection_error")
+    if target_scope_error:
+        print("TARGET CONTEXT: REVIEW REQUIRED")
+        print("  " + str(target_scope_error))
     if rpc:
         mode = _rpc_provenance_label(config)
         print(f"RPC    : {rpc} ({mode})")
