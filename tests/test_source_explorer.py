@@ -25,6 +25,7 @@ from source_explorer import (
     build_explorer_model,
     create_explorer_server,
     extract_source_archive,
+    render_explorer_document,
     render_explorer_html,
     validate_github_url,
     write_uploaded_files,
@@ -478,7 +479,7 @@ class ProtocolExplorerTests(unittest.TestCase):
         self.assertEqual(model["runtime_trace"]["observations"], 1)
         self.assertTrue(any(group.get("runtime_endpoint") for group in model["groups"]))
 
-        html = render_explorer_html(model)
+        html = render_explorer_document(model)
         self.assertIn('data-edge="RUNTIME_CALL_OBSERVED"', html)
         self.assertIn("RUNTIME_CALL_OBSERVED", html)
         self.assertIn("Source mapping: unavailable", html)
