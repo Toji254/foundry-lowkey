@@ -122,33 +122,33 @@ def main():
                 cli(lk, root, evidence, "actor", "Alice")
                 status_a = cli(lk, root, evidence, "status")
                 actors_a = cli(lk, root, evidence, "actors")
+                ca = manager.get_by_id(a["id"])
                 checks["managed_actor_name_selection_persists_across_cli_processes"] = (
-                    f"Actor  : Alice ({a['actors']['Alice']}) [managed network gmx-dev]" in status_a
-                    and f"Actor: Alice ({a['actors']['Alice']}) [managed network gmx-dev]" in actors_a
+                    f"Actor  : Alice ({ca['actors']['Alice']}) [managed network gmx-dev]" in status_a
+                    and f"Actor: Alice ({ca['actors']['Alice']}) [managed network gmx-dev]" in actors_a
                     and "* Alice" in actors_a
                 )
                 checks["status_reports_managed_rpc_provenance"] = "(managed network)" in status_a
-                ca = manager.get_by_id(a["id"])
 
                 cli(lk, root, evidence, "lab", "network", "use", "gmx-attack")
                 cli(lk, root, evidence, "actor", "1", "Alice")
                 cli(lk, root, evidence, "actor", "Alice")
                 status_b = cli(lk, root, evidence, "status")
                 actors_b = cli(lk, root, evidence, "actors")
+                cb = manager.get_by_id(b["id"])
                 checks["managed_actor_name_selection_is_session_scoped"] = (
-                    f"Actor  : Alice ({b['actors']['Alice']}) [managed network gmx-attack]" in status_b
-                    and f"Actor: Alice ({b['actors']['Alice']}) [managed network gmx-attack]" in actors_b
+                    f"Actor  : Alice ({cb['actors']['Alice']}) [managed network gmx-attack]" in status_b
+                    and f"Actor: Alice ({cb['actors']['Alice']}) [managed network gmx-attack]" in actors_b
                     and "* Alice" in actors_b
                 )
-                cb = manager.get_by_id(b["id"])
                 checks["same_alias_is_session_scoped"] = ca["actors"]["Alice"] == a["actors"]["anvil-1"] and cb["actors"]["Alice"] == b["actors"]["anvil-1"] and ca["actors"]["Alice"] != cb["actors"]["Alice"]
 
                 cli(lk, root, evidence, "lab", "network", "use", "gmx-dev")
                 restored_a_status = cli(lk, root, evidence, "status")
                 restored_a_actors = cli(lk, root, evidence, "actors")
                 checks["switching_sessions_restores_the_selected_actor"] = (
-                    f"Actor  : Alice ({a['actors']['Alice']}) [managed network gmx-dev]" in restored_a_status
-                    and f"Actor: Alice ({a['actors']['Alice']}) [managed network gmx-dev]" in restored_a_actors
+                    f"Actor  : Alice ({ca['actors']['Alice']}) [managed network gmx-dev]" in restored_a_status
+                    and f"Actor: Alice ({ca['actors']['Alice']}) [managed network gmx-dev]" in restored_a_actors
                     and "* Alice" in restored_a_actors
                 )
 
@@ -156,8 +156,8 @@ def main():
                 restored_b_status = cli(lk, root, evidence, "status")
                 restored_b_actors = cli(lk, root, evidence, "actors")
                 checks["switching_back_restores_the_other_actor"] = (
-                    f"Actor  : Alice ({b['actors']['Alice']}) [managed network gmx-attack]" in restored_b_status
-                    and f"Actor: Alice ({b['actors']['Alice']}) [managed network gmx-attack]" in restored_b_actors
+                    f"Actor  : Alice ({cb['actors']['Alice']}) [managed network gmx-attack]" in restored_b_status
+                    and f"Actor: Alice ({cb['actors']['Alice']}) [managed network gmx-attack]" in restored_b_actors
                     and "* Alice" in restored_b_actors
                 )
                 active = manager.active()
