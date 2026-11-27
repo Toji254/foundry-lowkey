@@ -75,7 +75,29 @@ Set this only in reviewed automation. It authorizes the displayed plan; it does 
 
 Compiler-backed `new Child(...)` relationships retain their execution phase. A `creation_phase=deployment` edge means the child is created inside the selected contract's constructor and is deployed as part of that parent transaction; it is not a separately scheduled prerequisite. A `creation_phase=runtime` edge records a factory/runtime creation effect after deployment and is likewise not a pre-deployment prerequisite. Lowkey traverses both relationships to identify recursive creation cycles without inventing independent deployment transactions. A contract-typed constructor parameter must be supplied explicitly or selected from the available network choices; an ABI type alone does not prove a dependency address.
 
-The generic ABI deployer is a fallback. Projects with complex deployment topology should use their own reviewed Foundry/Hardhat deployment scripts. Lowkey does not infer protocol initialization, role grants or operational readiness merely from an `initialize` function or a successful deployment receipt. It reports initialization and protocol readiness as unverified unless supported by explicit evidence.
+The generic ABI deployer is a fallback. When the project contains a discoverable Foundry deployment script (for example `script/Deploy.s.sol`), `lk lab` can use the project-native `forge script` route instead of treating the script as an arbitrary shell command. This Foundry path is subject to the explicit review gate below. Hardhat-native deployment script execution is not yet supported by the reviewed adapter. Lowkey does not infer protocol initialization, role grants or operational readiness merely from an `initialize` function or a successful deployment receipt. It reports initialization and protocol readiness as unverified unless supported by explicit evidence.
+
+
+### Reviewed project-native Foundry deployment
+
+When Lowkey discovers a project-native Foundry script, it prepares a review snapshot before the `forge script --broadcast` invocation. The snapshot binds:
+
+- the script's project-relative path and SHA-256;
+- the Forge version;
+- the loopback RPC endpoint and managed-session identity (or an explicitly labelled unmanaged local Anvil endpoint);
+- required `vm.env(...)` names and Lowkey-supplied safe defaults, without printing secret values;
+- hashes of `foundry.toml`, `.env` and configured `env_file` inputs;
+- a warning that arbitrary script code may deploy, call contracts, transfer value, mutate storage and write Foundry broadcast files.
+
+Lowkey displays the snapshot and requires the user to type `DEPLOY` before continuing. In non-interactive automation, the exact opt-in is:
+
+```bash
+LOWKEY_NONINTERACTIVE_DEPLOY=1 lk lab
+```
+
+This opt-in is an approval signal only. It does not bypass unresolved environment checks, loopback-only RPC enforcement or the revalidation step. Immediately before broadcast, Lowkey checks that the selected project, script hash, configuration hashes, RPC origin and network-session identity still match the approved snapshot. A stale review or missing evidence blocks execution before the script broadcast. Lowkey does not silently edit `foundry.toml`, enable FFI or switch to a remote network.
+
+The review is not a static proof of script safety and cannot enumerate every possible side effect. It establishes what was selected and what was approved so the auditor can make an informed local execution decision. The implementation is a Foundry adapter only: project-native Hardhat deployment scripts and protocol-specific post-deployment configuration remain pending. Dedicated end-to-end acceptance of a real project script broadcast, its complete transaction set and registry capture is also still pending.
 
 ## Primary and supporting deployment ownership
 
@@ -83,7 +105,7 @@ The active audit target remains the primary target. Solidity libraries and other
 
 ## Current scope and acceptance boundaries
 
-The current generic path supports compiler-metadata-based creation linking, verified reuse of session-scoped supporting libraries, primary-target preservation, pre-deployment constructor cancellation, managed Anvil lifecycle and network-aware RPC selection. It does not automatically initialize arbitrary protocols, grant roles, infer every external contract integration, or execute arbitrary project deployment scripts. Those requirements remain explicit plan items until project-native configuration and evidence are available. Unsupported proxy topologies and unresolved external requirements must remain unverified rather than being represented as ready.
+The current deployment path supports compiler-metadata-based creation linking, verified reuse of session-scoped supporting libraries, primary-target preservation, pre-deployment constructor cancellation, managed Anvil lifecycle and network-aware RPC selection. It also supports a bounded project-native Foundry script route with the review gate below. It does not support arbitrary shell deployment scripts, a reviewed Hardhat `run` adapter, automatic protocol initialization, role grants or general operational-readiness orchestration. Unsupported proxy topologies and unresolved external requirements remain unverified rather than represented as ready.
 
 For exact accepted CLI syntax, use `lk lab --help`, `lk lab network --help`, and `lk actor --help` in the installed runtime.
 
