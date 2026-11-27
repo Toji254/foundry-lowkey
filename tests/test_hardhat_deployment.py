@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+import sys
 import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+LOWKEY_MODULES = str(ROOT / "lowkey")
+if LOWKEY_MODULES not in sys.path:
+    sys.path.insert(0, LOWKEY_MODULES)
+
 from hardhat_deployment import parse_deploy_args, parse_probe_output, _transaction_evidence
 
 
