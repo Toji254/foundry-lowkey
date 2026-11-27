@@ -16913,6 +16913,88 @@ def _validate_project_lab_target(
         "(" + " | ".join(details) + ")"
     )
 
+def _review_project_lab_script(config, root, script, rpc, accounts, key, script_env, unresolved_env):
+    """Print and obtain approval for the exact local Foundry script/config snapshot."""
+    try:
+        try:
+            import deployment_review as deployment_review_engine
+        except ImportError:
+            from lowkey import deployment_review as deployment_review_engine
+
+        version = run_foundry(["--version"], capture=True)
+        if getattr(version, "code", 1) != 0:
+            return fail("Error: could not establish the Foundry toolchain version; deployment blocked.")
+        session = config.get("_active_network_session") if isinstance(config, dict) else None
+        if not isinstance(session, dict):
+            session = {}
+        info = anvil_rpc_info(config) or {}
+        identity = dict(session)
+        identity.setdefault("chain_id", info.get("chain_id"))
+        config_paths = [Path(root) / "foundry.toml", Path(root) / ".env"]
+        foundry_text = _foundry_project_config_text(root)
+        for raw_value in re.findall(
+            r"(?m)^\s*env_file\s*=\s*(.+?)\s*(?:#.*)?$",
+            foundry_text,
+        ):
+            for env_path in re.findall(r"['\"]([^'\"]+)['\"]", raw_value):
+                candidate = Path(env_path).expanduser()
+                config_paths.append(candidate if candidate.is_absolute() else Path(root) / candidate)
+
+        source = Path(script).read_text(encoding="utf-8", errors="replace")
+        required_names = set(re.findall(
+            r"vm\.env(?!Or)[A-Za-z0-9_]*\s*\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]",
+            source,
+        ))
+        review = deployment_review_engine.build_foundry_script_review(
+            root,
+            script,
+            rpc=rpc,
+            forge_version=str(getattr(version, "text", "") or "").strip(),
+            network_identity=identity,
+            required_environment=tuple(required_names),
+            safe_default_environment=tuple(script_env.keys()),
+            unresolved_environment=tuple(unresolved_env),
+            configuration_paths=config_paths,
+        )
+    except Exception as error:
+        return fail(
+            "Error: native deployment review could not be established; no broadcast was sent. "
+            f"{type(error).__name__}: {error}"
+        )
+
+    print(deployment_review_engine.render_foundry_script_review(review))
+    if os.environ.get("LOWKEY_NONINTERACTIVE_DEPLOY") == "1":
+        print("Approval       : explicitly authorized by LOWKEY_NONINTERACTIVE_DEPLOY=1")
+    else:
+        if not sys.stdin.isatty():
+            return fail(
+                "Error: native deployment needs explicit review approval. "
+                "Run it in a terminal and type DEPLOY, or set LOWKEY_NONINTERACTIVE_DEPLOY=1 "
+                "for an intentionally scripted local deployment."
+            )
+        try:
+            answer = input("Review this exact script and local side effects. Type DEPLOY to continue (Enter cancels): ").strip()
+        except EOFError:
+            answer = ""
+        if answer != "DEPLOY":
+            print("Deployment cancelled. No broadcast transaction was sent.")
+            return 1
+
+    valid, reason = deployment_review_engine.verify_foundry_script_review_current(
+        review,
+        root,
+        rpc=rpc,
+        network_identity=identity,
+    )
+    if not valid:
+        return fail(
+            "Error: deployment review became stale before broadcast; no transaction was sent. "
+            + str(reason)
+        )
+    print(f"Approval       : accepted for review {review.review_id}")
+    return 0
+
+
 def run_project_lab_script(config, root, script, rpc, accounts, key, requested=None, explicit_requested=False):
     relative = os.path.relpath(script, root)
     if not path_is_within(script, root):
@@ -16936,6 +17018,12 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
             "Config  : project also references environment variable(s) that Lowkey "
             "cannot safely invent: " + ", ".join(unresolved_env)
         )
+
+    review_code = _review_project_lab_script(
+        config, root, script, rpc, accounts, key, script_env, unresolved_env
+    )
+    if review_code != 0:
+        return review_code
 
     reserved = {
         "LOWKEY_LAB_KEY": str(int(str(key), 16)),
