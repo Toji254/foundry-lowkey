@@ -9,7 +9,12 @@ import {
     LowkeyProxyReplacement,
     PairedProxyAdmin,
     LowkeyTransparentProxy,
-    ProxyUpgradeActor
+    ProxyUpgradeActor,
+    UUPSUUIDSecureImplementation,
+    UUPSUUIDVulnerableImplementation,
+    WrongUUIDProxyReplacement,
+    LowkeyUUPSLockoutProxy,
+    UUPSLockoutActor
 } from "../src/ProxySequentialFixtures.sol";
 
 interface ILowkeyTransparentOwner {
@@ -199,4 +204,69 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
         (bool markerOk, bytes memory markerData) = address(proxy).staticcall(abi.encodeWithSignature("lowkeyProxyMarker()"));
         require(markerOk && markerData.length == 32 && abi.decode(markerData, (bytes32)) == keccak256("LOWKEY_PROXY_SEQUENTIAL_REPLACEMENT"), "PROXY_ADMIN_DELEGATE_ROUTE_NOT_CONFIRMED");
     }
+
+    function test_paired_uups_uuid_mismatch_prevents_upgrade_lockout() external {
+        LowkeyUUPSLockoutProxy proxy = LowkeyUUPSLockoutProxy(
+            payable(vm.envAddress("P0_UUPS_UUID_PROXY"))
+        );
+        UUPSLockoutActor actor = UUPSLockoutActor(vm.envAddress("P0_UUPS_LOCKOUT_ACTOR"));
+        address secureImplementation = vm.envAddress("P0_UUPS_UUID_SECURE_IMPLEMENTATION");
+        address vulnerableImplementation = vm.envAddress("P0_UUPS_UUID_VULNERABLE_IMPLEMENTATION");
+
+        // Deploy candidates before snapshot so both scenarios use identical
+        // candidate addresses and application prestate.
+        WrongUUIDProxyReplacement wrongCandidate = new WrongUUIDProxyReplacement();
+        UUPSUUIDSecureImplementation recoveryImplementation = new UUPSUUIDSecureImplementation();
+        uint256 baseline = vm.snapshot();
+
+        // Secure control rejects the mismatched UUID, preserving a usable route.
+        vm.store(address(proxy), IMPLEMENTATION_SLOT, bytes32(uint256(uint160(secureImplementation))));
+        _lowkeyStartTrace(address(proxy));
+        require(proxy.owner() == address(actor), "UUID_CONTROL_OWNER_PRESTATE_MISMATCH");
+        require(proxy.implementation() == secureImplementation, "UUID_CONTROL_IMPLEMENTATION_PRESTATE_MISMATCH");
+        require(actor.invalidUuidUpgradeAccepted() == 0, "UUID_CONTROL_METRIC_PRESTATE_MISMATCH");
+        require(actor.recoverySucceeded() == 0, "UUID_CONTROL_RECOVERY_PRESTATE_MISMATCH");
+        bool controlAccepted = actor.attemptInvalidUpgrade(address(proxy), address(wrongCandidate));
+        require(!controlAccepted, "SECURE_UUPS_ACCEPTED_MISMATCHED_UUID");
+        require(actor.invalidUuidUpgradeAccepted() == 0, "SECURE_UUID_METRIC_CHANGED");
+        require(proxy.implementation() == secureImplementation, "SECURE_UUID_SLOT_CHANGED");
+        _lowkeyWriteTrace(".audit/godmode/control-uups-uuid-lockout-state-diff.json");
+
+        bool controlRecovered = actor.attemptRecovery(address(proxy), address(recoveryImplementation));
+        require(controlRecovered, "SECURE_UUPS_VALID_RECOVERY_REJECTED");
+        require(proxy.implementation() == address(recoveryImplementation), "SECURE_UUPS_RECOVERY_SLOT_NOT_UPDATED");
+        require(actor.recoverySucceeded() == 1, "SECURE_UUPS_RECOVERY_METRIC_MISSING");
+
+        require(vm.revertTo(baseline), "UUID_LOCKOUT_BASELINE_REVERT_FAILED");
+
+        // Vulnerable branch changes only the implementation under test. The
+        // actor, proxy, candidate and encoded upgradeTo(address) call are fixed.
+        vm.store(address(proxy), IMPLEMENTATION_SLOT, bytes32(uint256(uint160(vulnerableImplementation))));
+        _lowkeyStartTrace(address(proxy));
+        require(proxy.owner() == address(actor), "UUID_ATTACK_OWNER_PRESTATE_MISMATCH");
+        require(proxy.implementation() == vulnerableImplementation, "UUID_ATTACK_IMPLEMENTATION_PRESTATE_MISMATCH");
+        require(actor.invalidUuidUpgradeAccepted() == 0, "UUID_ATTACK_METRIC_PRESTATE_MISMATCH");
+        require(actor.recoverySucceeded() == 0, "UUID_ATTACK_RECOVERY_PRESTATE_MISMATCH");
+        bool attackAccepted = actor.attemptInvalidUpgrade(address(proxy), address(wrongCandidate));
+        require(attackAccepted, "VULNERABLE_UUPS_REJECTED_MISMATCHED_UUID");
+        require(actor.invalidUuidUpgradeAccepted() == 1, "VULNERABLE_UUID_METRIC_MISSING");
+        require(proxy.implementation() == address(wrongCandidate), "VULNERABLE_UUID_SLOT_NOT_REPLACED");
+        _lowkeyWriteTrace(".audit/godmode/attack-uups-uuid-lockout-state-diff.json");
+
+        // The wrong-UUID implementation has no upgradeTo entrypoint. The same
+        // authorized actor can no longer restore a valid UUPS implementation.
+        bool attackRecovered = actor.attemptRecovery(address(proxy), address(recoveryImplementation));
+        require(!attackRecovered, "UUID_LOCKOUT_RECOVERY_UNEXPECTEDLY_SUCCEEDED");
+        require(actor.recoverySucceeded() == 0, "UUID_LOCKOUT_RECOVERY_METRIC_CHANGED");
+        require(proxy.implementation() == address(wrongCandidate), "UUID_LOCKOUT_IMPLEMENTATION_CHANGED");
+        (bool markerOk, bytes memory markerData) = address(proxy).staticcall(
+            abi.encodeWithSignature("lowkeyProxyMarker()")
+        );
+        require(
+            markerOk && markerData.length == 32
+                && abi.decode(markerData, (bytes32)) == keccak256("LOWKEY_UUPS_UUID_LOCKOUT"),
+            "UUID_LOCKOUT_DELEGATE_ROUTE_NOT_CONFIRMED"
+        );
+    }
+
 }

@@ -367,6 +367,252 @@ def run_transparent_hybrid_campaign(
         raise
 
 
+
+def make_uups_uuid_lockout_manifest(
+    forge: str,
+    fork_block: int,
+    proxy: str,
+    actor: str,
+    secure_implementation: str,
+    vulnerable_implementation: str,
+) -> dict[str, Any]:
+    """Freeze a same-proxy/same-actor UUPS UUID validation and lockout experiment.
+
+    The sole declared scenario variable is the proxy implementation slot:
+    secure UUPS logic rejects the non-admin actor, while vulnerable UUPS logic
+    allows the same upgradeTo(address) calldata through the UUPS proxy.
+    """
+    selector = "0x3659cfe6"  # upgradeTo(address)
+    argv = [
+        forge, "test",
+        "--match-path", "test/ProxySequentialControls.t.sol",
+        "--match-test", "test_paired_uups_uuid_mismatch_prevents_upgrade_lockout",
+        "--fork-url", RPC,
+        "--fork-block-number", str(fork_block),
+        "-vv",
+    ]
+    return {
+        "trace_backend": "forge-state-diff",
+        "paired_forge_experiment": True,
+        "target_authenticity": "fixture",
+        "family": "proxy",
+        "proxy_family": "TRANSPARENT",
+        "non_economic": True,
+        "expected_chain_id": 31337,
+        "expected_fork_block": fork_block,
+        "target_address": proxy,
+        "function": "upgradeTo(address)",
+        "same_calls_id": "p0-uups-uuid-lockout-v1",
+        "metric_name": "invalid_uuid_upgrade_accepted",
+        "prestate_addresses": [proxy.lower(), actor.lower()],
+        "prestate_slots": [
+            {"address": proxy, "slot": "0x0"},
+            {"address": proxy, "slot": IMPLEMENTATION_SLOT},
+            {"address": actor, "slot": "0x0"},
+            {"address": actor, "slot": "0x1"},
+        ],
+        "metric_addresses": [actor],
+        "metric_storage": {
+            "address": actor,
+            "slot": "0x0",
+            "kind": "uint256_delta",
+            "description": "UUPSLockoutActor.invalidUuidUpgradeAccepted; increments only when the non-admin UUPS call through the UUPS fallback succeeds.",
+        },
+        "scenario_parameters": [{
+            "name": "uups_uuid_implementation",
+            "address": proxy,
+            "slot": IMPLEMENTATION_SLOT,
+            "control_value": address_word(secure_implementation),
+            "attack_value": address_word(vulnerable_implementation),
+            "description": "The sole declared scenario difference: the owner-installed UUPS implementation behind the same UUPS proxy.",
+        }],
+        "trace_expectations": [{
+            "address": proxy,
+            "selector": selector,
+            "control_min_calls": 1,
+            "control_max_calls": 1,
+            "attack_min_calls": 1,
+            "attack_max_calls": 1,
+            "description": "Both scenarios send identical upgradeTo(address) calldata through the same UUPS proxy from the same ProxyUpgradeActor; only the delegated UUPS implementation differs.",
+        }],
+        "evidence_requirements": {"call_tree": "exact", "calldata": "exact", "storage": "derived"},
+        "require_trace_storage": True,
+        "control": {
+            "harness": "test/ProxySequentialControls.t.sol",
+            "support_files": ["src/ProxySequentialFixtures.sol", "src/LowkeyForgeStateDiffRecorder.sol"],
+            "state_diff_file": ".audit/godmode/control-uups-uuid-lockout-state-diff.json",
+            "argv": argv,
+            "semantic_check_argv": argv,
+            "semantic_check_test": "test_paired_uups_uups_second_surface",
+        },
+        "attack": {
+            "harness": "test/ProxySequentialControls.t.sol",
+            "support_files": ["src/ProxySequentialFixtures.sol", "src/LowkeyForgeStateDiffRecorder.sol"],
+            "state_diff_file": ".audit/godmode/attack-uups-uuid-lockout-state-diff.json",
+            "argv": argv,
+            "semantic_check_argv": argv,
+            "semantic_check_test": "test_paired_uups_uups_second_surface",
+        },
+        "fidelity_sources": [
+            "test/ProxySequentialControls.t.sol",
+            "src/ProxySequentialFixtures.sol",
+            "src/LowkeyForgeStateDiffRecorder.sol",
+        ],
+        "notes": (
+            "Fixture-only UUPS proxy hybrid experiment. The immutable ProxyAdmin address "
+            "is denied implementation-facing selectors, an ordinary caller is delegated, and the "
+            "paired attack checks whether a UUPS upgradeTo(address) route remains reachable through "
+            "the UUPS fallback. Fixture and caller simulation cap the result at SIMULATED_BREAK."
+        ),
+    }
+
+
+
+def run_uups_uuid_lockout_campaign(
+    lk: str,
+    root: Path,
+    env: dict[str, str],
+    manifest_name: str,
+    evidence_root: Path,
+) -> dict[str, Any]:
+    campaign_name = "uups-uuid-lockout"
+    destination = evidence_root / campaign_name
+    destination.mkdir(parents=True, exist_ok=True)
+    manifest_path = root / manifest_name
+    if not manifest_path.is_file():
+        raise AssertionError(f"UUPS UUID lockout manifest is missing: {manifest_path}")
+    shutil.copy2(manifest_path, destination / "control-manifest.json")
+
+    freeze_path = ".audit/godmode/uups-uuid-lockout.freeze.json"
+    validation_report_path = ".audit/godmode/uups-uuid-lockout-validation.json"
+    report_path = ".audit/godmode/uups-uuid-lockout-control.json"
+    raw_paths = {
+        "control": root / ".audit" / "godmode" / "control-uups-uuid-lockout-state-diff.json",
+        "attack": root / ".audit" / "godmode" / "attack-uups-uuid-lockout-state-diff.json",
+    }
+    common = [
+        lk, "proxy", "campaign",
+        "--manifest", manifest_name,
+        "--root", str(root),
+        "--rpc-url", RPC,
+        "--freeze-file", freeze_path,
+    ]
+
+    def capture_step(name: str, argv: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(
+            argv, cwd=root, env=env, text=True, capture_output=True,
+            timeout=timeout, check=False,
+        )
+        (destination / f"{name}-stdout.txt").write_text(result.stdout or "", encoding="utf-8")
+        (destination / f"{name}-stderr.txt").write_text(result.stderr or "", encoding="utf-8")
+        if result.returncode != 0:
+            raise AssertionError(
+                f"UUPS UUID lockout {name} command failed ({result.returncode}): {argv!r}\n"
+                f"stdout:\n{(result.stdout or '')[-12000:]}\n"
+                f"stderr:\n{(result.stderr or '')[-12000:]}"
+            )
+        return result
+
+    try:
+        capture_step(
+            "freeze",
+            common + ["--freeze"],
+            360,
+        )
+        frozen = root / freeze_path
+        if not frozen.is_file():
+            raise AssertionError("UUPS UUID lockout frozen manifest was not written.")
+        shutil.copy2(frozen, destination / "freeze.json")
+
+        capture_step(
+            "validate",
+            common + ["--validate", "--output", validation_report_path],
+            360,
+        )
+        validation = root / validation_report_path
+        if not validation.is_file():
+            raise AssertionError("UUPS UUID lockout freeze-validation report was not written.")
+        validation_payload = json.loads(validation.read_text(encoding="utf-8"))
+        if validation_payload.get("status") != "PROPOSED" or validation_payload.get("freeze_valid") is not True or validation_payload.get("execution_attempted") is not False:
+            raise AssertionError(f"UUPS UUID lockout manifest did not validate without execution: {validation_payload}")
+        shutil.copy2(validation, destination / "freeze-validation.json")
+
+        # Save stdout/stderr and both raw state-diff files before interpreting
+        # the verdict, so a failed evidence gate remains diagnosable after the
+        # enclosing TemporaryDirectory is removed.
+        execution = subprocess.run(
+            common + ["--output", report_path, "--non-economic"],
+            cwd=root, env=env, text=True, capture_output=True,
+            timeout=900, check=False,
+        )
+        (destination / "execute-stdout.txt").write_text(execution.stdout or "", encoding="utf-8")
+        (destination / "execute-stderr.txt").write_text(execution.stderr or "", encoding="utf-8")
+        for scenario, raw_path in raw_paths.items():
+            if raw_path.is_file():
+                shutil.copy2(raw_path, destination / f"{scenario}-state-diff.json")
+        report_file = root / report_path
+        if report_file.is_file():
+            shutil.copy2(report_file, destination / "control-report.json")
+        if execution.returncode != 0:
+            raise AssertionError(
+                f"UUPS UUID lockout execution command failed ({execution.returncode}).\n"
+                f"stdout:\n{(execution.stdout or '')[-12000:]}\n"
+                f"stderr:\n{(execution.stderr or '')[-12000:]}"
+            )
+        if not report_file.is_file():
+            raise AssertionError("Lowkey proxy campaign did not write the UUPS UUID lockout report.")
+        if not all(raw_path.is_file() for raw_path in raw_paths.values()):
+            missing = [name for name, raw_path in raw_paths.items() if not raw_path.is_file()]
+            raise AssertionError(f"UUPS UUID lockout raw state-diff artifacts are missing: {missing}")
+
+        report = json.loads(report_file.read_text(encoding="utf-8"))
+        if report.get("status") != "SIMULATED_BREAK" or report.get("legacy_status") != "SIMULATED_BREAK":
+            raise AssertionError(f"UUPS UUID lockout fixture must remain SIMULATED_BREAK: {report}")
+        if report.get("target_authenticity") != "fixture" or report.get("control_delta") != 1:
+            raise AssertionError(f"UUPS UUID lockout campaign lacks fixture fidelity or the expected metric delta: {report}")
+        runs = report.get("runs") or {}
+        control, attack = runs.get("control") or {}, runs.get("attack") or {}
+        if control.get("trace_error") or attack.get("trace_error"):
+            raise AssertionError(f"UUPS UUID lockout campaign has a trace error: {runs}")
+        if control.get("metric") != 0 or attack.get("metric") != 1:
+            raise AssertionError(f"UUPS UUID lockout metrics must be secure=0/vulnerable=1: {runs}")
+        if control.get("execution_verified") is not True or attack.get("execution_verified") is not True:
+            raise AssertionError(f"UUPS UUID lockout Forge executions were not independently verified: {runs}")
+        for field in (
+            "state_diff_pair_verified",
+            "same_entry_call_verified",
+            "same_prestate_verified",
+            "same_chain_verified",
+            "same_block_verified",
+            "same_fork_anchor_verified",
+            "trace_delta_verified",
+            "evidence_requirements_verified",
+            "semantic_invariant_verified",
+        ):
+            if report.get(field) is not True:
+                raise AssertionError(f"UUPS UUID lockout pair did not verify {field}: {report}")
+        proof_axes = report.get("proof_axes") or {}
+        if proof_axes.get("fidelity") not in {"synthetic_state", "simulated_caller"}:
+            raise AssertionError(f"UUPS UUID lockout fidelity was not simulation-specific: {proof_axes}")
+        if proof_axes.get("confirmation_eligible") is not False:
+            raise AssertionError(f"Fixture-only UUPS UUID lockout evidence became confirmation eligible: {proof_axes}")
+        return report
+    except Exception as exc:
+        (destination / "failure-diagnostics.txt").write_text(
+            f"{type(exc).__name__}: {exc}\n",
+            encoding="utf-8",
+        )
+        # Preserve anything that exists even when freeze, validation or
+        # execution fails before the normal evidence-copy stage.
+        for scenario, raw_path in raw_paths.items():
+            if raw_path.is_file() and not (destination / f"{scenario}-state-diff.json").is_file():
+                shutil.copy2(raw_path, destination / f"{scenario}-state-diff.json")
+        report_file = root / report_path
+        if report_file.is_file() and not (destination / "control-report.json").is_file():
+            shutil.copy2(report_file, destination / "control-report.json")
+        raise
+
+
 def check_pair_result(root: Path, report_prefix: str, evidence_dir: Path) -> dict[str, Any]:
     control_report = root / ".audit" / "godmode" / "control.json"
     if not control_report.is_file():
@@ -526,12 +772,22 @@ def main() -> int:
         actor = deploy(forge, root, env, "ProxyUpgradeActor")
         admin = deploy(forge, root, env, "PairedProxyAdmin", OWNER)
         transparent_proxy = deploy(forge, root, env, "LowkeyTransparentProxy", secure_impl, admin, OWNER)
+        uuid_secure_impl = deploy(forge, root, env, "UUPSUUIDSecureImplementation")
+        uuid_vulnerable_impl = deploy(forge, root, env, "UUPSUUIDVulnerableImplementation")
+        uuid_actor = deploy(forge, root, env, "UUPSLockoutActor")
+        uuid_proxy = deploy(
+            forge, root, env, "LowkeyUUPSLockoutProxy", uuid_vulnerable_impl, uuid_actor,
+        )
         fork_block = int(run([cast, "block-number", "--rpc-url", RPC], root, env).stdout.strip(), 0)
 
         env.update({
             "P0_OWNER": OWNER, "P0_UUPS_PROXY": uups_proxy,
             "P0_SECURE_IMPLEMENTATION": secure_impl, "P0_VULNERABLE_IMPLEMENTATION": vulnerable_impl,
             "P0_PROXY_ADMIN": admin, "P0_TRANSPARENT_PROXY": transparent_proxy, "P0_ACTOR": actor,
+            "P0_UUPS_UUID_PROXY": uuid_proxy,
+            "P0_UUPS_UUID_SECURE_IMPLEMENTATION": uuid_secure_impl,
+            "P0_UUPS_UUID_VULNERABLE_IMPLEMENTATION": uuid_vulnerable_impl,
+            "P0_UUPS_LOCKOUT_ACTOR": uuid_actor,
         })
         evidence_root = repo_root / ".audit" / "proxy-sequential-acceptance"
         if evidence_root.exists():
@@ -618,8 +874,30 @@ def main() -> int:
         if rpc_storage(cast, root, env, transparent_proxy, IMPLEMENTATION_SLOT) != address_word(secure_impl):
             raise AssertionError("Transparent hybrid campaign mutated the source Anvil implementation slot.")
 
+        uuid_manifest = make_uups_uuid_lockout_manifest(
+            forge=forge,
+            fork_block=fork_block,
+            proxy=uuid_proxy,
+            actor=uuid_actor,
+            secure_implementation=uuid_secure_impl,
+            vulnerable_implementation=uuid_vulnerable_impl,
+        )
+        uuid_manifest_name = "uups-uuid-lockout-control.json"
+        (root / uuid_manifest_name).write_text(
+            json.dumps(uuid_manifest, indent=2, sort_keys=True) + "\\n",
+            encoding="utf-8",
+        )
+        uuid_initial_slot = rpc_storage(cast, root, env, uuid_proxy, IMPLEMENTATION_SLOT)
+        if uuid_initial_slot != address_word(uuid_vulnerable_impl):
+            raise AssertionError("UUPS UUID lockout proxy did not begin with the declared vulnerable implementation.")
+        uuid_case = run_uups_uuid_lockout_campaign(
+            lk, root, env, uuid_manifest_name, evidence_root,
+        )
+        if rpc_storage(cast, root, env, uuid_proxy, IMPLEMENTATION_SLOT) != address_word(uuid_vulnerable_impl):
+            raise AssertionError("UUPS UUID campaign mutated the source Anvil implementation slot.")
+
         report = {
-            "gate": "Lowkey independent P0 UUPS, ProxyAdmin and Transparent hybrid sequential-control acceptance",
+            "gate": "Lowkey independent P0 UUPS authorization, UUID/lockout, ProxyAdmin and Transparent hybrid acceptance",
             "status": "PASS",
             "source_sha": expected_sha,
             "installed_git_sha": installed.get("git_sha"),
@@ -636,8 +914,9 @@ def main() -> int:
                 "evidence_path": str(dispatch_dir),
             },
             "transparent_uups_second_surface": hybrid_case,
+            "uups_uuid_lockout": uuid_case,
             "classification_policy": (
-                "UUPS, ProxyAdmin and Transparent hybrid results are fixture-only paired experiments. "
+                "UUPS authorization, UUID/lockout, ProxyAdmin and Transparent hybrid results are fixture-only paired experiments. "
                 "The secure and vulnerable paths use equivalent fork snapshots, the same proxy, actor and "
                 "encoded upgrade calldata where paired. Transparent routing and a non-admin UUPS second "
                 "upgrade surface are demonstrated only for this fixture. Results remain SIMULATED_BREAK "
@@ -646,7 +925,7 @@ def main() -> int:
         }
         (evidence_root / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(json.dumps(report, indent=2, sort_keys=True))
-        print("PASS: UUPS, ProxyAdmin, Transparent admin routing and UUPS-behind-Transparent paired controls verified.")
+        print("PASS: UUPS authorization, UUID/lockout, ProxyAdmin, Transparent routing and hybrid paired controls verified.")
         run([lk, "target", "reset"], root, env)
     return 0
 

@@ -186,3 +186,98 @@ contract ProxyUpgradeActor {
         successfulCalls = successfulCalls + (success ? 1 : 0);
     }
 }
+
+// UUID-aware UUPS pair for the mismatched proxiableUUID / post-upgrade-lockout
+// campaign. These are deliberately small lab fixtures, not OZ implementations.
+contract UUPSUUIDSecureImplementation is LowkeyUUPSStorage {
+    address public owner;
+
+    function upgradeTo(address nextImplementation) external {
+        require(msg.sender == owner, "ONLY_OWNER");
+        (bool ok, bytes memory returned) = nextImplementation.staticcall(
+            abi.encodeWithSignature("proxiableUUID()")
+        );
+        require(
+            ok && returned.length == 32 && abi.decode(returned, (bytes32)) == IMPLEMENTATION_SLOT,
+            "UNSUPPORTED_PROXIABLE_UUID"
+        );
+        _install(nextImplementation);
+    }
+}
+
+contract UUPSUUIDVulnerableImplementation is LowkeyUUPSStorage {
+    address public owner;
+
+    function upgradeTo(address nextImplementation) external {
+        require(msg.sender == owner, "ONLY_OWNER");
+        (bool ok, bytes memory returned) = nextImplementation.staticcall(
+            abi.encodeWithSignature("proxiableUUID()")
+        );
+        require(ok && returned.length == 32, "MISSING_PROXIABLE_UUID");
+        // Deliberate defect: a readable UUID is accepted without checking the
+        // ERC-1967 implementation slot value.
+        _install(nextImplementation);
+    }
+}
+
+contract WrongUUIDProxyReplacement {
+    function proxiableUUID() external pure returns (bytes32) {
+        return keccak256("LOWKEY_WRONG_PROXIABLE_UUID");
+    }
+
+    function lowkeyProxyMarker() external pure returns (bytes32) {
+        return keccak256("LOWKEY_UUPS_UUID_LOCKOUT");
+    }
+}
+
+contract LowkeyUUPSLockoutProxy {
+    address public owner;
+    bytes32 private constant IMPLEMENTATION_SLOT =
+        0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+
+    constructor(address implementation_, address initialOwner) {
+        require(implementation_.code.length > 0, "NO_IMPLEMENTATION_CODE");
+        require(initialOwner != address(0), "ZERO_OWNER");
+        owner = initialOwner;
+        bytes32 slot = IMPLEMENTATION_SLOT;
+        assembly { sstore(slot, implementation_) }
+    }
+
+    function implementation() external view returns (address value) {
+        bytes32 slot = IMPLEMENTATION_SLOT;
+        assembly { value := sload(slot) }
+    }
+
+    fallback() external payable { _delegate(); }
+    receive() external payable { _delegate(); }
+
+    function _delegate() internal {
+        bytes32 slot = IMPLEMENTATION_SLOT;
+        assembly {
+            let implementation_ := sload(slot)
+            calldatacopy(0, 0, calldatasize())
+            let ok := delegatecall(gas(), implementation_, 0, calldatasize(), 0, 0)
+            returndatacopy(0, 0, returndatasize())
+            switch ok
+            case 0 { revert(0, returndatasize()) }
+            default { return(0, returndatasize()) }
+        }
+    }
+}
+
+contract UUPSLockoutActor {
+    uint256 public invalidUuidUpgradeAccepted;
+    uint256 public recoverySucceeded;
+
+    function attemptInvalidUpgrade(address target, address candidate) external returns (bool success) {
+        (success, ) = target.call(abi.encodeWithSignature("upgradeTo(address)", candidate));
+        // Always write the metric slot, including the secure zero outcome.
+        invalidUuidUpgradeAccepted += success ? 1 : 0;
+    }
+
+    function attemptRecovery(address target, address candidate) external returns (bool success) {
+        (success, ) = target.call(abi.encodeWithSignature("upgradeTo(address)", candidate));
+        recoverySucceeded += success ? 1 : 0;
+    }
+}
+
