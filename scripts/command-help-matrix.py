@@ -70,17 +70,17 @@ def launcher_commands(launcher_path: pathlib.Path) -> list[str]:
     text = launcher_path.read_text(encoding="utf-8")
     commands: set[str] = set()
     commands.update(re.findall(
-        r'\\[\\[\\s*"\\$\\{1:-\\}"\\s*==\\s*"([A-Za-z0-9][A-Za-z0-9_-]*)"',
+        r'\[\[\s*"\$\{1:-\}"\s*==\s*"([A-Za-z0-9][A-Za-z0-9_-]*)"',
         text,
     ))
     for match in re.finditer(
-        r'case\\s*"\\$\\{1:-\\}"\\s+in(.*?)(?:^\\s*esac\\b)',
+        r'case\s*"\$\{1:-\}"\s+in(.*?)(?:^\s*esac\b)',
         text,
         flags=re.MULTILINE | re.DOTALL,
     ):
         for line in match.group(1).splitlines():
             candidate = line.split("#", 1)[0].strip()
-            labels = re.fullmatch(r"([A-Za-z0-9_-]+(?:\\|[A-Za-z0-9_-]+)*)\\)", candidate)
+            labels = re.fullmatch(r"([A-Za-z0-9_-]+(?:\|[A-Za-z0-9_-]+)*)\)", candidate)
             if labels:
                 commands.update(labels.group(1).split("|"))
     return sorted(commands)
