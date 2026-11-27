@@ -253,14 +253,37 @@ def main():
                 checks["explicit_rpc_detaches_foreign_target"] = (
                     cli_module.active_project_target(detached) is None
                 )
-                targetless_result = cli_module.run_cast(
-                    ["call", "owner", "--rpc-url", b["rpc"]],
-                    detached,
-                    capture=True,
-                )
+                cast_invocations = []
+                original_cast_output = cli_module.cast_output
+
+                def record_cast_invocation(command, *args, **kwargs):
+                    cast_invocations.append([str(value) for value in command])
+                    return original_cast_output(command, *args, **kwargs)
+
+                cli_module.cast_output = record_cast_invocation
+                try:
+                    targetless_result = cli_module.run_cast(
+                        ["call", "owner", "--rpc-url", b["rpc"]],
+                        detached,
+                        capture=True,
+                    )
+                finally:
+                    cli_module.cast_output = original_cast_output
+
+                result_code = getattr(targetless_result, "code", None)
+                result_text = str(getattr(targetless_result, "output", targetless_result) or "")
+                evidence["explicit_rpc_targetless_probe"] = {
+                    "return_type": type(targetless_result).__name__,
+                    "return_code": result_code,
+                    "error": result_text,
+                    "cast_invocations": cast_invocations,
+                    "unscoped_context": detached.get("_explicit_rpc_unscoped") is True,
+                }
                 checks["explicit_rpc_requires_target_on_foreign_rpc"] = (
-                    getattr(targetless_result, "code", 0) == 2
-                    and "no target set" in str(getattr(targetless_result, "output", "")).lower()
+                    isinstance(result_code, int)
+                    and result_code != 0
+                    and not cast_invocations
+                    and "target" in result_text.lower()
                 )
                 if not all((
                     checks["explicit_rpc_detaches_foreign_actor"],
