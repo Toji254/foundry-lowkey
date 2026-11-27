@@ -73,13 +73,23 @@ def launcher_commands(launcher_path: pathlib.Path) -> list[str]:
         r'\[\[\s*"\$\{1:-\}"\s*==\s*"([A-Za-z0-9][A-Za-z0-9_-]*)"',
         text,
     ))
-    for match in re.finditer(
-        r'case\s*"\$\{1:-\}"\s+in(.*?)(?:^\s*esac\b)',
-        text,
-        flags=re.MULTILINE | re.DOTALL,
-    ):
-        for line in match.group(1).splitlines():
-            candidate = line.split("#", 1)[0].strip()
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if not re.fullmatch(r'\s*case\s*"\$\{1:-\}"\s+in\s*', line):
+            continue
+        depth = 1
+        for nested_line in lines[index + 1:]:
+            candidate = nested_line.split("#", 1)[0].strip()
+            if re.match(r"^case\b.*\bin\s*$", candidate):
+                depth += 1
+                continue
+            if re.fullmatch(r"esac", candidate):
+                depth -= 1
+                if depth == 0:
+                    break
+                continue
+            if depth != 1:
+                continue
             labels = re.fullmatch(r"([A-Za-z0-9_-]+(?:\|[A-Za-z0-9_-]+)*)\)", candidate)
             if labels:
                 commands.update(labels.group(1).split("|"))
