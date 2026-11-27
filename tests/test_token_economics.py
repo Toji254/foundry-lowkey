@@ -28,7 +28,7 @@ def round_data(answer, *, updated=9990, answered_round=5):
 
 
 class RpcFixture:
-    def __init__(self, *, stale=False, incomplete=False, source_code_mismatch=False, proxy_identity_mismatch=False, proxy_implementation=False, proxy_implementation_code_mismatch=False, changed_proxy_implementation=False, wrong_vault_asset=False, changed_decimals=False, changed_vault_asset=False):
+    def __init__(self, *, stale=False, incomplete=False, source_code_mismatch=False, proxy_identity_mismatch=False, proxy_implementation=False, proxy_implementation_code_mismatch=False, changed_proxy_implementation=False, unsupported_delegatecall=False, wrong_vault_asset=False, changed_decimals=False, changed_vault_asset=False):
         self.stale = stale
         self.incomplete = incomplete
         self.source_code_mismatch = source_code_mismatch
@@ -36,6 +36,7 @@ class RpcFixture:
         self.proxy_implementation = proxy_implementation
         self.proxy_implementation_code_mismatch = proxy_implementation_code_mismatch
         self.changed_proxy_implementation = changed_proxy_implementation
+        self.unsupported_delegatecall = unsupported_delegatecall
         self.wrong_vault_asset = wrong_vault_asset
         self.changed_decimals = changed_decimals
         self.changed_vault_asset = changed_vault_asset
@@ -60,6 +61,8 @@ class RpcFixture:
             address = params[0].lower()
             if url == "source" and self.source_code_mismatch and address == TOKEN:
                 return "0x60026002"
+            if self.unsupported_delegatecall and address == TOKEN:
+                return "0x6000f4"
             if url == "source" and self.proxy_implementation_code_mismatch and address == "0x" + "8" * 40:
                 return "0x60026002"
             return "0x60016001"
@@ -225,6 +228,14 @@ class TokenEconomicsTests(unittest.TestCase):
                 RpcFixture(proxy_identity_mismatch=True), local_url="local", source_url="source",
                 manifest=manifest(), accounts=[ACTOR], before_block=100,
                 after_block=101, block_timestamp=10_000,
+            )
+
+    def test_unsupported_delegatecall_proxy_fails_closed(self):
+        with self.assertRaisesRegex(TokenEconomicsError, "unsupported proxy identity"):
+            measure_token_portfolio(
+                RpcFixture(unsupported_delegatecall=True), local_url="local",
+                source_url="source", manifest=manifest(), accounts=[ACTOR],
+                before_block=100, after_block=101, block_timestamp=10_000,
             )
 
     def test_proxy_implementation_bytecode_mismatch_is_refused(self):
