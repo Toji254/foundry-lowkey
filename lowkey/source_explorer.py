@@ -682,7 +682,7 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
 "use strict";
 let MODEL=JSON.parse(document.getElementById("graph-data").textContent);
 const SERVER_MODE=__SERVER_MODE__;
-const byId=new Map(),positions=new Map(),hiddenVendors=new Set();
+const byId=new Map(),positions=new Map(),hiddenVendors=new Set(),sourceFilesByPath=new Map();
 const nodeElementsById=new Map(),edgeElementsById=new Map(),edgeLabelsById=new Map(),edgeDataById=new Map(),edgeIndicesById=new Map(),incidentEdgesByNode=new Map();
 let mode="architecture",selectedId=null,selectedTab="overview",selectedEdge=null,focusFunctionId=null,history=[];
 let scale=1,tx=0,ty=0,drag=null,pan=null,renderNodes=[],renderEdges=[];
@@ -693,7 +693,7 @@ function clear(parent){parent.replaceChildren()}
 function el(tag,attrs){const item=document.createElementNS("http://www.w3.org/2000/svg",tag);Object.entries(attrs||{}).forEach(function(pair){item.setAttribute(pair[0],pair[1])});return item}
 function h(tag,cls,value){const item=document.createElement(tag);if(cls)item.className=cls;if(value!==undefined&&value!==null)item.textContent=String(value);return item}
 function add(parent,tag,cls,value){const item=h(tag,cls,value);parent.appendChild(item);return item}
-function mapModel(){byId.clear();MODEL.nodes.forEach(function(n){byId.set(n.id,n)});(MODEL.groups||[]).forEach(function(g){byId.set(g.id,{...g,id:g.id,type:"group",kind:"group",label:g.label,folder:g.folder,description:g.count+" declarations",vendor:(g.vendors||[]).join(", "),origin:"mixed",scope:"application",incoming:0,outgoing:0})})}
+function mapModel(){byId.clear();sourceFilesByPath.clear();MODEL.nodes.forEach(function(n){byId.set(n.id,n)});(MODEL.groups||[]).forEach(function(g){byId.set(g.id,{...g,id:g.id,type:"group",kind:"group",label:g.label,folder:g.folder,description:g.count+" declarations",vendor:(g.vendors||[]).join(", "),origin:"mixed",scope:"application",incoming:0,outgoing:0})});(MODEL.sources||[]).forEach(function(source){sourceFilesByPath.set(source.path,source)})}
 function node(id){return byId.get(id)}
 function toast(message){const item=document.getElementById("toast");item.textContent=message;item.classList.add("show");clearTimeout(toast.handle);toast.handle=setTimeout(function(){item.classList.remove("show")},2600)}
 function filters(){const result={};document.querySelectorAll("[data-filter]").forEach(function(x){result[x.dataset.filter]=x.checked});return result}
@@ -1274,8 +1274,87 @@ function showEdgeDetails(e){
       }else toast(value);
     });
   }
-  const button=add(root,"button","tool-button primary","Open source function");button.addEventListener("click",function(){openNode(e.source,true)});
+  const button=add(root,"button","tool-button primary","Open call site in source");button.addEventListener("click",function(){openSourceDrawer(e.file,e.line,e.label||e.kind)});
   renderGraph();
+  if(e.file&&e.line)openSourceDrawer(e.file,e.line,e.label||e.kind);
+}
+const SOURCE_WINDOW_LINES=500;
+let activeSourcePath="",activeSourceLine=1,sourceWindowStart=1;
+const SOLIDITY_KEYWORDS=new Set(["pragma","solidity","contract","interface","library","abstract","is","function","modifier","constructor","fallback","receive","public","external","internal","private","view","pure","payable","returns","return","if","else","for","while","require","revert","emit","event","error","mapping","struct","enum","memory","storage","calldata","immutable","constant","virtual","override","using","new","delete","assembly","unchecked"]);
+function sourceTokenize(value,parent){
+  const chunks=value.split(/(\/\/.*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b[A-Za-z_]\w*\b|\b\d+\b)/g);
+  chunks.forEach(function(token){
+    if(!token)return;
+    let cls="";
+    if(token.startsWith("//"))cls="src-comment";
+    else if(token.startsWith('"')||token.startsWith("'"))cls="src-string";
+    else if(/^\d/.test(token))cls="src-number";
+    else if(SOLIDITY_KEYWORDS.has(token))cls="src-keyword";
+    if(cls){const span=document.createElement("span");span.className=cls;span.textContent=token;parent.appendChild(span)}
+    else parent.appendChild(document.createTextNode(token));
+  });
+}
+function renderSourceWindow(source){
+  const view=document.getElementById("source-view");clear(view);
+  const lines=String(source.content||"").split(/\r?\n/),total=lines.length;
+  const start=Math.max(1,Math.min(sourceWindowStart,Math.max(1,total-SOURCE_WINDOW_LINES+1)));
+  const end=Math.min(total,start+SOURCE_WINDOW_LINES-1);
+  sourceWindowStart=start;
+  const fragment=document.createDocumentFragment();
+  for(let number=start;number<=end;number++){
+    const row=add(fragment,"div","source-line"+(number===activeSourceLine?" selected":""),"");
+    add(row,"span","source-line-number",number);
+    const code=add(row,"code","source-line-code","");
+    sourceTokenize(lines[number-1],code);
+  }
+  view.appendChild(fragment);
+  document.getElementById("source-meta").textContent=source.path+" · lines "+start+"–"+end+" of "+total+" · "+source.byte_size+" bytes · SHA-256 "+source.sha256;
+  document.getElementById("source-prev").disabled=start<=1;
+  document.getElementById("source-next").disabled=end>=total;
+  document.getElementById("source-center").disabled=activeSourceLine>=start&&activeSourceLine<=end;
+  const selected=view.querySelector(".source-line.selected");
+  if(selected)selected.scrollIntoView({block:"center"});
+}
+async function openSourceDrawer(file,line,title){
+  const path=String(file||"").replace(/\\/g,"/").replace(/^\.\//,"");
+  if(!path||path.startsWith("/")||path.split("/").includes("..")){toast("No safe project-relative source path is available.");return}
+  activeSourcePath=path;
+  activeSourceLine=Math.max(1,Number(line)||1);
+  sourceWindowStart=Math.max(1,activeSourceLine-Math.floor(SOURCE_WINDOW_LINES/2));
+  document.getElementById("source-drawer").hidden=false;
+  document.getElementById("source-title").textContent=title||path;
+  document.getElementById("source-meta").textContent=path+" · loading local source…";
+  const view=document.getElementById("source-view");clear(view);
+  add(view,"div","source-empty","Loading source from the local graph bundle or loopback project…");
+  let source=sourceFilesByPath.get(path);
+  if(!source||typeof source.content!=="string"){
+    if(!SERVER_MODE){
+      clear(view);
+      add(view,"div","source-status","This file was not embedded in the offline graph because the source bundle reached its 8 MiB limit. Run lk link --serve in the project to read it from the loopback workspace.");
+      return;
+    }
+    try{
+      const response=await fetch("/api/source?path="+encodeURIComponent(path),{headers:{"Accept":"application/json"}});
+      const result=await response.json();
+      if(!response.ok)throw new Error(result.error||"Source could not be loaded.");
+      source=result;sourceFilesByPath.set(path,source);
+    }catch(error){
+      clear(view);add(view,"div","source-status",String(error.message||error));return;
+    }
+  }
+  if(typeof source.content!=="string"){
+    clear(view);add(view,"div","source-status","Full source is unavailable: "+(source.status||"not embedded")+".");
+    return;
+  }
+  renderSourceWindow(source);
+}
+function closeSourceDrawer(){document.getElementById("source-drawer").hidden=true}
+function changeSourceWindow(delta){
+  const source=sourceFilesByPath.get(activeSourcePath);
+  if(!source||typeof source.content!=="string")return;
+  const total=String(source.content).split(/\r?\n/).length;
+  sourceWindowStart=Math.max(1,Math.min(Math.max(1,total-SOURCE_WINDOW_LINES+1),sourceWindowStart+delta*SOURCE_WINDOW_LINES));
+  renderSourceWindow(source);
 }
 function renderStats(){
   const root=document.getElementById("project-stats");clear(root);
@@ -1443,6 +1522,8 @@ function renderInspector(){
   if(selected.file){
     const section=add(body,"div","inspector-section");add(section,"div","section-head","SOURCE LOCATION");add(section,"code","location",selected.file+(selected.line?":"+selected.line:""));
     if(selected.source_excerpt){const code=add(section,"div","source-card");add(code,"pre","",selected.source_excerpt)}
+    const openSource=add(section,"button","tool-button primary","Open full Solidity source");
+    openSource.addEventListener("click",function(){openSourceDrawer(selected.file,selected.line,selected.label)});
   }
 }
 function renderFlow(){
@@ -1634,6 +1715,14 @@ function setupInteractions(){
     const previous=history.pop();openNode(previous,false);
   });
   document.getElementById("export-json").addEventListener("click",downloadGraph);
+  document.getElementById("source-close").addEventListener("click",closeSourceDrawer);
+  document.getElementById("source-prev").addEventListener("click",function(){changeSourceWindow(-1)});
+  document.getElementById("source-next").addEventListener("click",function(){changeSourceWindow(1)});
+  document.getElementById("source-center").addEventListener("click",function(){
+    sourceWindowStart=Math.max(1,activeSourceLine-Math.floor(SOURCE_WINDOW_LINES/2));
+    const source=sourceFilesByPath.get(activeSourcePath);
+    if(source&&typeof source.content==="string")renderSourceWindow(source);
+  });
   const open=add(document.querySelector(".top-actions"),"button","tool-button","Open graph JSON");
   open.addEventListener("click",function(){const input=document.createElement("input");input.type="file";input.accept=".json,application/json";input.addEventListener("change",function(){if(input.files[0])openGraphFile(input.files[0])});input.click()});
   svg.addEventListener("wheel",function(event){event.preventDefault();scale=Math.max(.2,Math.min(2.8,scale*(event.deltaY<0?1.12:.89)));applyTransform()},{passive:false});
@@ -1644,7 +1733,7 @@ function setupInteractions(){
   document.addEventListener("keydown",function(event){
     if(event.key==="/"&&!["INPUT","TEXTAREA"].includes(document.activeElement.tagName)){event.preventDefault();search.focus()}
     if((event.key==="f"||event.key==="F")&&!["INPUT","TEXTAREA"].includes(document.activeElement.tagName)){event.preventDefault();fitGraph()}
-    if(event.key==="Escape"){document.getElementById("import-modal").classList.remove("open");search.blur()}
+    if(event.key==="Escape"){document.getElementById("import-modal").classList.remove("open");if(!document.getElementById("source-drawer").hidden)closeSourceDrawer();search.blur()}
     if(event.key==="Backspace"&&!["INPUT","TEXTAREA"].includes(document.activeElement.tagName)&&history.length){const previous=history.pop();openNode(previous,false)}
   });
   const stage=document.getElementById("graph-stage");
