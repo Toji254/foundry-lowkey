@@ -4790,9 +4790,12 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
             raise RuntimeError(name + " Forge test command failed (exit " +
                                str(proc.returncode) + "): " + combined[-1600:])
 
-        results = {}
-        target = addr(spec.get("target_address"))
-        for scenario_name, scenario_entry, artifact_rel, scenario_argv, fidelity in validated:
+        # Preserve every recorder output before parsing either scenario. A
+        # control trace can fail normalization or metric extraction; copying
+        # artifacts one-by-one while parsing used to discard the later attack
+        # trace when the first scenario raised.
+        project_root = Path(root).resolve()
+        for scenario_name, _, artifact_rel, _, _ in validated:
             artifact_path = artifact_paths[scenario_name]
             if not artifact_path.is_file():
                 raise ValueError(
@@ -4800,13 +4803,6 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
                     + artifact_rel.as_posix()
                     + "; ensure the harness recorder writes to that exact path."
                 )
-            # The harness runs in an isolated copy so its build/test outputs do
-            # not contaminate the caller's project. The declared evidence file,
-            # however, is an explicit output contract: persist the exact raw
-            # recorder artifact back to the project before parsing it or
-            # cleaning up the isolated workspace. This preserves diagnostics
-            # even when normalization or later proof checks fail.
-            project_root = Path(root).resolve()
             persisted_artifact = (project_root / artifact_rel).resolve()
             if not persisted_artifact.is_relative_to(project_root):
                 raise ValueError(
@@ -4814,6 +4810,11 @@ def _forge_control_run(root, fork_url, name, entry, spec, env, source_url=None, 
                 )
             persisted_artifact.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(artifact_path, persisted_artifact)
+
+        results = {}
+        target = addr(spec.get("target_address"))
+        for scenario_name, scenario_entry, artifact_rel, scenario_argv, fidelity in validated:
+            artifact_path = artifact_paths[scenario_name]
             raw = json.loads(artifact_path.read_text(encoding="utf-8"))
             normalized = normalize_forge_state_diff(raw, expected_target=target)
             prestate_digest, full_prestate, scenario_parameters, excluded_scenario_slots, prestate_comparison = (
