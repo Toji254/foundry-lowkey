@@ -1716,6 +1716,13 @@ def remember_project_target(config, root, name, address, *, runtime_state=None):
     config.setdefault("project_roots", {}).setdefault(address, root_key)
 
 def resolve_target_ref(config,ref,root=None):
+    # A foreign explicit RPC has no implicit project target namespace. A
+    # literal address supplied in this invocation remains an explicit choice;
+    # named, numbered and global aliases are not carried across networks.
+    if isinstance(config, dict) and config.get("_explicit_rpc_unscoped"):
+        if ref is None:
+            return None
+        return str(ref) if is_address(ref) else None
     if ref is None:
         return active_project_target(config, root) if root is not None else config.get("target")
 
@@ -2128,7 +2135,7 @@ def last_transaction(config):
         current_target = active_project_target(config, root)
     except Exception:
         current_target = None
-    if not is_address(current_target):
+    if not is_address(current_target) and not config.get("_explicit_rpc_unscoped"):
         configured_target = config.get("target")
         current_target = configured_target if is_address(configured_target) else None
 
@@ -9226,7 +9233,17 @@ def run_cast(args,config,capture=False):
         record_status(result.code)
         return result if capture else result.code
     action=args[0]; shortcut_map={"c":"call","s":"send","st":"storage"}; cast_cmd=shortcut_map.get(action,action)
-    remaining=list(args[1:]); target=config.get("target")
+    remaining=list(args[1:])
+    target=config.get("target")
+    # Resolve the RPC override before selecting an implicit target. Otherwise a
+    # call such as "lk read owner --rpc-url <other-network>" can silently pair
+    # the other RPC with the previous project's default target. Explicit
+    # address arguments are parsed below and remain usable.
+    early_explicit_rpc = _explicit_cast_rpc(remaining)
+    if early_explicit_rpc is not None:
+        effective_rpc(config, explicit_rpc=early_explicit_rpc, target=target)
+        if config.get("_explicit_rpc_unscoped"):
+            target = None
 
     # --as/--actor belongs to Lowkey, not Cast. Consume it here so it
     # selects the signer for this invocation without changing config["actor"].
@@ -25456,7 +25473,11 @@ def run_state_variable_read(config, args):
     target_config = dict(config)
     target_config["abi_paths"] = dict(config.get("abi_paths") or {})
     target_config["project_roots"] = dict(config.get("project_roots") or {})
-    target = target_config.get("target") or active_project_target(target_config, root)
+    target = (
+        None
+        if target_config.get("_explicit_rpc_unscoped")
+        else target_config.get("target") or active_project_target(target_config, root)
+    )
 
     if len(values) >= 2:
         explicit = values[0] if is_address(values[0]) else None

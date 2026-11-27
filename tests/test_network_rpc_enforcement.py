@@ -168,11 +168,53 @@ def test_explicit_rpc_override_detaches_foreign_project_target(tmp_path):
         "wallets": {},
         "_active_network_session": session,
     }
-    with patch.object(lk, "project_fixture_rpc_info", return_value=None):
-        assert lk.effective_rpc(config, explicit_rpc="http://127.0.0.1:9545") == "http://127.0.0.1:9545"
+    with (
+        patch.object(lk, "project_fixture_rpc_info", return_value=None),
+        patch.object(lk, "cast_output") as cast_output,
+    ):
+        result = lk.run_cast(
+            ["call", "owner", "--rpc-url", "http://127.0.0.1:9545"],
+            config,
+            capture=True,
+        )
+    assert result.code == 2
+    assert "no target set" in result.output.lower()
+    cast_output.assert_not_called()
     assert config.get("_explicit_rpc_unscoped") is True
     assert lk._actor_profile_entry(config, "anvil-1") is None
     assert lk.active_project_target(config, root=tmp_path) is None
+    assert lk.resolve_target_ref(config, None, root=tmp_path) is None
+    assert lk.resolve_target_ref(config, "Vault", root=tmp_path) is None
+    assert lk.resolve_target_ref(config, "0x" + "b" * 40, root=tmp_path) == "0x" + "b" * 40
+
+
+def test_explicit_rpc_override_preserves_explicit_target_address():
+    explicit_target = "0x" + "b" * 40
+    config = {
+        "actor": "anvil-1",
+        "target": "0x" + "a" * 40,
+        "target_contract": "ForeignVault",
+        "wallets": {},
+        "_active_network_session": {
+            "id": "managed-session-a",
+            "rpc": "http://127.0.0.1:8545",
+            "actors": {"anvil-1": "0x" + "2" * 40},
+        },
+    }
+    with (
+        patch.object(lk, "project_fixture_rpc_info", return_value=None),
+        patch.object(lk, "cast_output", return_value=(0, "0x" + "00" * 32, "")) as cast_output,
+    ):
+        result = lk.run_cast(
+            ["call", explicit_target, "owner", "--rpc-url", "http://127.0.0.1:9545"],
+            config,
+            capture=True,
+        )
+    assert config.get("_explicit_rpc_unscoped") is True
+    assert result.code == 0
+    executed = cast_output.call_args.args[0]
+    assert executed[:3] == ["cast", "call", explicit_target]
+    assert "--rpc-url" in executed and executed[executed.index("--rpc-url") + 1] == "http://127.0.0.1:9545"
 
 
 def test_explicit_rpc_override_matching_active_session_keeps_actor_identity():

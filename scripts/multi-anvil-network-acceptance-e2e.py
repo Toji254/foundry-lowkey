@@ -253,9 +253,22 @@ def main():
                 checks["explicit_rpc_detaches_foreign_target"] = (
                     cli_module.active_project_target(detached) is None
                 )
-                if not checks["explicit_rpc_detaches_foreign_actor"] or not checks["explicit_rpc_detaches_foreign_target"]:
+                targetless_result = cli_module.run_cast(
+                    ["call", "owner", "--rpc-url", b["rpc"]],
+                    detached,
+                    capture=True,
+                )
+                checks["explicit_rpc_requires_target_on_foreign_rpc"] = (
+                    getattr(targetless_result, "code", 0) == 2
+                    and "no target set" in str(getattr(targetless_result, "output", "")).lower()
+                )
+                if not all((
+                    checks["explicit_rpc_detaches_foreign_actor"],
+                    checks["explicit_rpc_detaches_foreign_target"],
+                    checks["explicit_rpc_requires_target_on_foreign_rpc"],
+                )):
                     raise RuntimeError(
-                        "Explicit RPC override retained a foreign session actor or project target."
+                        "Explicit RPC override retained a foreign actor/target or accepted an implicit target."
                     )
 
                 before_a = quantity(rpc(a["rpc"], "eth_getBalance", [a["actors"]["anvil-1"], "latest"]))
