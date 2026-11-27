@@ -227,7 +227,7 @@ print("LOWKEY_TRACE_TX_HASH " + match.group(0))
                      "--chain-id", "31337", "--mnemonic", ANVIL_MNEMONIC,
                      "--accounts", "10", "--balance", "10000",
                      "--gas-price", "1000000000", "--block-base-fee-per-gas", "1000000000",
-                     "--timestamp", "1700000000", "--hardfork", "cancun"],
+                     "--timestamp", "1700000000", "--hardfork", "cancun", "--steps-tracing"],
                     cwd=project, env=env, stdout=handle, stderr=subprocess.STDOUT,
                 )
             wait_anvil(process, url, log_path)
@@ -276,13 +276,26 @@ print("LOWKEY_TRACE_TX_HASH " + match.group(0))
             if json_start < 0:
                 raise AssertionError("Installed lk opcodes did not emit its OpcodeTrace JSON.")
             opcode_trace, _ = json.JSONDecoder().raw_decode(opcode_output[json_start:])
+            steps = opcode_trace.get("steps")
             if (
                 opcode_trace.get("supported") is not True
                 or opcode_trace.get("schema") != "OpcodeTrace"
-                or not opcode_trace.get("steps")
-                or opcode_trace["steps"][0].get("schema") != "OpcodeStep"
+                or not isinstance(steps, list)
+                or not steps
+                or not isinstance(steps[0], dict)
+                or steps[0].get("schema") != "OpcodeStep"
             ):
-                raise AssertionError("Installed lk opcodes did not return bounded OpcodeStep execution evidence.")
+                raise AssertionError(
+                    "Installed lk opcodes did not return bounded OpcodeStep execution evidence: "
+                    + json.dumps({
+                        "supported": opcode_trace.get("supported"),
+                        "schema": opcode_trace.get("schema"),
+                        "step_count": opcode_trace.get("step_count"),
+                        "reason": opcode_trace.get("reason"),
+                        "first_step": steps[0] if isinstance(steps, list) and steps else None,
+                    }, sort_keys=True)
+                    + "; Anvil log tail: " + log_path.read_text(encoding="utf-8", errors="replace")[-3000:]
+                )
             if payload.get("legacy_status") != "LOCAL_PROFITABLE":
                 raise AssertionError("Local token portfolio result was not LOCAL_PROFITABLE:\n" + output[-10000:])
             if payload.get("status") == "PROFITABLE":

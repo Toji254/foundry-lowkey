@@ -14,6 +14,12 @@ UNDERLYING = "0x" + "4" * 40
 NATIVE_FEED = "0x" + "5" * 40
 TOKEN_FEED = "0x" + "6" * 40
 USD_FEED = "0x" + "7" * 40
+BEACON = "0x" + "8" * 40
+BEACON_IMPL = "0x" + "9" * 40
+BEACON_IMPL_ALT = "0x" + "a" * 40
+IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+BEACON_SLOT = "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50"
+BEACON_IMPLEMENTATION = "0x5c60da1b"
 
 
 def word(value):
@@ -28,7 +34,17 @@ def round_data(answer, *, updated=9990, answered_round=5):
 
 
 class RpcFixture:
-    def __init__(self, *, stale=False, incomplete=False, source_code_mismatch=False, proxy_identity_mismatch=False, proxy_implementation=False, proxy_implementation_code_mismatch=False, changed_proxy_implementation=False, unsupported_delegatecall=False, wrong_vault_asset=False, changed_decimals=False, changed_vault_asset=False):
+    def __init__(
+        self, *, stale=False, incomplete=False, source_code_mismatch=False,
+        proxy_identity_mismatch=False, proxy_implementation=False,
+        proxy_implementation_code_mismatch=False, changed_proxy_implementation=False,
+        proxy_beacon=False, proxy_beacon_code_mismatch=False,
+        proxy_beacon_implementation_mismatch=False,
+        proxy_beacon_implementation_code_mismatch=False,
+        changed_beacon_implementation=False,
+        unsupported_delegatecall=False, wrong_vault_asset=False,
+        changed_decimals=False, changed_vault_asset=False,
+    ):
         self.stale = stale
         self.incomplete = incomplete
         self.source_code_mismatch = source_code_mismatch
@@ -36,6 +52,11 @@ class RpcFixture:
         self.proxy_implementation = proxy_implementation
         self.proxy_implementation_code_mismatch = proxy_implementation_code_mismatch
         self.changed_proxy_implementation = changed_proxy_implementation
+        self.proxy_beacon = proxy_beacon
+        self.proxy_beacon_code_mismatch = proxy_beacon_code_mismatch
+        self.proxy_beacon_implementation_mismatch = proxy_beacon_implementation_mismatch
+        self.proxy_beacon_implementation_code_mismatch = proxy_beacon_implementation_code_mismatch
+        self.changed_beacon_implementation = changed_beacon_implementation
         self.unsupported_delegatecall = unsupported_delegatecall
         self.wrong_vault_asset = wrong_vault_asset
         self.changed_decimals = changed_decimals
@@ -44,8 +65,7 @@ class RpcFixture:
     def __call__(self, url, method, params, timeout=30):
         if method == "eth_getStorageAt":
             address, slot, block_tag = params
-            implementation_slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
-            if address.lower() == TOKEN and slot.lower() == implementation_slot:
+            if address.lower() == TOKEN and slot.lower() == IMPLEMENTATION_SLOT:
                 block = int(block_tag, 16)
                 if self.proxy_identity_mismatch and url == "source":
                     return word(int("8" * 40, 16))
@@ -56,6 +76,8 @@ class RpcFixture:
                     if self.changed_proxy_implementation and block > 100:
                         implementation = 9
                     return word(int(str(implementation) * 40, 16))
+            if address.lower() == TOKEN and slot.lower() == BEACON_SLOT and self.proxy_beacon:
+                return word(int(BEACON[2:], 16))
             return word(0)
         if method == "eth_getCode":
             address = params[0].lower()
@@ -63,6 +85,14 @@ class RpcFixture:
                 return "0x60026002"
             if self.unsupported_delegatecall and address == TOKEN:
                 return "0x6000f4"
+            if self.proxy_beacon and address == BEACON:
+                if url == "source" and self.proxy_beacon_code_mismatch:
+                    return "0x60026002"
+                return "0x60016001"
+            if self.proxy_beacon and address in {BEACON_IMPL, BEACON_IMPL_ALT}:
+                if url == "source" and self.proxy_beacon_implementation_code_mismatch and address == BEACON_IMPL:
+                    return "0x60026002"
+                return "0x60016001"
             if url == "source" and self.proxy_implementation_code_mismatch and address == "0x" + "8" * 40:
                 return "0x60026002"
             return "0x60016001"
@@ -71,6 +101,13 @@ class RpcFixture:
             target = tx["to"].lower()
             data = tx["data"].lower()
             block = int(block_tag, 16)
+            if data == BEACON_IMPLEMENTATION and target == BEACON and self.proxy_beacon:
+                implementation = BEACON_IMPL
+                if url == "source" and self.proxy_beacon_implementation_mismatch:
+                    implementation = BEACON_IMPL_ALT
+                if self.changed_beacon_implementation and block > 100:
+                    implementation = BEACON_IMPL_ALT
+                return "0x" + "0" * 24 + implementation[2:]
             if data == "0x313ce567":
                 if target == TOKEN:
                     return word(7 if self.changed_decimals and block > 100 else 6)
@@ -251,6 +288,54 @@ class TokenEconomicsTests(unittest.TestCase):
         with self.assertRaisesRegex(TokenEconomicsError, "implementation identity changed"):
             measure_token_portfolio(
                 RpcFixture(proxy_implementation=True, changed_proxy_implementation=True),
+                local_url="local", source_url=None, manifest=manifest(),
+                accounts=[ACTOR], before_block=100, after_block=101,
+                block_timestamp=10_000,
+            )
+
+    def test_eip1967_beacon_proxy_identity_is_source_verified_at_both_blocks(self):
+        result = measure_token_portfolio(
+            RpcFixture(proxy_beacon=True), local_url="local", source_url="source",
+            manifest=manifest(), accounts=[ACTOR], before_block=100,
+            after_block=101, block_timestamp=10_000,
+        )
+        token = result["tokens"][0]
+        self.assertTrue(result["source_state_verified"])
+        self.assertNotEqual(token["token_code_sha256"], token["token_identity_sha256"])
+        self.assertEqual(token["token_code_sha256"], token["token_code_sha256"])
+        self.assertEqual(token["share_or_token_delta"], 1_500_000)
+
+    def test_beacon_runtime_code_mismatch_is_refused(self):
+        with self.assertRaisesRegex(TokenEconomicsError, "beacon bytecode differs"):
+            measure_token_portfolio(
+                RpcFixture(proxy_beacon=True, proxy_beacon_code_mismatch=True),
+                local_url="local", source_url="source", manifest=manifest(),
+                accounts=[ACTOR], before_block=100, after_block=101,
+                block_timestamp=10_000,
+            )
+
+    def test_beacon_implementation_address_mismatch_is_refused(self):
+        with self.assertRaisesRegex(TokenEconomicsError, "beacon implementation differs"):
+            measure_token_portfolio(
+                RpcFixture(proxy_beacon=True, proxy_beacon_implementation_mismatch=True),
+                local_url="local", source_url="source", manifest=manifest(),
+                accounts=[ACTOR], before_block=100, after_block=101,
+                block_timestamp=10_000,
+            )
+
+    def test_beacon_implementation_bytecode_mismatch_is_refused(self):
+        with self.assertRaisesRegex(TokenEconomicsError, "beacon implementation bytecode differs"):
+            measure_token_portfolio(
+                RpcFixture(proxy_beacon=True, proxy_beacon_implementation_code_mismatch=True),
+                local_url="local", source_url="source", manifest=manifest(),
+                accounts=[ACTOR], before_block=100, after_block=101,
+                block_timestamp=10_000,
+            )
+
+    def test_beacon_implementation_change_during_transaction_is_refused(self):
+        with self.assertRaisesRegex(TokenEconomicsError, "proxy implementation identity changed"):
+            measure_token_portfolio(
+                RpcFixture(proxy_beacon=True, changed_beacon_implementation=True),
                 local_url="local", source_url=None, manifest=manifest(),
                 accounts=[ACTOR], before_block=100, after_block=101,
                 block_timestamp=10_000,

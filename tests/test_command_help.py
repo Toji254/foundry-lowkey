@@ -1923,7 +1923,10 @@ class CommandHelpTests(unittest.TestCase):
         rpc_url = "http://127.0.0.1:8545"
         with (
             patch.object(lk, "effective_rpc", return_value=rpc_url) as resolve_rpc,
-            patch.object(lk, "_rpc_json_response", return_value={"result": {"structLogs": []}}),
+            patch.object(
+                lk, "_rpc_json_response",
+                return_value={"result": {"structLogs": [{"pc": 0, "op": "STOP", "depth": 1}]}},
+            ),
             patch.object(lk, "rpc_json", return_value=None),
             patch.object(
                 lk.opcode_intelligence,
@@ -1938,6 +1941,21 @@ class CommandHelpTests(unittest.TestCase):
         self.assertEqual(code, 0)
         resolve_rpc.assert_called_once()
         self.assertEqual(resolve_rpc.call_args.kwargs["explicit_rpc"], rpc_url)
+
+    def test_opcodes_transaction_trace_rejects_empty_struct_logs(self):
+        tx_hash = "0x" + "a" * 64
+        rpc_url = "http://127.0.0.1:8545"
+        with (
+            patch.object(lk, "effective_rpc", return_value=rpc_url),
+            patch.object(lk, "_rpc_json_response", return_value={"result": {"structLogs": []}}),
+            patch.object(lk, "fail", return_value=2) as failure,
+        ):
+            code = lk.run_opcodes(
+                {}, ["--tx", tx_hash, "--fork", "cancun", "--rpc-url", rpc_url]
+            )
+        self.assertEqual(code, 2)
+        failure.assert_called_once()
+        self.assertIn("--steps-tracing", failure.call_args.args[0])
 
     def test_opcodes_static_inspection_uses_the_opcode_registry(self):
         registry = SimpleNamespace(run_cli=lambda args: 23)

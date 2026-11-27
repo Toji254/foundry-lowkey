@@ -6265,6 +6265,11 @@ def run_opcodes(config, args=None):
     struct_logs = trace_result.get("structLogs")
     if not isinstance(struct_logs, list):
         return fail("RPC trace did not include a structLogs array; this backend may use an unsupported tracer.")
+    if not struct_logs:
+        return fail(
+            "RPC returned no opcode steps. For Anvil, restart the node with --steps-tracing; "
+            "other RPC providers must expose non-empty debug_traceTransaction structLogs."
+        )
 
     tx = rpc_json(rpc, "eth_getTransactionByHash", [tx_hash])
     receipt = rpc_json(rpc, "eth_getTransactionReceipt", [tx_hash])
