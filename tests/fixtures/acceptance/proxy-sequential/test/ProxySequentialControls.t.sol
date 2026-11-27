@@ -58,7 +58,7 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
         require(markerOk && markerData.length == 32 && abi.decode(markerData, (bytes32)) == keccak256("LOWKEY_PROXY_SEQUENTIAL_REPLACEMENT"), "UUPS_DELEGATE_ROUTE_NOT_CONFIRMED");
     }
 
-    function test_transparent_admin_non_admin_selector_routing() external view {
+    function test_transparent_admin_non_admin_selector_routing() external {
         address owner = vm.envAddress("P0_OWNER");
         PairedProxyAdmin admin = PairedProxyAdmin(vm.envAddress("P0_PROXY_ADMIN"));
         LowkeyTransparentProxy proxy = LowkeyTransparentProxy(payable(vm.envAddress("P0_TRANSPARENT_PROXY")));
