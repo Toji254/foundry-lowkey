@@ -444,3 +444,40 @@ def test_trace_uses_one_explicit_rpc_for_cast_and_metadata_reads():
     assert cast.call_args.args[0] == ["run", tx_hash, "--rpc-url", endpoint]
     rpc.assert_called_once_with(endpoint, "eth_getTransactionByHash", [tx_hash])
 
+def test_detect_anvil_rpc_reads_chain_id_from_the_same_selected_endpoint():
+    endpoint = "http://127.0.0.1:18551"
+    account = "0x" + "11" * 20
+    with patch.object(
+        lk,
+        "rpc_json",
+        side_effect=["anvil/v1.8.1", [account], "0x7a69"],
+    ) as rpc:
+        info = lk.detect_anvil_rpc(endpoint)
+
+    assert info == {
+        "url": endpoint,
+        "client": "anvil/v1.8.1",
+        "accounts": [account],
+        "chain_id": 31337,
+    }
+    assert rpc.call_args_list == [
+        call(endpoint, "web3_clientVersion", []),
+        call(endpoint, "eth_accounts", []),
+        call(endpoint, "eth_chainId", []),
+    ]
+
+
+def test_detect_anvil_rpc_keeps_unavailable_chain_id_unverified():
+    endpoint = "http://127.0.0.1:18552"
+    account = "0x" + "22" * 20
+    with patch.object(
+        lk,
+        "rpc_json",
+        side_effect=["anvil/v1.8.1", [account], None],
+    ):
+        info = lk.detect_anvil_rpc(endpoint)
+
+    assert info is not None
+    assert info["url"] == endpoint
+    assert info["chain_id"] is None
+

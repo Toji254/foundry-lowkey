@@ -4397,11 +4397,12 @@ contract Pool {
                 with patch.object(
                     lk,
                     "rpc_json",
-                    side_effect=["anvil/v1.8.1", [address]],
+                    side_effect=["anvil/v1.8.1", [address], "0x7a69"],
                 ):
                     info = lk.detect_anvil_rpc(None)
         self.assertEqual(info["url"], "http://127.0.0.1:8545")
         self.assertEqual(info["accounts"], [address])
+        self.assertEqual(info["chain_id"], 31337)
 
     def test_effective_rpc_auto_detects_anvil(self):
         address="0x"+"1"*40

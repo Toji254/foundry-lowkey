@@ -705,7 +705,24 @@ def detect_anvil_rpc(preferred=None):
         if not client or "anvil" not in str(client).lower(): continue
         accounts=rpc_json(url,"eth_accounts",[])
         if not isinstance(accounts,list): accounts=[]
-        return {"url":url,"client":str(client),"accounts":[x for x in accounts if is_address(x)]}
+        raw_chain_id=rpc_json(url,"eth_chainId",[])
+        try:
+            if isinstance(raw_chain_id, bool) or raw_chain_id is None:
+                chain_id=None
+            elif isinstance(raw_chain_id, str) and raw_chain_id.lower().startswith("0x"):
+                chain_id=int(raw_chain_id,16)
+            else:
+                chain_id=int(raw_chain_id)
+            if chain_id is not None and chain_id < 1:
+                chain_id=None
+        except (TypeError, ValueError):
+            chain_id=None
+        return {
+            "url":url,
+            "client":str(client),
+            "accounts":[x for x in accounts if is_address(x)],
+            "chain_id":chain_id,
+        }
     return None
 
 
