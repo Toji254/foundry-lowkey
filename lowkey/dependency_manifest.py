@@ -144,7 +144,7 @@ def load_dependency_manifest(project_root: str | Path) -> DependencyManifest:
     if network_identity is not None and not _valid_network_identity(network_identity):
         return _blocked(
             relative,
-            "Manifest network_identity must include project_id, network_session_id, positive chain_id and a 32-byte genesis_hash.",
+            "Manifest network_identity must include project_id, network_session_id, positive chain_id, a 32-byte genesis_hash and a 32-byte identity_block_hash.",
             schema=MANIFEST_SCHEMA, digest=digest,
         )
     raw_dependencies = payload.get("dependencies")

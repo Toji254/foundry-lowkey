@@ -3156,7 +3156,12 @@ class LowkeyCastTests(unittest.TestCase):
                 "abi_paths": {},
             }
 
-            with patch.object(lk, "auto_abi_path", return_value=None):
+            with patch.object(
+                lk, "anvil_rpc_info",
+                return_value={"url": "http://127.0.0.1:8545", "chain_id": 31337},
+            ), patch.dict(lk.os.environ, {"LOWKEY_NONINTERACTIVE_DEPLOY": "1"}), patch.object(
+                lk, "auto_abi_path", return_value=None
+            ):
                 with patch.object(
                     lk,
                     "derive_default_anvil_key",
@@ -3186,6 +3191,7 @@ class LowkeyCastTests(unittest.TestCase):
         "anvil_rpc_info",
         return_value={
             "url": "http://127.0.0.1:8545",
+            "chain_id": 31337,
             "accounts": [
                 "0x" + "2" * 40,
                 "0x" + "3" * 40,
@@ -3227,7 +3233,9 @@ class LowkeyCastTests(unittest.TestCase):
                 "targets": {},
                 "abi_paths": {},
             }
-            with patch.object(lk.audit_context, "foundry_project_root", return_value=root),                  patch.object(lk, "auto_abi_path", return_value=None):
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk, "auto_abi_path", return_value=None), \
+                 patch.dict(lk.os.environ, {"LOWKEY_NONINTERACTIVE_DEPLOY": "1"}):
                 result = lk.run_project_lab_script(
                     config,
                     root,
@@ -8405,7 +8413,9 @@ def withdraw(amount: uint256):
                 }
                 cfg["actor"] = "lab-deployer"
 
-            with patch.object(lk, "_ensure_lab_deployer", side_effect=ensure_deployer), \
+            with patch.object(lk, "anvil_rpc_info", return_value={"url": "http://127.0.0.1:8545", "chain_id": 31337}), \
+                 patch.dict(lk.os.environ, {"LOWKEY_NONINTERACTIVE_DEPLOY": "1"}), \
+                 patch.object(lk, "_ensure_lab_deployer", side_effect=ensure_deployer), \
                  patch.object(lk, "run_foundry", return_value=lk.CommandResult(f"LOWKEY_TARGET {target}", 0)), \
                  patch.object(lk, "_lab_script_environment", return_value=({}, [])), \
                  patch.object(lk, "_validate_project_lab_target", return_value=("Escrow", "/tmp/Escrow.json", None)), \
