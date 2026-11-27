@@ -103,14 +103,19 @@ def load_dependency_manifest(project_root: str | Path) -> DependencyManifest:
     relative = MANIFEST_RELATIVE_PATH
     path = root / ".audit" / "dependencies.json"
     try:
-        resolved_path = path.resolve(strict=False)
-        if not resolved_path.is_relative_to(root):
-            return _blocked(relative, "Dependency manifest resolves outside the selected project root.")
-        if not resolved_path.exists():
+        # Inspect the directory entry before resolving it. Path.exists() follows
+        # symlinks and reports False for a self-referential link, which would
+        # incorrectly downgrade an unsafe manifest to NOT_PRESENT.
+        try:
+            path.lstat()
+        except FileNotFoundError:
             return DependencyManifest(
                 status="NOT_PRESENT", path=relative, schema=None, sha256=None,
                 network_identity=None, dependencies=(), warnings=(),
             )
+        resolved_path = path.resolve(strict=True)
+        if not resolved_path.is_relative_to(root):
+            return _blocked(relative, "Dependency manifest resolves outside the selected project root.")
         if not resolved_path.is_file():
             return _blocked(relative, "Dependency manifest path is not a regular file.")
         if resolved_path.stat().st_size > MAX_MANIFEST_BYTES:
