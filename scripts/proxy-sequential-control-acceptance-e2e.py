@@ -124,6 +124,173 @@ def make_manifest(target: str, function_signature: str, actor: str, proxy: str, 
     }
 
 
+def make_transparent_hybrid_manifest(
+    forge: str,
+    fork_block: int,
+    proxy: str,
+    actor: str,
+    secure_implementation: str,
+    vulnerable_implementation: str,
+) -> dict[str, Any]:
+    """Freeze a same-proxy/same-actor UUPS second-surface experiment.
+
+    The only declared scenario variable is the proxy implementation slot:
+    secure UUPS logic rejects the non-admin actor, while vulnerable UUPS logic
+    allows the same upgradeTo(address) calldata through the Transparent proxy.
+    """
+    selector = "0x3659cfe6"  # upgradeTo(address)
+    argv = [
+        forge, "test",
+        "--match-path", "test/ProxySequentialControls.t.sol",
+        "--match-test", "test_paired_transparent_uups_second_surface",
+        "--fork-url", RPC,
+        "--fork-block-number", str(fork_block),
+        "-vv",
+    ]
+    return {
+        "trace_backend": "forge-state-diff",
+        "paired_forge_experiment": True,
+        "target_authenticity": "fixture",
+        "family": "proxy",
+        "proxy_family": "TRANSPARENT",
+        "non_economic": True,
+        "expected_chain_id": 31337,
+        "expected_fork_block": fork_block,
+        "target_address": proxy,
+        "function": "upgradeTo(address)",
+        "same_calls_id": "p0-transparent-uups-second-surface-v1",
+        "metric_name": "successful_non_admin_uups_upgrade_calls",
+        "prestate_addresses": [proxy.lower(), actor.lower()],
+        "prestate_slots": [
+            {"address": proxy, "slot": "0x0"},
+            {"address": proxy, "slot": IMPLEMENTATION_SLOT},
+            {"address": actor, "slot": "0x0"},
+        ],
+        "metric_addresses": [actor],
+        "metric_storage": {
+            "address": actor,
+            "slot": "0x0",
+            "kind": "uint256_delta",
+            "description": "ProxyUpgradeActor.successfulCalls; increments only when the non-admin UUPS call through the Transparent fallback succeeds.",
+        },
+        "scenario_parameters": [{
+            "name": "transparent_implementation",
+            "address": proxy,
+            "slot": IMPLEMENTATION_SLOT,
+            "control_value": address_word(secure_implementation),
+            "attack_value": address_word(vulnerable_implementation),
+            "description": "The sole declared scenario difference: the owner-installed UUPS implementation behind the same Transparent proxy.",
+        }],
+        "trace_expectations": [{
+            "address": proxy,
+            "selector": selector,
+            "control_min_calls": 1,
+            "control_max_calls": 1,
+            "attack_min_calls": 1,
+            "attack_max_calls": 1,
+            "description": "Both scenarios send identical upgradeTo(address) calldata through the same Transparent proxy from the same ProxyUpgradeActor; only the delegated UUPS implementation differs.",
+        }],
+        "evidence_requirements": {"call_tree": "exact", "calldata": "exact", "storage": "derived"},
+        "require_trace_storage": True,
+        "control": {
+            "harness": "test/ProxySequentialControls.t.sol",
+            "support_files": ["src/ProxySequentialFixtures.sol", "src/LowkeyForgeStateDiffRecorder.sol"],
+            "state_diff_file": ".audit/godmode/control-transparent-hybrid-state-diff.json",
+            "argv": argv,
+            "semantic_check_argv": argv,
+            "semantic_check_test": "test_paired_transparent_uups_second_surface",
+        },
+        "attack": {
+            "harness": "test/ProxySequentialControls.t.sol",
+            "support_files": ["src/ProxySequentialFixtures.sol", "src/LowkeyForgeStateDiffRecorder.sol"],
+            "state_diff_file": ".audit/godmode/attack-transparent-hybrid-state-diff.json",
+            "argv": argv,
+            "semantic_check_argv": argv,
+            "semantic_check_test": "test_paired_transparent_uups_second_surface",
+        },
+        "fidelity_sources": [
+            "test/ProxySequentialControls.t.sol",
+            "src/ProxySequentialFixtures.sol",
+            "src/LowkeyForgeStateDiffRecorder.sol",
+        ],
+        "notes": (
+            "Fixture-only Transparent proxy hybrid experiment. The immutable ProxyAdmin address "
+            "is denied implementation-facing selectors, an ordinary caller is delegated, and the "
+            "paired attack checks whether a UUPS upgradeTo(address) route remains reachable through "
+            "the Transparent fallback. Fixture and caller simulation cap the result at SIMULATED_BREAK."
+        ),
+    }
+
+
+def run_transparent_hybrid_campaign(
+    lk: str,
+    root: Path,
+    env: dict[str, str],
+    manifest_name: str,
+    evidence_root: Path,
+) -> dict[str, Any]:
+    campaign_name = "transparent-hybrid"
+    freeze_path = f".audit/godmode/{campaign_name}.freeze.json"
+    common = [
+        lk, "proxy", "campaign",
+        "--manifest", manifest_name,
+        "--root", str(root),
+        "--rpc-url", RPC,
+        "--freeze-file", freeze_path,
+    ]
+    run(common + ["--freeze"], root, env, timeout=360)
+    run(common + ["--validate"], root, env, timeout=360)
+
+    report_path = f".audit/godmode/{campaign_name}-control.json"
+    run(common + ["--output", report_path, "--non-economic"], root, env, timeout=900)
+    report_file = root / report_path
+    if not report_file.is_file():
+        raise AssertionError("Lowkey proxy campaign did not write the Transparent hybrid report.")
+    report = json.loads(report_file.read_text(encoding="utf-8"))
+    if report.get("status") != "SIMULATED_BREAK" or report.get("legacy_status") != "SIMULATED_BREAK":
+        raise AssertionError(f"Transparent hybrid fixture must remain SIMULATED_BREAK: {report}")
+    if report.get("target_authenticity") != "fixture" or report.get("control_delta") != 1:
+        raise AssertionError(f"Transparent hybrid campaign lacks fixture fidelity or the expected metric delta: {report}")
+    runs = report.get("runs") or {}
+    control, attack = runs.get("control") or {}, runs.get("attack") or {}
+    if control.get("trace_error") or attack.get("trace_error"):
+        raise AssertionError(f"Transparent hybrid campaign has a trace error: {runs}")
+    if control.get("metric") != 0 or attack.get("metric") != 1:
+        raise AssertionError(f"Transparent hybrid metrics must be secure=0/vulnerable=1: {runs}")
+    if control.get("execution_verified") is not True or attack.get("execution_verified") is not True:
+        raise AssertionError(f"Transparent hybrid Forge executions were not independently verified: {runs}")
+    for field in (
+        "state_diff_pair_verified",
+        "same_entry_call_verified",
+        "same_prestate_verified",
+        "same_chain_verified",
+        "same_block_verified",
+        "same_fork_anchor_verified",
+        "trace_delta_verified",
+        "evidence_requirements_verified",
+        "semantic_invariant_verified",
+    ):
+        if report.get(field) is not True:
+            raise AssertionError(f"Transparent hybrid pair did not verify {field}: {report}")
+    proof_axes = report.get("proof_axes") or {}
+    if proof_axes.get("fidelity") not in {"synthetic_state", "fixture"}:
+        raise AssertionError(f"Transparent hybrid fidelity was not simulation-specific: {proof_axes}")
+
+    destination = evidence_root / campaign_name
+    destination.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(root / manifest_name, destination / "control-manifest.json")
+    shutil.copy2(report_file, destination / "control-report.json")
+    freeze_file = root / freeze_path
+    if freeze_file.is_file():
+        shutil.copy2(freeze_file, destination / "freeze.json")
+    for scenario in ("control", "attack"):
+        raw_path = root / ".audit" / "godmode" / f"{scenario}-transparent-hybrid-state-diff.json"
+        if not raw_path.is_file():
+            raise AssertionError(f"Transparent hybrid {scenario} state-diff is missing: {raw_path}")
+        shutil.copy2(raw_path, destination / f"{scenario}-state-diff.json")
+    return report
+
+
 def check_pair_result(root: Path, report_prefix: str, evidence_dir: Path) -> dict[str, Any]:
     control_report = root / ".audit" / "godmode" / "control.json"
     if not control_report.is_file():
@@ -282,7 +449,7 @@ def main() -> int:
         uups_proxy = deploy(forge, root, env, "LowkeyUUPSProxy", vulnerable_impl)
         actor = deploy(forge, root, env, "ProxyUpgradeActor")
         admin = deploy(forge, root, env, "PairedProxyAdmin", OWNER)
-        transparent_proxy = deploy(forge, root, env, "LowkeyTransparentProxy", secure_impl, admin)
+        transparent_proxy = deploy(forge, root, env, "LowkeyTransparentProxy", secure_impl, admin, OWNER)
         fork_block = int(run([cast, "block-number", "--rpc-url", RPC], root, env).stdout.strip(), 0)
 
         env.update({
@@ -328,6 +495,44 @@ def main() -> int:
             transparent_proxy, cast, initial_proxy_slot, evidence_root,
         )
 
+        # Independently exercise the Transparent selector split:
+        # the immutable ProxyAdmin cannot call implementation getters or the
+        # implementation's UUPS selector, while an ordinary caller is delegated.
+        dispatch_result = run([
+            forge, "test", "--match-path", "test/ProxySequentialControls.t.sol",
+            "--match-test", "test_transparent_admin_non_admin_selector_routing",
+            "--fork-url", RPC, "--fork-block-number", str(fork_block), "-vv",
+        ], root, env, timeout=600)
+        if "[PASS] test_transparent_admin_non_admin_selector_routing()" not in dispatch_result.stdout:
+            raise AssertionError(
+                "Transparent admin/non-admin selector routing test did not execute and pass: "
+                + dispatch_result.stdout[-12000:]
+            )
+
+        hybrid_manifest = make_transparent_hybrid_manifest(
+            forge=forge,
+            fork_block=fork_block,
+            proxy=transparent_proxy,
+            actor=actor,
+            secure_implementation=secure_impl,
+            vulnerable_implementation=vulnerable_impl,
+        )
+        hybrid_manifest_name = "transparent-hybrid-control.json"
+        (root / hybrid_manifest_name).write_text(
+            json.dumps(hybrid_manifest, indent=2, sort_keys=True) + "\\n",
+            encoding="utf-8",
+        )
+        hybrid_initial_slot = rpc_storage(cast, root, env, transparent_proxy, IMPLEMENTATION_SLOT)
+        if hybrid_initial_slot != address_word(secure_impl):
+            raise AssertionError("Transparent proxy did not begin with the secure UUPS-compatible implementation.")
+        hybrid_case = run_transparent_hybrid_campaign(
+            lk, root, env, hybrid_manifest_name, evidence_root,
+        )
+        # Forge campaigns execute on a pinned fork; the source Anvil must retain
+        # its original secure implementation after both paired scenarios.
+        if rpc_storage(cast, root, env, transparent_proxy, IMPLEMENTATION_SLOT) != address_word(secure_impl):
+            raise AssertionError("Transparent hybrid campaign mutated the source Anvil implementation slot.")
+
         report = {
             "gate": "Lowkey independent P0 UUPS and ProxyAdmin sequential-control acceptance",
             "status": "PASS",
@@ -336,16 +541,26 @@ def main() -> int:
             "chain_id": chain_id,
             "fork_block": fork_block,
             "cases": [uups_case, admin_case],
+            "transparent_dispatch": {
+                "status": "PASS",
+                "test": "test_transparent_admin_non_admin_selector_routing",
+                "evidence": (
+                    "The immutable ProxyAdmin caller is rejected for owner() and upgradeTo(address), "
+                    "while an ordinary caller reaches the delegated owner() getter."
+                ),
+            },
+            "transparent_uups_second_surface": hybrid_case,
             "classification_policy": (
-                "The vulnerable and secure controls execute against the same proxy/admin target, same actor entrypoint "
-                "and same encoded upgrade call from equivalent fork snapshots. Because the target is a fixture and "
-                "the harness uses vm.prank plus a synthetic replacement, results remain SIMULATED_BREAK with "
-                "confirmation_eligible=false; this is not real-world exploit confirmation."
+                "UUPS, ProxyAdmin and Transparent hybrid results are fixture-only paired experiments. "
+                "The secure and vulnerable paths use equivalent fork snapshots, the same proxy, actor and "
+                "encoded upgrade calldata where paired. Transparent routing and a non-admin UUPS second "
+                "upgrade surface are demonstrated only for this fixture. Results remain SIMULATED_BREAK "
+                "with confirmation_eligible=false; this is not production exploit confirmation."
             ),
         }
         (evidence_root / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(json.dumps(report, indent=2, sort_keys=True))
-        print("PASS: paired UUPS and ProxyAdmin secure controls independently rejected the matching unauthorized calls.")
+        print("PASS: UUPS, ProxyAdmin, Transparent admin routing and UUPS-behind-Transparent paired controls verified.")
         run([lk, "target", "reset"], root, env)
     return 0
 
