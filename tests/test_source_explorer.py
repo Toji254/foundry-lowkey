@@ -514,6 +514,171 @@ class ProtocolExplorerTests(unittest.TestCase):
         self.assertFalse(any(item.get("kind") == "runtime_address" for item in model["nodes"]))
         self.assertFalse(any(edge.get("kind") == "RUNTIME_CALL_OBSERVED" for edge in model["edges"]))
 
+    def test_c3_virtual_dispatch_is_a_context_candidate_and_super_calls_are_not_rewritten(self):
+        source = """
+        pragma solidity ^0.8.20;
+        contract DispatchBase {
+            function run(uint256 value) public view virtual returns (uint256) {
+                return value;
+            }
+        }
+        contract DispatchMiddle is DispatchBase {
+            function run(uint256 value) public view virtual override returns (uint256) {
+                return value + 1;
+            }
+        }
+        contract DispatchFinal is DispatchMiddle {
+            function read(uint256 value) external view returns (uint256) {
+                return run(value);
+            }
+            function readViaSuper(uint256 value) external view returns (uint256) {
+                return super.run(value);
+            }
+        }
+        """
+        path = self.root / "src" / "Dispatch.sol"
+        path.write_text(source, encoding="utf-8")
+        index = build_source_index(self.root, use_cache=False)
+
+        raw_nodes = {item["id"]: item for item in index["nodes"]}
+        caller = next(item for item in raw_nodes.values() if item.get("qualified_name") == "DispatchFinal.read(uint256)")
+        super_caller = next(item for item in raw_nodes.values() if item.get("qualified_name") == "DispatchFinal.readViaSuper(uint256)")
+        base = next(item for item in raw_nodes.values() if item.get("qualified_name") == "DispatchBase.run(uint256)")
+        middle = next(item for item in raw_nodes.values() if item.get("qualified_name") == "DispatchMiddle.run(uint256)")
+        virtual_call = next(
+            edge for edge in index["edges"]
+            if edge.get("kind") == "CALLS" and edge.get("from") == caller["id"]
+        )
+        super_call = next(
+            edge for edge in index["edges"]
+            if edge.get("kind") == "CALLS" and edge.get("from") == super_caller["id"]
+        )
+
+        # Model a conservative lexical target and a distinct compiler call
+        # reference so the adapter must use the caller's actual C3 ordering.
+        virtual_call["to"] = base["id"]
+        virtual_call["resolution"] = "INFERRED"
+        virtual_call["dispatch"] = "VIRTUAL"
+        virtual_call["implementation_resolution"] = "UNRESOLVED"
+        virtual_call["detail"] = "Virtual implementation depends on the runtime type."
+        super_call["to"] = middle["id"]
+        super_call["dispatch"] = "SUPER"
+        super_call["implementation_resolution"] = "DIRECT"
+
+        contract_ids = {
+            "DispatchBase": "ast-contract:DispatchBase",
+            "DispatchMiddle": "ast-contract:DispatchMiddle",
+            "DispatchFinal": "ast-contract:DispatchFinal",
+        }
+        expected_c3 = {
+            "DispatchBase": ["DispatchBase"],
+            "DispatchMiddle": ["DispatchMiddle", "DispatchBase"],
+            "DispatchFinal": ["DispatchFinal", "DispatchMiddle", "DispatchBase"],
+        }
+        compiler_nodes = []
+        for name, linearized in expected_c3.items():
+            compiler_nodes.append({
+                "id": contract_ids[name],
+                "kind": "contract",
+                "name": name,
+                "source": "src/Dispatch.sol",
+                "abstract": False,
+                "linearized_base_ids": list(range(len(linearized))),
+                "linearized_base_contracts": [contract_ids[item] for item in linearized],
+            })
+
+        function_specs = [
+            ("base-run", 10, "run", "run(uint256)", "DispatchBase", True, False, [], True),
+            ("middle-run", 11, "run", "run(uint256)", "DispatchMiddle", True, True, [10], True),
+            ("final-read", 12, "read", "read(uint256)", "DispatchFinal", False, False, [], True),
+            ("final-super-read", 13, "readViaSuper", "readViaSuper(uint256)", "DispatchFinal", False, False, [], True),
+        ]
+        compiler_function_ids = {}
+        for suffix, compiler_id, name, signature, owner, is_virtual, has_override, bases, implemented in function_specs:
+            function_start = source.index("function " + name, source.index("contract " + owner))
+            compiler_id_value = "ast-function:" + suffix
+            compiler_function_ids[suffix] = compiler_id_value
+            compiler_nodes.append({
+                "id": compiler_id_value,
+                "compiler_id": compiler_id,
+                "kind": "function",
+                "name": name,
+                "signature": signature,
+                "contract": contract_ids[owner],
+                "source": "src/Dispatch.sol",
+                "source_span": str(len(source[:function_start].encode("utf-8"))) + ":40:0",
+                "is_virtual": is_virtual,
+                "has_override_specifier": has_override,
+                "base_function_ids": bases,
+                "implemented": implemented,
+            })
+
+        virtual_call_offset = source.index("run(value)", source.index("function read("))
+        super_call_offset = source.index("super.run(value)")
+        compiler_graph = {
+            "status": "AST_OBSERVED",
+            "accepted_builds": 1,
+            "compiler_versions": ["0.8.20"],
+            "limitations": [],
+            "nodes": compiler_nodes,
+            "edges": [
+                {
+                    "kind": "compiler_override_candidate",
+                    "source": compiler_function_ids["middle-run"],
+                    "target": compiler_function_ids["base-run"],
+                    "source_span": str(len(source[:source.index("function run", source.index("contract DispatchMiddle"))].encode("utf-8"))) + ":40:0",
+                    "certainty": "compiler_declared_base_function",
+                },
+                {
+                    "kind": "compiler_call_candidate",
+                    "source": compiler_function_ids["final-read"],
+                    "target": compiler_function_ids["base-run"],
+                    "source_span": str(len(source[:virtual_call_offset].encode("utf-8"))) + ":10:0",
+                },
+                {
+                    "kind": "compiler_call_candidate",
+                    "source": compiler_function_ids["final-super-read"],
+                    "target": compiler_function_ids["middle-run"],
+                    "source_span": str(len(source[:super_call_offset].encode("utf-8"))) + ":20:0",
+                },
+            ],
+        }
+        with unittest.mock.patch.object(protocol_graph, "compiler_ast_graph", return_value=compiler_graph):
+            model = build_explorer_model(index, root=self.root)
+
+        ui = {
+            item.get("qualified_name"): item
+            for item in model["nodes"] if item.get("type") == "function"
+        }
+        dispatch_edges = [
+            edge for edge in model["edges"]
+            if edge.get("kind") == "VIRTUAL_DISPATCH_CANDIDATE"
+        ]
+        self.assertEqual(len(dispatch_edges), 1)
+        dispatch = dispatch_edges[0]
+        self.assertEqual(dispatch["source"], ui["DispatchFinal.read(uint256)"]["id"])
+        self.assertEqual(dispatch["target"], ui["DispatchMiddle.run(uint256)"]["id"])
+        self.assertEqual(dispatch["evidence"], "COMPILER_AST")
+        self.assertEqual(dispatch["resolution"], "C3_CONTEXT_CANDIDATE")
+        self.assertEqual(dispatch["implementation_resolution"], "C3_CONTEXT_CANDIDATE")
+        self.assertEqual(dispatch["details"]["runtime_dispatch_status"], "UNRESOLVED")
+
+        # The original source relationship must not be overwritten with the
+        # candidate. A super call must remain on its own compiler-resolved path.
+        original = next(
+            edge for edge in model["edges"]
+            if edge.get("kind") == "CALLS"
+            and edge.get("source") == ui["DispatchFinal.read(uint256)"]["id"]
+        )
+        self.assertEqual(original["target"], ui["DispatchBase.run(uint256)"]["id"])
+        self.assertEqual(original["implementation_resolution"], "UNRESOLVED")
+        self.assertTrue(any(
+            edge.get("kind") == "CALLS"
+            and edge.get("source") == ui["DispatchFinal.readViaSuper(uint256)"]["id"]
+            and edge.get("target") == ui["DispatchMiddle.run(uint256)"]["id"]
+            for edge in model["edges"]
+        ))
+
     def test_uploaded_files_keep_project_paths_and_reject_traversal(self):
         destination = self.root / "uploaded"
         write_uploaded_files(
