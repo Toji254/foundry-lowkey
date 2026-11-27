@@ -7,6 +7,8 @@ instructions. Missing backend fields remain unavailable rather than zero.
 from __future__ import annotations
 
 import re
+import argparse
+import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -598,3 +600,41 @@ def normalize_struct_logs(
             "or frame-attribution data remains unavailable; this schema is separate from call-frame TraceEvent v2."
         ),
     }
+
+
+def run_cli(args: Sequence[str]) -> int:
+    """Explicit, read-only opcode registry and bytecode inspection command."""
+    parser = argparse.ArgumentParser(
+        prog="lk opcodes",
+        description="Inspect EVM opcode metadata or decode supplied runtime bytecode.",
+    )
+    parser.add_argument("--fork", default="osaka", help="Fork profile (default: osaka).")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--spec", metavar="OPCODE", help="Describe one opcode by mnemonic or byte.")
+    mode.add_argument("--bytecode", metavar="HEX", help="Decode 0x-prefixed bytecode.")
+    parser.add_argument("--learn", action="store_true", help="Include a short educational interpretation.")
+    try:
+        options = parser.parse_args(list(args))
+        if options.spec is not None:
+            result = opcode_spec(options.spec, fork=options.fork)
+            if options.learn:
+                result["explanation"] = (
+                    f"{result['mnemonic'] or 'Unknown opcode'}: consumes "
+                    f"{result['pops'] if result['pops'] is not None else 'unknown'} stack item(s) "
+                    f"and produces {result['pushes'] if result['pushes'] is not None else 'unknown'}; "
+                    f"status in {result['fork']} is {result['status']}."
+                )
+        else:
+            result = decode_bytecode(options.bytecode, fork=options.fork)
+            if options.learn and result.get("supported"):
+                result["explanation"] = (
+                    "Instructions are decoded by byte offset. PUSH immediate bytes are data, "
+                    "not separate instructions; this output is static decoding, not execution."
+                )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result.get("supported", True) else 2
+    except (ValueError, SystemExit) as exc:
+        if isinstance(exc, SystemExit):
+            return int(exc.code or 0)
+        print(f"OPCODE INSPECTION REFUSED: {exc}")
+        return 2
