@@ -130,7 +130,11 @@ def _parameter_names(raw: str) -> set[str]:
 def _parameter_descriptors(raw: str) -> list[dict[str, str]]:
     result: list[dict[str, str]] = []
     for item in _split_top_level(raw):
-        value = re.sub(r"\b(memory|calldata|storage|indexed)\b", " ", item)
+        # Keep the original declaration (including memory/calldata/storage) for
+        # source-facing inspection. Canonical ABI types are derived separately
+        # after removing data-location and indexing modifiers.
+        original = re.sub(r"\s+", " ", item).strip()
+        value = re.sub(r"\b(memory|calldata|storage|indexed)\b", " ", original)
         value = re.sub(r"\s+", " ", value).strip()
         parts = value.split()
         if not parts:
@@ -144,10 +148,13 @@ def _parameter_descriptors(raw: str) -> list[dict[str, str]]:
         ):
             name = parts[-1]
             type_name = " ".join(parts[:-1])
+            declared_type = " ".join(original.split()[:-1])
+        else:
+            declared_type = original
         result.append({
             "name": name,
             "type": _canonical_parameter(type_name),
-            "declared_type": re.sub(r"\s+", " ", type_name).strip(),
+            "declared_type": declared_type,
         })
     return result
 
