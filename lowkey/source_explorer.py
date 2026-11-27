@@ -675,6 +675,7 @@ def build_explorer_model(index: dict[str, Any], root: str | Path = ".") -> dict[
     leads = _make_review_leads(nodes, edges)
     return {
         "schema_version": 2, "product": "LOWKEY_PROTOCOL_EXPLORER", "evidence_model": "STATIC_SOURCE",
+        "workspace_key": hashlib.sha256(str(root_path).encode("utf-8")).hexdigest()[:32],
         "parser": index.get("parser", "LEXICAL"), "ast": index.get("ast") or {},
         "effect_propagation": index.get("effect_propagation") or {},
         "nodes": sorted(nodes, key=lambda item: (item["folder"], item["type"], item["label"].casefold(), item["id"])),
@@ -730,7 +731,7 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
 .panel-head{display:flex;align-items:center;justify-content:space-between;color:#b8c8dc;font-size:10px;font-weight:850;letter-spacing:.13em;margin:2px 2px 10px}.count-label{font-variant-numeric:tabular-nums;color:#8fa6c0;font-size:10px}
 .project-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px}.stat{background:#122138;border:1px solid #273d5b;border-radius:8px;padding:8px 6px}.stat b{font-size:16px;display:block;color:#f1f7ff;font-variant-numeric:tabular-nums}.stat span{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}
 .search-box{display:flex;align-items:center;gap:7px;border:1px solid #304764;background:#0a1525;border-radius:8px;padding:0 9px;margin-bottom:9px}.search-box input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:var(--text);padding:9px 0}
-.tree{display:grid;gap:2px;margin-bottom:14px}.entrypoint-panel{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:11px 0 12px;margin:0 0 13px}.entrypoint-list{display:grid;gap:4px;max-height:210px;overflow:auto}.entrypoint-contract{color:#7f98b4;font-size:9px;font-weight:850;letter-spacing:.1em;text-transform:uppercase;padding:5px 5px 2px}.entrypoint-row{display:block;width:100%;text-align:left;border:1px solid transparent;background:#101e32;border-radius:7px;padding:7px 8px;color:#dce7f4}.entrypoint-row:hover{border-color:#34718f;background:#142943}.entrypoint-row strong{display:block;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.entrypoint-row small{display:block;color:#8ea7c2;font-size:9px;margin-top:2px;overflow-wrap:anywhere}.entrypoint-empty{font-size:10px;color:#849ab3;padding:5px}.folder-row{display:flex;align-items:center;gap:6px;padding:7px 5px;color:#9fb1c8;font-weight:800;font-size:10px;letter-spacing:.07em;text-transform:uppercase;border-radius:6px}.folder-row:hover{background:#172941}.folder-row button{all:unset;cursor:pointer;flex:1}.folder-row span{color:#718ba7}
+.tree{display:grid;gap:2px;margin-bottom:14px}.entrypoint-panel{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:11px 0 12px;margin:0 0 13px}.entrypoint-list{display:grid;gap:4px;max-height:210px;overflow:auto}.entrypoint-contract{color:#7f98b4;font-size:9px;font-weight:850;letter-spacing:.1em;text-transform:uppercase;padding:5px 5px 2px}.entrypoint-row{display:block;width:100%;text-align:left;border:1px solid transparent;background:#101e32;border-radius:7px;padding:7px 8px;color:#dce7f4}.entrypoint-row:hover{border-color:#34718f;background:#142943}.entrypoint-row strong{display:block;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.entrypoint-row small{display:block;color:#8ea7c2;font-size:9px;margin-top:2px;overflow-wrap:anywhere}.entrypoint-empty{font-size:10px;color:#849ab3;padding:5px}.bookmark-panel{border-bottom:1px solid var(--line);padding:0 0 12px;margin:0 0 13px}.bookmark-list{display:grid;gap:4px;max-height:150px;overflow:auto}.bookmark-row{display:flex;align-items:center;gap:7px;width:100%;text-align:left;padding:6px 7px;border:1px solid transparent;background:#101e32;border-radius:7px;color:#dce7f4}.bookmark-row:hover{border-color:#34718f;background:#142943}.bookmark-open{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;text-align:left;border:0;background:transparent;color:#dce7f4;font-size:10px;padding:0}.bookmark-remove{border:0;background:transparent;color:#8ea7c2;padding:0 3px}.bookmark-empty{font-size:10px;color:#849ab3;padding:5px}.inspector-actions{display:flex;gap:6px;flex-wrap:wrap;margin:7px 0 12px}.inspector-actions .tool-button{font-size:10px}.folder-row{display:flex;align-items:center;gap:6px;padding:7px 5px;color:#9fb1c8;font-weight:800;font-size:10px;letter-spacing:.07em;text-transform:uppercase;border-radius:6px}.folder-row:hover{background:#172941}.folder-row button{all:unset;cursor:pointer;flex:1}.folder-row span{color:#718ba7}
 .declaration-row{width:100%;display:flex;align-items:center;gap:7px;text-align:left;padding:7px 7px;border:1px solid transparent;background:transparent;border-radius:7px;color:#dce7f4}.declaration-row:hover{background:#14263e;border-color:#2a4565}.declaration-row.active{background:#15334c;border-color:#2c83a7;box-shadow:inset 2px 0 var(--cyan)}.node-icon{width:19px;height:19px;display:grid;place-items:center;border-radius:5px;background:#173652;color:#70d3f7;font-size:11px;font-weight:850;flex:0 0 auto}.node-icon.interface{background:#2b2145;color:#c2a5ff}.node-icon.library{background:#173c32;color:#70ddb5}.declaration-main{min-width:0;flex:1}.declaration-name{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:650}.declaration-meta{display:block;font-size:10px;color:#8198b4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.declaration-count{font-size:10px;color:#8ca6c1;font-variant-numeric:tabular-nums}
 .filters{border-top:1px solid var(--line);padding-top:12px}.filter-section{margin-bottom:13px}.filter-title{display:flex;justify-content:space-between;font-size:10px;font-weight:850;color:#9eb1c9;letter-spacing:.11em;text-transform:uppercase;margin-bottom:7px}.filter-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.checkline{display:flex;align-items:center;gap:6px;color:#c2d0e2;font-size:10px;min-width:0}.checkline input{accent-color:#38bde9}.vendor-list{display:grid;gap:6px}.vendor-list .checkline{justify-content:space-between}
 .center{min-width:0;min-height:0;display:grid;grid-template-rows:52px minmax(250px,1fr) auto 105px;position:relative;background:radial-gradient(ellipse at 50% 40%,#142945 0%,#0a1423 68%)}
@@ -792,6 +793,10 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
     <section class="entrypoint-panel">
       <div class="filter-title"><span>Entry points</span><span class="count-label" id="entrypoint-count">0</span></div>
       <div class="entrypoint-list" id="entrypoint-explorer"></div>
+    </section>
+    <section class="bookmark-panel">
+      <div class="filter-title"><span>Bookmarks</span><span class="count-label" id="bookmark-count">0</span></div>
+      <div class="bookmark-list" id="bookmark-explorer"></div>
     </section>
     <div class="filters">
       <div class="filter-section"><div class="filter-title"><span>Declaration types</span><button class="muted" id="reset-filters" style="border:0;background:transparent">Reset</button></div>
@@ -890,6 +895,8 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
 let MODEL=JSON.parse(document.getElementById("graph-data").textContent);
 const SERVER_MODE=__SERVER_MODE__;
 const byId=new Map(),positions=new Map(),hiddenVendors=new Set(),sourceFilesByPath=new Map();
+const bookmarkedIds=new Set(),investigatedEntrypoints=new Set();
+let workspaceStorageAvailable=true;
 const nodeElementsById=new Map(),edgeElementsById=new Map(),edgeLabelsById=new Map(),edgeDataById=new Map(),edgeIndicesById=new Map(),incidentEdgesByNode=new Map();
 let mode="architecture",selectedId=null,selectedTab="overview",selectedEdge=null,focusFunctionId=null,history=[];
 let scale=1,tx=0,ty=0,drag=null,pan=null,renderNodes=[],renderEdges=[];
@@ -902,6 +909,44 @@ function h(tag,cls,value){const item=document.createElement(tag);if(cls)item.cla
 function add(parent,tag,cls,value){const item=h(tag,cls,value);parent.appendChild(item);return item}
 function mapModel(){byId.clear();sourceFilesByPath.clear();MODEL.nodes.forEach(function(n){byId.set(n.id,n)});(MODEL.groups||[]).forEach(function(g){byId.set(g.id,{...g,id:g.id,type:"group",kind:"group",label:g.label,folder:g.folder,description:g.count+" declarations",vendor:(g.vendors||[]).join(", "),origin:"mixed",scope:"application",incoming:0,outgoing:0})});(MODEL.sources||[]).forEach(function(source){sourceFilesByPath.set(source.path,source)})}
 function node(id){return byId.get(id)}
+function workspaceStorageKey(){return "lowkey.protocol-explorer.v1."+String(MODEL.workspace_key||"unspecified")}
+function saveWorkspaceState(){
+  try{
+    localStorage.setItem(workspaceStorageKey(),JSON.stringify({
+      version:1,
+      bookmarks:Array.from(bookmarkedIds),
+      investigated:Array.from(investigatedEntrypoints)
+    }));
+    workspaceStorageAvailable=true;
+  }catch(error){
+    if(workspaceStorageAvailable)toast("Browser storage is unavailable; investigation marks will last for this tab only.");
+    workspaceStorageAvailable=false;
+  }
+}
+function loadWorkspaceState(){
+  bookmarkedIds.clear();investigatedEntrypoints.clear();
+  try{
+    const raw=localStorage.getItem(workspaceStorageKey());
+    if(!raw)return;
+    const saved=JSON.parse(raw);
+    if(!saved||saved.version!==1)return;
+    (Array.isArray(saved.bookmarks)?saved.bookmarks:[]).forEach(function(id){if(node(id))bookmarkedIds.add(id)});
+    (Array.isArray(saved.investigated)?saved.investigated:[]).forEach(function(id){const item=node(id);if(item&&isEntryPoint(item))investigatedEntrypoints.add(id)});
+    workspaceStorageAvailable=true;
+  }catch(error){
+    workspaceStorageAvailable=false;
+  }
+}
+function toggleBookmark(id){
+  if(!node(id))return;
+  if(bookmarkedIds.has(id))bookmarkedIds.delete(id);else bookmarkedIds.add(id);
+  saveWorkspaceState();renderSidebar();renderInspector();
+}
+function toggleInvestigated(id){
+  const item=node(id);if(!item||!isEntryPoint(item))return;
+  if(investigatedEntrypoints.has(id))investigatedEntrypoints.delete(id);else investigatedEntrypoints.add(id);
+  saveWorkspaceState();renderSidebar();renderInspector();
+}
 function toast(message){const item=document.getElementById("toast");item.textContent=message;item.classList.add("show");clearTimeout(toast.handle);toast.handle=setTimeout(function(){item.classList.remove("show")},2600)}
 function filters(){const result={};document.querySelectorAll("[data-filter]").forEach(function(x){result[x.dataset.filter]=x.checked});return result}
 function visibleNode(n){
@@ -1607,12 +1652,29 @@ function renderEntrypoints(){
       const kind=item.entrypoint_kind||"function";
       const mutability=["view","pure"].includes(item.mutability)?"READ ONLY":"MAY MUTATE";
       const unresolved=MODEL.edges.filter(function(edge){return edge.source===item.id&&["UNRESOLVED","AMBIGUOUS"].includes(edge.resolution)}).length;
-      add(button,"small","",kind.toUpperCase()+" · "+mutability+(unresolved?" · "+unresolved+" unresolved":""));
+      add(button,"small","",kind.toUpperCase()+" · "+mutability+(unresolved?" · "+unresolved+" unresolved":"")+(investigatedEntrypoints.has(item.id)?" · INVESTIGATED":""));
       button.title=(item.file||"")+":"+(item.line||"?")+" · "+(item.signature||item.label);
       button.addEventListener("click",function(){openNode(item.id,true)});
     });
   });
   if(!entries.length)add(root,"div","entrypoint-empty",query?"No entry points match this search.":"No public, external, receive or fallback entry points were indexed.");
+}
+function renderBookmarks(){
+  const root=document.getElementById("bookmark-explorer");clear(root);
+  const items=Array.from(bookmarkedIds).map(node).filter(Boolean).sort(function(a,b){
+    return String(a.contract||a.label).localeCompare(String(b.contract||b.label))||a.label.localeCompare(b.label);
+  });
+  document.getElementById("bookmark-count").textContent=String(items.length);
+  items.forEach(function(item){
+    const row=add(root,"div","bookmark-row","");
+    const open=add(row,"button","bookmark-open",item.label);
+    open.title=(item.file||"")+":"+(item.line||"?")+" · "+item.id;
+    open.addEventListener("click",function(){openNode(item.id,true)});
+    const remove=add(row,"button","bookmark-remove","×");
+    remove.setAttribute("aria-label","Remove "+item.label+" bookmark");
+    remove.addEventListener("click",function(){toggleBookmark(item.id)});
+  });
+  if(!items.length)add(root,"div","bookmark-empty","Bookmark contracts or functions from their inspector to return here.");
 }
 function renderSidebar(){
   const root=document.getElementById("declaration-tree");clear(root);
@@ -1635,6 +1697,7 @@ function renderSidebar(){
   });
   if(!root.children.length)add(root,"p","muted","No declarations match. Reset filters to restore the full inventory.");
   renderEntrypoints();
+  renderBookmarks();
   renderVendorFilters();
 }
 function inspectorItem(parent,n,secondary){
@@ -1671,6 +1734,14 @@ function renderInspector(){
   add(header,"span","entity-badge",selected.declaration_kind||selected.type);
   const tabs=add(root,"nav","inspector-tabs");
   ["overview","functions","state","calls","assets","review"].forEach(function(tab){const button=add(tabs,"button","inspector-tab"+(selectedTab===tab?" active":""),tab.toUpperCase());button.addEventListener("click",function(){selectedTab=tab;renderInspector()})});
+  const actions=add(root,"div","inspector-actions");
+  const bookmark=add(actions,"button","tool-button "+(bookmarkedIds.has(selected.id)?"primary":""),bookmarkedIds.has(selected.id)?"Remove bookmark":"Bookmark");
+  bookmark.addEventListener("click",function(){toggleBookmark(selected.id)});
+  if(isEntryPoint(selected)){
+    const reviewed=investigatedEntrypoints.has(selected.id);
+    const progress=add(actions,"button","tool-button "+(reviewed?"primary":""),reviewed?"Mark not investigated":"Mark investigated");
+    progress.addEventListener("click",function(){toggleInvestigated(selected.id)});
+  }
   const body=add(root,"div","inspector-body"),owner=contractContextForNode(selected);
   const owned=MODEL.nodes.filter(function(n){return n.contract_id===owner});
   const functions=owned.filter(function(n){return n.type==="function"||n.type==="modifier"}).sort(function(a,b){return Number(isEntryPoint(b))-Number(isEntryPoint(a))||a.label.localeCompare(b.label)});
@@ -1888,7 +1959,7 @@ function setMode(next){mode=next;selectedEdge=null;document.querySelectorAll(".m
 function setServerStatus(text){document.getElementById("import-status").textContent=text}
 function refreshModel(next){
   if(!next||next.schema_version!==2||!Array.isArray(next.nodes)||!Array.isArray(next.edges))throw new Error("The selected file is not a Lowkey graph model.");
-  MODEL=next;positions.clear();scale=1;tx=0;ty=0;hiddenVendors.clear();mapModel();selectedId=null;focusFunctionId=null;history=[];mode="architecture";selectedTab="overview";selectedEdge=null;
+  MODEL=next;positions.clear();scale=1;tx=0;ty=0;hiddenVendors.clear();mapModel();loadWorkspaceState();selectedId=null;focusFunctionId=null;history=[];mode="architecture";selectedTab="overview";selectedEdge=null;
   document.getElementById("project-name").textContent=MODEL.project_name||"Imported source workspace";
   renderAll();fitGraph();toast("Graph workspace loaded");
 }
@@ -2000,7 +2071,7 @@ function setupInteractions(){
   stage.addEventListener("drop",function(event){event.preventDefault();stage.style.outline="";const files=Array.from(event.dataTransfer.files||[]);if(files.length===1&&files[0].name.toLowerCase().endsWith(".zip"))importZip(files[0]);else importFiles(files)});
 }
 function initialise(){
-  mapModel();document.getElementById("project-name").textContent=MODEL.project_name||"Local protocol workspace";
+  mapModel();loadWorkspaceState();document.getElementById("project-name").textContent=MODEL.project_name||"Local protocol workspace";
   const select=document.getElementById("edge-select");
   Array.from(new Set(MODEL.edges.map(function(e){return e.kind}))).sort().forEach(function(kind){const option=document.createElement("option");option.value=kind;option.textContent=kind.replaceAll("_"," ");select.appendChild(option)});
   if(MODEL.show_third_party){const thirdParty=document.querySelector('[data-filter="third-party"]');if(thirdParty)thirdParty.checked=true}
