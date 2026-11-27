@@ -203,6 +203,7 @@ def compiler_ast_graph(
                     key = f"{source_name}:{name}"
                     contract_node = {
                         "id": key,
+                        "compiler_id": contract_id,
                         "kind": "contract",
                         "name": name,
                         "source": source_name,
@@ -211,6 +212,7 @@ def compiler_ast_graph(
                         "contract_kind": child.get("contractKind"),
                         "abstract": bool(child.get("abstract", False)),
                         "linearized_base_ids": child.get("linearizedBaseContracts", []),
+                        "linearized_base_contracts": [],
                     }
                     nodes[key] = contract_node
                     if isinstance(contract_id, int):
@@ -316,6 +318,10 @@ def compiler_ast_graph(
                             function_key = key + "::" + signature
                             fn = {
                                 "id": function_key,
+                                "compiler_id": function_id,
+                                "base_function_ids": [item for item in member.get("baseFunctions", []) if isinstance(item, int)],
+                                "is_virtual": member.get("virtual") is True,
+                                "has_override_specifier": bool(member.get("overrides")),
                                 "kind": "function",
                                 "name": str(member.get("name") or member.get("kind") or "function"),
                                 "signature": signature,
@@ -343,6 +349,13 @@ def compiler_ast_graph(
             )
             if not isinstance(ast_node, dict):
                 continue
+            linearized_ids = contract_node.get("linearized_base_ids")
+            if isinstance(linearized_ids, list):
+                contract_node["linearized_base_contracts"] = [
+                    contract_by_id[base_id]["id"]
+                    for base_id in linearized_ids
+                    if isinstance(base_id, int) and base_id in contract_by_id
+                ]
             for base_item in ast_node.get("baseContracts", []):
                 base_name = base_item.get("baseName") if isinstance(base_item, dict) else None
                 base_id = base_name.get("referencedDeclaration") if isinstance(base_name, dict) else None
@@ -430,6 +443,23 @@ def compiler_ast_graph(
                             "evidence": "compiler_ast",
                             "source_span": function_node.get("source_span"),
                         })
+
+    # Solc's baseFunctions references are declaration-level override evidence.
+    # They do not establish the implementation selected at a runtime address.
+    for function_node in function_by_id.values():
+        for base_function_id in function_node.get("base_function_ids", []):
+            base_function = function_by_id.get(base_function_id)
+            if base_function is None:
+                continue
+            edges.append({
+                "kind": "compiler_override_candidate",
+                "source": function_node["id"],
+                "target": base_function["id"],
+                "evidence": "compiler_ast",
+                "source_sha256": function_node["source_sha256"],
+                "source_span": function_node.get("source_span"),
+                "certainty": "compiler_declared_base_function",
+            })
 
     # A write-to-read pair is an AST-derived dependency candidate, not proof of
     # reaching-definition or execution order. It remains explicitly qualified.
