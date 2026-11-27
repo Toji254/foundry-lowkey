@@ -2713,3 +2713,35 @@ jobs:
           slither --version
           slither . --fail-none
           echo "PASS: Slither compiled and analyzed the live Foundry fixture"
+
+  protocol-graph-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          check-latest: true
+
+      - name: Install isolated browser test dependency
+        run: python -m pip install "playwright>=1.48,<2"
+
+      - name: Install Chromium for the real workspace browser test
+        run: python -m playwright install --with-deps chromium
+
+      - name: Exercise the real protocol graph workspace
+        run: python scripts/protocol-graph-browser-e2e.py
+
+      - name: Retain graph workspace screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowkey-protocol-graph-browser-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/lowkey-protocol-graph-desktop.png
+            ${{ runner.temp }}/lowkey-protocol-graph-narrow.png
+            ${{ runner.temp }}/lowkey-protocol-graph-large.png
+          if-no-files-found: ignore
+          retention-days: 14
