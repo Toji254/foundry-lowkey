@@ -127,6 +127,56 @@ class BreakEngineTests(unittest.TestCase):
             self.assertEqual(signal["verification"]["status"], "OBSERVED")
             self.assertTrue(signal["verification"]["human_review_required"])
             self.assertEqual(signal["verification"]["fidelity"]["classification"], "SIMULATED")
+    def test_early_break_campaign_writes_terminal_campaign_report(self):
+        import json
+        import tempfile
+
+        class Context:
+            def __init__(self, root):
+                self.root = root
+                self.events = []
+
+            def foundry_project_root(self):
+                return self.root
+
+            def emit(self, event, root, **kwargs):
+                self.events.append((event, kwargs))
+
+        class Host:
+            def __init__(self, root):
+                self.audit_context = Context(root)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            host = Host(tmp)
+            target = break_engine.Target("SecureUUPSImplementation", "0x" + "1" * 40)
+            result = break_engine.AttackResult(
+                family="proxy",
+                contract=target.contract,
+                address=target.address,
+                function="upgradeTo(address)",
+                status="SIMULATED_BREAK",
+                summary="paired control and candidate behavior observed",
+                break_condition=True,
+                detail={"control_gate": {"status": "passed"}},
+            )
+            report = break_engine._write_campaign_report(
+                host,
+                mode="round-limited",
+                rounds=1,
+                targets=[target],
+                results=[result],
+                termination="break_condition_reached",
+                message="Break campaign stopped after a break condition.",
+                terminal_result=result,
+            )
+            self.assertTrue(report.is_file())
+            self.assertIn("_campaign_", report.name)
+            payload = json.loads(report.read_text(encoding="utf-8"))
+            self.assertEqual(payload["termination"], "break_condition_reached")
+            self.assertEqual(payload["results"][0]["status"], "SIMULATED_BREAK")
+            self.assertEqual(payload["terminal_result"]["contract"], "SecureUUPSImplementation")
+            self.assertEqual(host.audit_context.events[0][0], "break-campaign")
+
     def test_candidate_break_with_passed_control_remains_simulated_until_fidelity_is_realistic(self):
         import json
         import tempfile

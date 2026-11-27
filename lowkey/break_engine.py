@@ -345,6 +345,33 @@ def _emit(host, event: str, summary: str, data: dict[str, Any] | None = None):
         pass
 
 
+def _write_campaign_report(
+    host,
+    *,
+    mode: str,
+    rounds: int,
+    targets: list[Target],
+    results: list[AttackResult],
+    termination: str,
+    message: str,
+    terminal_result: AttackResult | None = None,
+) -> Path:
+    """Persist the campaign envelope on every terminal path, including early breaks."""
+    summary = {
+        "mode": mode,
+        "rounds": rounds,
+        "targets": [asdict(item) for item in targets],
+        "results": [asdict(item) for item in results],
+        "started_at": time.time(),
+        "termination": termination,
+    }
+    if terminal_result is not None:
+        summary["terminal_result"] = asdict(terminal_result)
+    report = _write_json(host, "campaign", summary)
+    _emit(host, "break-campaign", message, summary)
+    return report
+
+
 def _require_anvil(host, config) -> str:
     info = host.anvil_rpc_info(config)
     if not info:
@@ -4747,6 +4774,17 @@ def run(config, args=None, host=None):
                             print("Status   : SIMULATION ONLY; block-pinned, cheatcode-free reproof and human review are still required."
                                   if result.status == "SIMULATED_BREAK"
                                   else "Status   : campaign stopped; inspect the harness and prove impact.")
+                            report = _write_campaign_report(
+                                host,
+                                mode="indefinite" if opts.get("until_found") else "round-limited",
+                                rounds=rounds,
+                                targets=targets,
+                                results=campaign_results,
+                                termination="break_condition_reached",
+                                message="Break campaign stopped after a break condition.",
+                                terminal_result=result,
+                            )
+                            print(f"Campaign report: {report}")
                             return 0
 
             if not opts.get("until_found") and rounds >= max(1, opts.get("max_rounds", 1)):
@@ -4755,15 +4793,15 @@ def run(config, args=None, host=None):
             if not made_progress:
                 break
 
-        summary = {
-            "mode": "indefinite" if opts.get("until_found") else "round-limited",
-            "rounds": rounds,
-            "targets": [asdict(x) for x in targets],
-            "results": [asdict(x) for x in campaign_results],
-            "started_at": time.time(),
-        }
-        report = _write_json(host, "campaign", summary)
-        _emit(host, "break-campaign", "Break campaign completed without a concrete break.", summary)
+        report = _write_campaign_report(
+            host,
+            mode="indefinite" if opts.get("until_found") else "round-limited",
+            rounds=rounds,
+            targets=targets,
+            results=campaign_results,
+            termination="round_limit_or_no_progress",
+            message="Break campaign completed without a concrete break.",
+        )
         observed = sum(1 for item in campaign_results if item.status == "OBSERVED")
         blocked = sum(1 for item in campaign_results if item.status == "BLOCKED")
         skipped = sum(1 for item in campaign_results if item.status == "SKIPPED")
