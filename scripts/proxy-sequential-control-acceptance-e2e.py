@@ -78,11 +78,6 @@ def make_manifest(target: str, function_signature: str, actor: str, proxy: str, 
             "control_value": control_value, "attack_value": attack_value,
             "description": "The only declared scenario difference; selected through the fixture owner's gated configuration method before tracing.",
         }],
-        "prestate_slots": [
-            {"address": scenario_address, "slot": scenario_slot},
-            {"address": actor, "slot": "0x0"},
-            {"address": proxy, "slot": IMPLEMENTATION_SLOT},
-        ],
         "trace_expectations": [{
             "address": target, "control_min_calls": 1, "control_max_calls": 1,
             "attack_min_calls": 1, "attack_max_calls": 1,

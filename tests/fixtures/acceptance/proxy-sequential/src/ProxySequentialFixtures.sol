@@ -167,6 +167,9 @@ contract ProxyUpgradeActor {
     uint256 public successfulCalls;
     function execute(address target, bytes calldata data) external returns (bool success) {
         (success, ) = target.call(data);
-        if (success) ++successfulCalls;
+        // Always write the metric slot, including a zero delta for the secure
+        // rejection. The paired verifier requires a trace-derived SSTORE in
+        // both scenarios rather than treating an absent write as a measured zero.
+        successfulCalls = successfulCalls + (success ? 1 : 0);
     }
 }
