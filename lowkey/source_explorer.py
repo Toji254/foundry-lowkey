@@ -947,7 +947,7 @@ function loadWorkspaceState(){
     if(!saved||saved.version!==1)return;
     (Array.isArray(saved.bookmarks)?saved.bookmarks:[]).forEach(function(id){if(node(id))bookmarkedIds.add(id)});
     (Array.isArray(saved.investigated)?saved.investigated:[]).forEach(function(id){const item=node(id);if(item&&isEntryPoint(item))investigatedEntrypoints.add(id)});
-    if(Array.isArray(saved.interface_bindings))restoreInterfaceBindings(saved.interface_bindings);
+    if(Array.isArray(saved.interface_bindings)){interfaceBindings.clear();restoreInterfaceBindings(saved.interface_bindings);}
     (Array.isArray(saved.manual_positions)?saved.manual_positions:[]).slice(0,1500).forEach(function(row){
       if(!Array.isArray(row)||row.length!==2||!node(row[0]))return;
       const point=row[1];
@@ -2606,6 +2606,16 @@ def _build_imported_graph(source_root: Path, name: str) -> dict[str, Any]:
 
 
 def _load_project_graph_workspace(root: Path) -> dict[str, Any]:
+    empty = {
+        "version": 1,
+        "interface_bindings": [],
+        "scope_preferences": {
+            "include_support_sources": False,
+            "inline_libraries": True,
+            "excluded_contract_ids": [],
+            "excluded_path_prefixes": [],
+        },
+    }
     try:
         try:
             from . import audit_context
@@ -2614,10 +2624,14 @@ def _load_project_graph_workspace(root: Path) -> dict[str, Any]:
         context = audit_context.load(root)
         value = context.get("protocol_graph_workspace") if isinstance(context, dict) else None
     except (ImportError, OSError, RuntimeError, TypeError, ValueError):
-        return {"version": 1, "interface_bindings": []}
+        return empty
     if not isinstance(value, dict) or value.get("version") != 1:
-        return {"version": 1, "interface_bindings": []}
+        return empty
     bindings = value.get("interface_bindings")
+    raw_scope = value.get("scope_preferences")
+    raw_scope = raw_scope if isinstance(raw_scope, dict) else {}
+    excluded_contracts = raw_scope.get("excluded_contract_ids")
+    excluded_prefixes = raw_scope.get("excluded_path_prefixes")
     return {
         "version": 1,
         "interface_bindings": [
@@ -2626,10 +2640,28 @@ def _load_project_graph_workspace(root: Path) -> dict[str, Any]:
             if isinstance(row, list) and len(row) == 2
             and all(isinstance(item, str) and item for item in row)
         ][:500],
+        "scope_preferences": {
+            "include_support_sources": bool(raw_scope.get("include_support_sources", False)),
+            "inline_libraries": bool(raw_scope.get("inline_libraries", True)),
+            "excluded_contract_ids": [
+                item for item in (excluded_contracts if isinstance(excluded_contracts, list) else [])
+                if isinstance(item, str) and item
+            ][:500],
+            "excluded_path_prefixes": [
+                item for item in (excluded_prefixes if isinstance(excluded_prefixes, list) else [])
+                if isinstance(item, str) and item
+            ][:100],
+        },
     }
 
 
-def _save_project_graph_workspace(root: Path, workspace_key: str, bindings: list[Any], model: dict[str, Any]) -> bool:
+def _save_project_graph_workspace(
+    root: Path,
+    workspace_key: str,
+    bindings: list[Any],
+    model: dict[str, Any],
+    scope_preferences: dict[str, Any] | None = None,
+) -> bool:
     expected_key = hashlib.sha256(str(root.resolve()).encode("utf-8")).hexdigest()[:32]
     if workspace_key != expected_key:
         raise ValueError("Workspace identity does not match this local project.")
@@ -2656,6 +2688,44 @@ def _save_project_graph_workspace(root: Path, workspace_key: str, bindings: list
             raise ValueError("Duplicate interface binding.")
         seen.add(interface_id)
         clean.append([interface_id, contract_id])
+
+    scope_preferences = scope_preferences if isinstance(scope_preferences, dict) else {}
+    excluded_contract_ids = scope_preferences.get("excluded_contract_ids", [])
+    excluded_path_prefixes = scope_preferences.get("excluded_path_prefixes", [])
+    if not isinstance(excluded_contract_ids, list) or len(excluded_contract_ids) > 500:
+        raise ValueError("excluded_contract_ids must be a list with at most 500 contracts.")
+    if not isinstance(excluded_path_prefixes, list) or len(excluded_path_prefixes) > 100:
+        raise ValueError("excluded_path_prefixes must be a list with at most 100 relative paths.")
+
+    clean_excluded_contracts: list[str] = []
+    for contract_id in excluded_contract_ids:
+        candidate = declarations.get(str(contract_id))
+        if not candidate or candidate.get("declaration_kind") != "contract":
+            raise ValueError("An excluded contract must reference a contract in this project graph.")
+        if str(contract_id) not in clean_excluded_contracts:
+            clean_excluded_contracts.append(str(contract_id))
+
+    clean_excluded_prefixes: list[str] = []
+    for raw_prefix in excluded_path_prefixes:
+        if not isinstance(raw_prefix, str) or not raw_prefix or "\\" in raw_prefix:
+            raise ValueError("Excluded source paths must be non-empty project-relative paths.")
+        prefix_path = PurePosixPath(raw_prefix)
+        if (
+            prefix_path.is_absolute()
+            or any(part in {"", ".", ".."} for part in prefix_path.parts)
+            or any(ord(char) < 32 for char in raw_prefix)
+        ):
+            raise ValueError("Excluded source path prefix is unsafe.")
+        normalised = prefix_path.as_posix().rstrip("/")
+        if normalised not in clean_excluded_prefixes:
+            clean_excluded_prefixes.append(normalised)
+
+    clean_scope = {
+        "include_support_sources": bool(scope_preferences.get("include_support_sources", False)),
+        "inline_libraries": bool(scope_preferences.get("inline_libraries", True)),
+        "excluded_contract_ids": clean_excluded_contracts,
+        "excluded_path_prefixes": clean_excluded_prefixes,
+    }
     try:
         try:
             from . import audit_context
@@ -2665,7 +2735,11 @@ def _save_project_graph_workspace(root: Path, workspace_key: str, bindings: list
             return False
         audit_context.update(
             root,
-            protocol_graph_workspace={"version": 1, "interface_bindings": clean},
+            protocol_graph_workspace={
+                "version": 1,
+                "interface_bindings": clean,
+                "scope_preferences": clean_scope,
+            },
         )
         return True
     except (ImportError, OSError, RuntimeError, TypeError, ValueError) as error:
@@ -2785,11 +2859,15 @@ def create_explorer_server(
                     bindings = payload.get("interface_bindings", [])
                     if not isinstance(bindings, list):
                         raise ValueError("interface_bindings must be an array.")
+                    scope_preferences = payload.get("scope_preferences", {})
+                    if not isinstance(scope_preferences, dict):
+                        raise ValueError("scope_preferences must be an object.")
                     persisted = _save_project_graph_workspace(
                         root_path,
                         str(payload.get("workspace_key") or ""),
                         bindings,
                         model,
+                        scope_preferences,
                     )
                     self.send_json(200, {
                         "ok": True,
