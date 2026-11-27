@@ -12,6 +12,10 @@ import {
     ProxyUpgradeActor
 } from "../src/ProxySequentialFixtures.sol";
 
+interface ILowkeyTransparentOwner {
+    function owner() external view returns (address);
+}
+
 contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
     bytes32 private constant IMPLEMENTATION_SLOT =
         0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
@@ -32,7 +36,7 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
         _lowkeyStartTrace(address(proxy));
         // Execute the public getter in both scenarios so the owner's slot is
         // observed by the EVM trace (vm.load is a test-cheatcode read, not an SLOAD).
-        require(proxy.owner() == owner, "CONTROL_OWNER_PRESTATE_MISMATCH");
+        require(ILowkeyTransparentOwner(address(proxy)).owner() == owner, "CONTROL_OWNER_PRESTATE_MISMATCH");
         require(vm.load(address(proxy), IMPLEMENTATION_SLOT) == bytes32(uint256(uint160(secureImplementation))), "CONTROL_START_IMPLEMENTATION_MISMATCH");
         vm.prank(ATTACKER);
         bool controlCallSucceeded = actor.execute(address(proxy), upgradeCall);
@@ -45,7 +49,7 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
         vm.prank(owner);
         proxy.setImplementationForLab(vulnerableImplementation);
         _lowkeyStartTrace(address(proxy));
-        require(proxy.owner() == owner, "ATTACK_OWNER_PRESTATE_MISMATCH");
+        require(ILowkeyTransparentOwner(address(proxy)).owner() == owner, "ATTACK_OWNER_PRESTATE_MISMATCH");
         require(vm.load(address(proxy), IMPLEMENTATION_SLOT) == bytes32(uint256(uint160(vulnerableImplementation))), "ATTACK_START_IMPLEMENTATION_MISMATCH");
         vm.prank(ATTACKER);
         bool attackCallSucceeded = actor.execute(address(proxy), upgradeCall);
@@ -117,7 +121,7 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
         vm.prank(owner);
         admin.upgradeAndCall(address(proxy), secureImplementation, bytes(""));
         _lowkeyStartTrace(address(proxy));
-        require(proxy.owner() == owner, "TRANSPARENT_CONTROL_OWNER_PRESTATE_MISMATCH");
+        require(ILowkeyTransparentOwner(address(proxy)).owner() == owner, "TRANSPARENT_CONTROL_OWNER_PRESTATE_MISMATCH");
         require(proxy.implementation() == secureImplementation, "TRANSPARENT_CONTROL_IMPLEMENTATION_MISMATCH");
         require(actor.successfulCalls() == 0, "TRANSPARENT_CONTROL_METRIC_PRESTATE_MISMATCH");
         vm.prank(ATTACKER);
@@ -136,7 +140,7 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
         vm.prank(owner);
         admin.upgradeAndCall(address(proxy), vulnerableImplementation, bytes(""));
         _lowkeyStartTrace(address(proxy));
-        require(proxy.owner() == owner, "TRANSPARENT_ATTACK_OWNER_PRESTATE_MISMATCH");
+        require(ILowkeyTransparentOwner(address(proxy)).owner() == owner, "TRANSPARENT_ATTACK_OWNER_PRESTATE_MISMATCH");
         require(proxy.implementation() == vulnerableImplementation, "TRANSPARENT_ATTACK_IMPLEMENTATION_MISMATCH");
         require(actor.successfulCalls() == 0, "TRANSPARENT_ATTACK_METRIC_PRESTATE_MISMATCH");
         vm.prank(ATTACKER);
