@@ -178,9 +178,10 @@ class ProxyEngineCliTests(unittest.TestCase):
         self.assertEqual(payload["erc7201"]["status"], "NO_ERC7201_ANNOTATIONS")
 
     def test_json_proxy_commands_suppress_recommendation_footer(self):
-        source = pathlib.Path(lk.__file__).read_text(encoding="utf-8")
-        self.assertIn('_canonical_help_command(command) == "proxy"', source)
-        self.assertIn('and "--json" in sys.argv[2:]', source)
+        self.assertTrue(lk._machine_readable_stdout("proxy", ["inspect", "--json"]))
+        self.assertTrue(lk._machine_readable_stdout("deps", ["src", "--json"]))
+        self.assertFalse(lk._machine_readable_stdout("deps", ["src"]))
+        self.assertFalse(lk._machine_readable_stdout("proxy", ["inspect"]))
 
 
 

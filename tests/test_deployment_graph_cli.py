@@ -31,7 +31,34 @@ class DeploymentGraphCliTests(unittest.TestCase):
             "edges": [],
             "unresolved": [],
             "typed_edges": [],
-            "compiler_dependencies": {"available": True, "edges": [], "contracts": []},
+            "compiler_dependencies": {
+                "available": True,
+                "warnings": [],
+                "contracts": [
+                    {"id": "src/Math.sol:Math", "source": "src/Math.sol", "name": "Math", "contract_kind": "library", "compiler_build_info": "build.json", "declaration_id": 1},
+                    {"id": "src/Widget.sol:Widget", "source": "src/Widget.sol", "name": "Widget", "contract_kind": "contract", "compiler_build_info": "build.json", "declaration_id": 2},
+                    {"id": "src/IOracle.sol:IOracle", "source": "src/IOracle.sol", "name": "IOracle", "contract_kind": "interface", "compiler_build_info": "build.json", "declaration_id": 3},
+                ],
+                "edges": [
+                    {
+                        "from": "src/Widget.sol:Widget", "to": "src/Math.sol:Math",
+                        "kind": "solidity-library-link", "confidence": "CONFIRMED",
+                        "source": "solc-output:evm.bytecode.linkReferences",
+                        "link_references": [[158, 20]], "requires_resolution": True,
+                        "auto_deploy": True,
+                        "evidence": {"build_info": "build.json", "source_path": "src/Widget.sol"},
+                    },
+                    {
+                        "from": "src/Widget.sol:Widget", "to": "src/IOracle.sol:IOracle",
+                        "kind": "typed-parameter-reference", "confidence": "INFERRED",
+                        "source": "solc-ast:VariableDeclaration", "requires_resolution": True,
+                        "auto_deploy": False,
+                        "evidence": {"build_info": "build.json", "source_path": "src/Widget.sol"},
+                    },
+                ],
+                "library_cycles": [],
+                "library_deployment_order": ["src/Math.sol:Math"],
+            },
             "deployment_graph": {
                 "schema_version": 1,
                 "planning_status": "REVIEW_REQUIRED",
