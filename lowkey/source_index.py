@@ -1044,6 +1044,7 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         nodes.append(value)
 
     type_node_ids: set[str] = set()
+    user_type_node_ids: set[str] = set()
 
     def ensure_type_node(path: str, type_name: str, source: str, offset: int) -> str:
         type_id = _node_id("type", path, type_name)
@@ -1067,6 +1068,22 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             "line": 1, "evidence": "SOURCE_FILE",
             "provenance": source_provenance.get(path, "unclassified"),
         })
+        for type_match in re.finditer(r"\btype\s+(?P<name>[A-Za-z_]\w*)\s+is\s+(?P<underlying>[^;]+);", clean):
+            if not _at_source_level(clean, type_match.start()):
+                continue
+            type_name = type_match.group("name")
+            type_id = _node_id("user_defined_value_type", path, type_name)
+            if type_id in user_type_node_ids:
+                continue
+            user_type_node_ids.add(type_id)
+            add_node({
+                "id": type_id, "kind": "user_defined_value_type", "name": type_name,
+                "qualified_name": type_name, "underlying_type": type_match.group("underlying").strip(),
+                "file": path, "line": _line(source, type_match.start()),
+                "provenance": source_provenance.get(path, "unclassified"),
+                "evidence": "LEXICAL_SOURCE",
+            })
+            edges.append(_edge("DECLARES", file_id, type_id, path, source, type_match.start()))
         pairs = _brace_pairs(clean)
         file_using_libraries = [
             {"library": using.group(1), "for_type": using.group(2), "offset": using.start()}
@@ -1325,6 +1342,16 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                 # Parameter and return types can contain "payable" (for example, address payable recipient).
                 # Only function descriptors after the parameter list determine function mutability.
                 descriptor_text = clean[params_close + 1:terminator]
+                return_parameters: list[dict[str, str]] = []
+                returns_match = re.search(r"\breturns\s*\(", descriptor_text)
+                if returns_match:
+                    return_open = descriptor_text.find("(", returns_match.start())
+                    return_close = _matching(descriptor_text, return_open, "(", ")")
+                    if return_close is not None:
+                        return_parameters = [
+                            item for item in _parameter_descriptors(descriptor_text[return_open + 1:return_close])
+                            if item.get("declared_type")
+                        ]
                 while re.search(r"\([^()]*\)", descriptor_text):
                     descriptor_text = re.sub(r"\([^()]*\)", " ", descriptor_text)
                 mutability_match = re.search(r"\b(payable|view|pure)\b", descriptor_text)
@@ -1343,6 +1370,8 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
                     "parameters": sorted(_parameter_names(raw_params)),
                     "parameter_types": {item["name"]: item["type"] for item in _parameter_descriptors(raw_params) if item.get("name")},
                     "parameter_declared_types": {item["name"]: item["declared_type"] for item in _parameter_descriptors(raw_params) if item.get("name")},
+                    "return_parameters": return_parameters,
+                    "return_declared_types": [item["declared_type"] for item in return_parameters],
                     "body_start": body_open + 1 if body_open is not None else None,
                     "body_end": body_close,
                     "body": clean[body_open + 1:body_close] if body_open is not None and body_close is not None else "",
@@ -1468,13 +1497,17 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
         if not re.fullmatch(r"[A-Za-z_]\w*", field_type):
             continue
         typed_contracts = contract_by_name.get(field_type, [])
-        enum_matches = [
+        local_type_matches = [
             candidate for candidate in nodes
-            if candidate.get("kind") == "enum"
+            if candidate.get("kind") in {"struct", "enum", "user_defined_value_type"}
             and candidate.get("name") == field_type
-            and candidate.get("contract") == node.get("contract")
+            and candidate.get("file") == node.get("file")
+            and (
+                candidate.get("contract") == node.get("contract")
+                or (candidate.get("kind") == "user_defined_value_type" and not candidate.get("contract"))
+            )
         ]
-        candidates = typed_contracts if len(typed_contracts) == 1 else enum_matches
+        candidates = local_type_matches if local_type_matches else typed_contracts
         if len(candidates) == 1:
             edges.append(_edge(
                 "USES_TYPE", node["id"], candidates[0]["id"],
@@ -1495,15 +1528,19 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             for edge in edges
         ):
             continue
-        enum_matches = [
+        local_type_matches = [
             candidate for candidate in nodes
-            if candidate.get("kind") == "enum"
+            if candidate.get("kind") in {"struct", "enum", "user_defined_value_type"}
             and candidate.get("name") == type_name
-            and candidate.get("contract") == variable.get("contract")
+            and candidate.get("file") == variable.get("file")
+            and (
+                candidate.get("contract") == variable.get("contract")
+                or (candidate.get("kind") == "user_defined_value_type" and not candidate.get("contract"))
+            )
         ]
-        if len(enum_matches) == 1:
+        if len(local_type_matches) == 1:
             edges.append(_edge(
-                "USES_TYPE", variable["id"], enum_matches[0]["id"],
+                "USES_TYPE", variable["id"], local_type_matches[0]["id"],
                 variable["file"], source_by_path.get(variable["file"], ""),
                 variable.get("source_offset", 0), type_name=type_name,
             ))
@@ -1515,13 +1552,43 @@ def build_source_index(root: str | Path = ".", *, use_cache: bool = True) -> dic
             simple_type = re.sub(r"\s+", " ", simple_type).strip()
             if not re.fullmatch(r"[A-Za-z_]\w*", simple_type):
                 continue
-            candidates = contract_by_name.get(simple_type, [])
+            local_types = [
+                item for item in nodes
+                if item.get("kind") in {"struct", "enum", "user_defined_value_type"}
+                and item.get("name") == simple_type and item.get("file") == func.get("file")
+                and (
+                    item.get("contract") == func.get("contract")
+                    or (item.get("kind") == "user_defined_value_type" and not item.get("contract"))
+                )
+            ]
+            candidates = local_types if local_types else contract_by_name.get(simple_type, [])
             if len(candidates) == 1:
                 edges.append(_edge(
-                    "USES_TYPE", func["id"], candidates[0]["id"],
-                    func["file"], source_by_path.get(func["file"], ""),
-                    func["source_offset"], parameter=parameter_name,
-                    type_name=simple_type,
+                    "USES_TYPE", func["id"], candidates[0]["id"], func["file"],
+                    source_by_path.get(func["file"], ""), func["source_offset"],
+                    parameter=parameter_name, type_name=simple_type,
+                ))
+        for return_index, declared_type in enumerate(func.get("return_declared_types") or [], start=1):
+            simple_type = re.sub(r"\b(memory|calldata|storage|payable|external|internal)\b", " ", declared_type)
+            simple_type = re.sub(r"(?:\[\s*\])+$", "", simple_type)
+            simple_type = re.sub(r"\s+", " ", simple_type).strip()
+            if not re.fullmatch(r"[A-Za-z_]\w*", simple_type):
+                continue
+            local_types = [
+                item for item in nodes
+                if item.get("kind") in {"struct", "enum", "user_defined_value_type"}
+                and item.get("name") == simple_type and item.get("file") == func.get("file")
+                and (
+                    item.get("contract") == func.get("contract")
+                    or (item.get("kind") == "user_defined_value_type" and not item.get("contract"))
+                )
+            ]
+            candidates = local_types if local_types else contract_by_name.get(simple_type, [])
+            if len(candidates) == 1:
+                edges.append(_edge(
+                    "USES_TYPE", func["id"], candidates[0]["id"], func["file"],
+                    source_by_path.get(func["file"], ""), func["source_offset"],
+                    return_index=return_index, type_name=simple_type,
                 ))
 
     # Explicit using-for directives connect extension calls to library source
@@ -2705,7 +2772,7 @@ def find_symbols(index: dict[str, Any], target: str) -> list[dict[str, Any]]:
     for node in index.get("nodes") or []:
         if node.get("kind") not in {
             "contract", "function", "modifier", "mapping", "state_variable",
-            "struct", "struct_field", "event", "custom_error", "enum", "enum_value", "function_pointer",
+            "struct", "struct_field", "event", "custom_error", "enum", "enum_value", "user_defined_value_type", "function_pointer",
         }:
             continue
         if contract_name and node.get("contract", node.get("name")) != contract_name:
