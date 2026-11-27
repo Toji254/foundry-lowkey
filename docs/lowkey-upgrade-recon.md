@@ -75,7 +75,7 @@ source_index → source_ast → source_graph → source_explorer
 - source_graph.py provides graph projection/serialization over source-index facts.
 - source_explorer.py builds the embedded HTML/CSS/JavaScript/SVG graph workspace and local source-serving endpoints.
 - source_link.py backs CLI source tracing and related source navigation.
-- protocol_graph.py builds fresh compiler-AST facts and validates saved canonical TraceEvent v2 streams. source_explorer.py joins compiler C3/override facts into the source model and now overlays validated runtime observations on the same SVG canvas as detached address-only runtime endpoints. The overlay retains trace artifact/run/sequence/backend metadata. It deliberately does not join runtime addresses to source declarations without verified network/deployment/proxy identity.
+- protocol_graph.py builds fresh compiler-AST facts and validates saved canonical TraceEvent v2 streams. source_explorer.py joins compiler C3/override facts, emits distinct C3-context virtual-dispatch candidate edges only for already-indexed virtual/unresolved call sites, and overlays validated runtime observations on the same SVG canvas as detached address-only runtime endpoints. The overlay retains trace artifact/run/sequence/backend metadata. It deliberately does not join runtime addresses to source declarations without verified network/deployment/proxy identity.
 - Deployment/proxy intelligence lives in separate deployment modules and remains a distinct source of deployment identity and proxy resolution evidence.
 
 ## Existing graph model and evidence contracts
@@ -135,5 +135,7 @@ Current branch head at this checkpoint: `9c41024fbbe452e21fe6647af5f2b7ff2f72fa3
 - Added positive and negative runtime-overlay unit tests: validated canonical streams should appear; malformed/non-contiguous streams must not create runtime nodes or edges.
 - Added `scripts/protocol-graph-browser-e2e.py` and a `protocol-graph-browser` CI job using Playwright/Chromium. It is a real browser test over generated generic Solidity fixtures, not a mocked DOM test. Its pending result must be checked on the latest head.
 - The 2,626 base unit tests passed on `1b9b4d1`. A later unrelated Hardhat review test fixture failed because its temporary `scripts` directory was created twice; fixture setup is now idempotent and awaits CI revalidation.
-- The full all-command runtime/side-effect matrix is still incomplete. Existing static inventory remains 161 root help keys and 28 aliases; a graph-focused safe CLI matrix is the next command-level acceptance.
+- A real installed-binary CLI matrix now covers the source graph command’s safe default, filters, output formats, inventory modes, pagination, detail views, invalid inputs, local archive import and loopback server/source API. The workflow has been added but its result on the current head is pending. The full all-command runtime/side-effect matrix for all 161 root help keys and 28 aliases remains incomplete.
 - Figma MCP Starter-plan call quota remains exhausted. The supplied prototype frame has not been visually inspected; no visual-match claim is made.
+
+- C3 virtual dispatch is now represented separately as a `VIRTUAL_DISPATCH_CANDIDATE` when fresh compiler AST identifies a virtual call and its caller contract's C3 chain selects a different most-derived implemented declaration. The original `CALLS` edge retains unresolved runtime implementation status; `super` calls are excluded from this candidate enrichment. This does not resolve an arbitrary deployed dynamic type.
