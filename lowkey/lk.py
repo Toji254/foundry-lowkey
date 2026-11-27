@@ -26891,6 +26891,26 @@ def _status_address_references(config, target, abi, rpc, *, limit=12):
     return references
 
 
+def _rpc_provenance_label(config):
+    """Describe the origin recorded by the authoritative runtime resolver.
+
+    The compatibility RPC field is hydrated from several possible sources;
+    its mere presence is not evidence that the user configured a manual URL.
+    """
+    resolved = config.get("_resolved_project_context") if isinstance(config, dict) else None
+    source = resolved.get("rpc_source") if isinstance(resolved, dict) else None
+    labels = {
+        "command-line": "explicit",
+        "project-fixture": "project fixture",
+        "managed-network-session": "managed network",
+        "project": "project configuration",
+        "legacy-project-owned": "legacy project configuration",
+        "environment": "environment",
+        "managed-network-selection-required": "selection required",
+    }
+    return labels.get(source, "source unknown")
+
+
 def run_status(config):
     target=config.get("target")
     target_abi = load_abi(target,config) if target else []
@@ -26909,7 +26929,7 @@ def run_status(config):
     else:
         print("Target : none")
     if rpc:
-        mode="manual" if config.get("rpc") else "auto Anvil"
+        mode = _rpc_provenance_label(config)
         print(f"RPC    : {rpc} ({mode})")
     else:
         print("RPC    : none (no local Anvil detected)")
@@ -30722,6 +30742,49 @@ def _apply_command_help_audit_catalog():
             ],
             related=["lk actor", "lk actors", "lk status", "lk deployments"],
         )
+        network_child["children"] = {
+            "create": _help_entry(
+                "Create and activate a new Lowkey-owned Anvil network session.",
+                "lk lab network create --name <name> [--chain-id <id>] [--fork-url <url>] [--fork-block <n>]",
+                "lk lab network create --name local-dev",
+                "Use this to create an isolated development, test or security-reproduction chain.",
+                options=[
+                    ("--name <name>", "Required session name, unique within this project.", "lk lab network create --name local-dev"),
+                    ("--chain-id <id>", "Chain ID for the new Anvil session; defaults to 31337.", "lk lab network create --name local-dev --chain-id 31337"),
+                    ("--fork-url <url>", "Optional upstream RPC to fork.", "lk lab network create --name fork-lab --fork-url https://rpc.example"),
+                    ("--fork-block <n>", "Optional pinned upstream block; requires a fork URL.", "lk lab network create --name fork-lab --fork-url https://rpc.example --fork-block 19000000"),
+                ],
+                related=["lk lab network list", "lk lab network status", "lk lab network use"],
+            ),
+            "list": _help_entry(
+                "List managed network sessions owned by the current project.",
+                "lk lab network list",
+                "lk lab network list",
+                "Use this to see available sessions and which one is selected.",
+                related=["lk lab network status", "lk lab network use"],
+            ),
+            "status": _help_entry(
+                "Verify a managed network's process ownership, RPC health, chain ID and genesis identity.",
+                "lk lab network status [name]",
+                "lk lab network status local-dev",
+                "Use this before relying on a session or switching to it.",
+                related=["lk lab network list", "lk lab network use"],
+            ),
+            "use": _help_entry(
+                "Select a healthy, identity-verified managed network for this project.",
+                "lk lab network use <name>",
+                "lk lab network use local-dev",
+                "Use this to make one managed session authoritative for subsequent Lowkey commands.",
+                related=["lk lab network status", "lk status"],
+            ),
+            "stop": _help_entry(
+                "Gracefully stop the exact managed Anvil process instance still owned by Lowkey.",
+                "lk lab network stop <name>",
+                "lk lab network stop local-dev",
+                "Use this only when the session is no longer needed; unmanaged processes are not stopped.",
+                related=["lk lab network list", "lk lab network status"],
+            ),
+        }
         lab_entry.setdefault("children", {})["network"] = network_child
         lab_entry.setdefault("forms", []).append(
             ("lk lab network ...", "Manage multiple isolated project-local Anvil sessions.", "lk lab network list")
@@ -32672,8 +32735,14 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
             return register_managed_network_actor(config, args[0], args[1])
         elif len(args)==2 and args[0].isdigit():
             return select_anvil_actor(config,args[0],args[1])
-        elif len(args)==1 and isinstance(config.get("_active_network_session"), dict) and args[0] in (config.get("_active_network_session") or {}).get("actors", {}) and args[0] not in config.get("wallets", {}):
-            return select_managed_network_actor(config,args[0])
+        elif (
+            len(args) == 1
+            and isinstance(config.get("_active_network_session"), dict)
+            and args[0] in (config.get("_active_network_session") or {}).get("actors", {})
+        ):
+            # The active session's actor registry is authoritative. A legacy
+            # wallet with the same display name must not shadow this identity.
+            return select_managed_network_actor(config, args[0])
         elif len(args)==1 and args[0] in config.get("wallets",{}):
             name = args[0]
             entry = config.get("wallets", {}).get(name)

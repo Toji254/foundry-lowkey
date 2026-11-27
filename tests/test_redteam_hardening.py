@@ -165,6 +165,41 @@ Error: solar reported 1 error; see the diagnostics printed above
         self.assertIn("removed 2 saved Anvil actor profile(s)", output.getvalue())
         self.assertIn("private-key/environment wallet profiles", output.getvalue())
 
+    def test_managed_session_actor_alias_wins_legacy_wallet_name_collision(self):
+        for alias, session_address, legacy_index in (
+            ("lab-deployer", "0x" + "11" * 20, 0),
+            ("Alice", "0x" + "22" * 20, 1),
+        ):
+            with self.subTest(alias=alias):
+                config = lk.fresh_config()
+                config["wallets"][alias] = {
+                    "source": "anvil-default",
+                    "anvil_index": legacy_index,
+                    "address": "0x" + "99" * 20,
+                    "internal": alias == "lab-deployer",
+                }
+                config["_active_network_session"] = {
+                    "id": "managed-session",
+                    "name": "isolated",
+                    "actors": {alias: session_address},
+                    "active_actor": "lab-deployer",
+                }
+                with (
+                    patch.object(lk, "activate_project_context"),
+                    patch.object(lk, "NetworkManager") as manager,
+                    patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path("/tmp/lowkey-actor-test")),
+                    patch.object(lk, "tool_path", return_value="anvil"),
+                ):
+                    result = lk._dispatch_command_impl("actor", [alias], config)
+
+                self.assertEqual(result, 0)
+                self.assertEqual(config["actor"], alias)
+                self.assertEqual(
+                    config["_network_actor_selection"],
+                    {"session_id": "managed-session", "actor": alias},
+                )
+                manager.return_value.set_actor.assert_called_once_with("managed-session", alias)
+
     def test_actor_zero_is_reserved_for_internal_lab_deployer(self):
         config = lk.fresh_config()
         error = io.StringIO()

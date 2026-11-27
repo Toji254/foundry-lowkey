@@ -63,6 +63,23 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertNotIn("Why:", rendered)
         ai_footer.assert_called_once_with("status", native, {}, args=[], result=0)
 
+    def test_status_rpc_provenance_uses_resolved_source_not_hydrated_rpc_presence(self):
+        rpc = "http://127.0.0.1:8545"
+        managed = {
+            "rpc": rpc,
+            "_resolved_project_context": {"rpc_source": "managed-network-session"},
+        }
+        self.assertEqual(lk._rpc_provenance_label(managed), "managed network")
+
+        project = {
+            "rpc": rpc,
+            "_resolved_project_context": {"rpc_source": "project"},
+        }
+        self.assertEqual(lk._rpc_provenance_label(project), "project configuration")
+
+        # A hydrated compatibility field alone is not provenance.
+        self.assertEqual(lk._rpc_provenance_label({"rpc": rpc}), "source unknown")
+
     def test_send_preview_recommends_preflight_and_confirmed_submission(self):
         target = "0x" + "9" * 40
         sender = "0x" + "1" * 40

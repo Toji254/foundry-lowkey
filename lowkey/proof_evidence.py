@@ -266,10 +266,24 @@ def classify_proof(target_authenticity="unknown", fidelity="unknown", outcome="o
     elif authentic_fork: status = "FORK_OBSERVED"
     else: status = "OBSERVED"
     if human_confirmed and outcome in {"observed", "profitable"}: status = "HUMAN_CONFIRMED"
+    # Eligibility is a separate evidence axis. A fixture, local reimplementation,
+    # unverified fork, synthetic state or simulated dependency set must never
+    # become eligible for confirmation as a deployed-target finding.
+    confirmation_eligible = (
+        authentic_fork
+        and fidelity in {"simulated_caller", "constrained_inputs", "real_funded"}
+        and outcome in {"observed", "profitable"}
+    )
     return {
         "target_authenticity": authenticity, "target_authenticity_verified": bool(authenticity_verified),
         "fidelity": fidelity, "outcome": outcome, "human_confirmed": bool(human_confirmed), "status": status,
-        "status_axes": {"target_authenticity": authenticity, "fidelity": fidelity, "outcome": outcome},
+        "confirmation_eligible": confirmation_eligible,
+        "status_axes": {
+            "target_authenticity": authenticity,
+            "fidelity": fidelity,
+            "outcome": outcome,
+            "confirmation_eligible": confirmation_eligible,
+        },
         "status_policy": ("A fixture or local reimplementation cannot become deployment proof. "
             "FORK_REPRODUCED/PROFITABLE require an independently verified forked deployment; "
             "PROFITABLE additionally requires real-funded execution. HUMAN_CONFIRMED is explicit."),

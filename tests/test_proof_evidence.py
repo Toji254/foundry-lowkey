@@ -16,6 +16,26 @@ class ProofEvidenceTests(unittest.TestCase):
         self.assertEqual(result["status"], "SIMULATED_BREAK")
         self.assertEqual(result["status_axes"]["target_authenticity"], "fixture")
 
+    def test_confirmation_eligibility_requires_verified_fork_and_supported_fidelity(self):
+        cases = [
+            ("fixture", "synthetic_state", "observed", True, False),
+            ("local_reimplementation", "simulated_caller", "observed", True, False),
+            ("forked_deployment", "simulated_caller", "observed", False, False),
+            ("forked_deployment", "synthetic_state", "observed", True, False),
+            ("forked_deployment", "simulated_dependencies", "observed", True, False),
+            ("forked_deployment", "simulated_caller", "not_run", True, False),
+            ("forked_deployment", "simulated_caller", "observed", True, True),
+            ("forked_deployment", "constrained_inputs", "observed", True, True),
+            ("forked_deployment", "real_funded", "profitable", True, True),
+        ]
+        for authenticity, fidelity, outcome, verified, expected in cases:
+            with self.subTest(authenticity=authenticity, fidelity=fidelity, outcome=outcome):
+                result = classify_proof(
+                    authenticity, fidelity, outcome, authenticity_verified=verified
+                )
+                self.assertIs(result["confirmation_eligible"], expected)
+                self.assertIs(result["status_axes"]["confirmation_eligible"], expected)
+
     def test_forked_deployment_needs_independent_authenticity_verification(self):
         unverified = classify_proof("forked_deployment", "real_funded", "profitable")
         verified = classify_proof("forked_deployment", "real_funded", "profitable",

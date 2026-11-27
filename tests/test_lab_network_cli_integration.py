@@ -63,3 +63,19 @@ def test_public_cli_fails_closed_when_requested_managed_anvil_cannot_start(tmp_p
     assert "no such file" in combined.lower() or "not found" in combined.lower()
     state_path = project / ".audit" / "anvil.json"
     assert not state_path.exists() or '"managed_sessions": {}' in state_path.read_text()
+
+
+
+def test_public_cli_resolves_network_create_help_without_mutating_network_state(tmp_path):
+    project = tmp_path / "project"
+    home = tmp_path / "home"
+    project.mkdir()
+    home.mkdir()
+    (project / "foundry.toml").write_text('[profile.default]\\nsrc="src"\\n', encoding="utf-8")
+
+    result = _run(project, home, "lab", "network", "create", "--help")
+
+    assert result.returncode == 0, result.stderr
+    assert "Usage: lk lab network create" in result.stdout
+    assert "Unknown subcommand" not in result.stdout
+    assert not (project / ".audit" / "anvil.json").exists()
