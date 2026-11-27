@@ -444,22 +444,22 @@ def compiler_ast_graph(
                             "source_span": function_node.get("source_span"),
                         })
 
-    # Solc's baseFunctions references are declaration-level override evidence.
-    # They do not establish the implementation selected at a runtime address.
-    for function_node in function_by_id.values():
-        for base_function_id in function_node.get("base_function_ids", []):
-            base_function = function_by_id.get(base_function_id)
-            if base_function is None:
-                continue
-            edges.append({
-                "kind": "compiler_override_candidate",
-                "source": function_node["id"],
-                "target": base_function["id"],
-                "evidence": "compiler_ast",
-                "source_sha256": function_node["source_sha256"],
-                "source_span": function_node.get("source_span"),
-                "certainty": "compiler_declared_base_function",
-            })
+        # Solc's baseFunctions references are declaration-level override evidence.
+        # They do not establish the implementation selected at a runtime address.
+        for function_node in function_by_id.values():
+            for base_function_id in function_node.get("base_function_ids", []):
+                base_function = function_by_id.get(base_function_id)
+                if base_function is None:
+                    continue
+                edges.append({
+                    "kind": "compiler_override_candidate",
+                    "source": function_node["id"],
+                    "target": base_function["id"],
+                    "evidence": "compiler_ast",
+                    "source_sha256": function_node["source_sha256"],
+                    "source_span": function_node.get("source_span"),
+                    "certainty": "compiler_declared_base_function",
+                })
 
     # A write-to-read pair is an AST-derived dependency candidate, not proof of
     # reaching-definition or execution order. It remains explicitly qualified.
