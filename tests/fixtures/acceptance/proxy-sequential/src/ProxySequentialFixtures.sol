@@ -281,18 +281,15 @@ contract UUPSLockoutActor {
     }
 }
 
-/// Direct implementation fixture. The owner-gated lock hook writes the same
-/// terminal initialized-version state used by constructor initializer locks.
-/// It permits a paired test against the same deployed address and bytecode.
+/// Direct implementation fixture. Its constructor locks the implementation
+/// using the same terminal initialized-version state used by common
+/// _disableInitializers() patterns. The isolated attack branch clears only that
+/// state slot to model a constructor that omitted the lock.
 contract UUPSImplementationInitializationFixture {
     uint8 public initializedVersion;
     address public owner;
-    address private immutable _lockAuthority;
 
-    constructor() { _lockAuthority = msg.sender; }
-
-    function disableInitializers() external {
-        require(msg.sender == _lockAuthority, "ONLY_LOCK_AUTHORITY");
+    constructor() {
         initializedVersion = type(uint8).max;
     }
 

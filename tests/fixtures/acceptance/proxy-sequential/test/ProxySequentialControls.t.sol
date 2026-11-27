@@ -273,7 +273,6 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
 
 
     function test_paired_implementation_initializer_lock_prevents_takeover() external {
-        address owner = vm.envAddress("P0_OWNER");
         UUPSImplementationInitializationFixture implementation =
             UUPSImplementationInitializationFixture(
                 vm.envAddress("P0_IMPLEMENTATION_INITIALIZER_TARGET")
@@ -283,9 +282,8 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
         );
         uint256 baseline = vm.snapshot();
 
-        // Control: the deployment authority locks the direct implementation.
-        vm.prank(owner);
-        implementation.disableInitializers();
+        // Control: the constructor has already disabled initialization on
+        // the direct implementation before any untrusted caller can initialize.
         _lowkeyStartTrace(address(implementation));
         require(implementation.initializedVersion() == type(uint8).max,
             "INITIALIZER_CONTROL_NOT_LOCKED");
@@ -297,9 +295,11 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
         require(implementation.owner() == address(0), "LOCKED_IMPLEMENTATION_OWNER_CHANGED");
         _lowkeyWriteTrace(".audit/godmode/control-implementation-initializer-state-diff.json");
 
-        // Attack: revert to the same implementation's uninitialized deployment
-        // state, then submit identical initialize(address) calldata and caller.
+        // Attack: revert to the exact deployment baseline and model the
+        // missing constructor _disableInitializers() call by clearing only its
+        // initialized-version slot inside this disposable Forge fork.
         require(vm.revertTo(baseline), "IMPLEMENTATION_INITIALIZER_BASELINE_REVERT_FAILED");
+        vm.store(address(implementation), bytes32(uint256(0)), bytes32(uint256(0)));
         _lowkeyStartTrace(address(implementation));
         require(implementation.initializedVersion() == 0, "INITIALIZER_ATTACK_VERSION_PRESTATE_MISMATCH");
         require(implementation.owner() == address(0), "INITIALIZER_ATTACK_OWNER_PRESTATE_MISMATCH");

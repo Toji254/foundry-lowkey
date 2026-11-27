@@ -1133,13 +1133,14 @@ def main() -> int:
             json.dumps(initializer_manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        if rpc_storage(cast, root, env, implementation_initializer, "0x0") != "0x" + ("0" * 64):
-            raise AssertionError("Implementation initializer fixture did not begin uninitialized.")
+        locked_initializer_slot = "0x" + ("0" * 62) + "ff"
+        if rpc_storage(cast, root, env, implementation_initializer, "0x0") != locked_initializer_slot:
+            raise AssertionError("Implementation initializer fixture constructor did not lock initialization.")
         initializer_case = run_implementation_initializer_campaign(
             lk, root, env, initializer_manifest_name, evidence_root,
         )
-        if rpc_storage(cast, root, env, implementation_initializer, "0x0") != "0x" + ("0" * 64):
-            raise AssertionError("Implementation initializer fork campaign mutated source Anvil state.")
+        if rpc_storage(cast, root, env, implementation_initializer, "0x0") != locked_initializer_slot:
+            raise AssertionError("Implementation initializer fork campaign mutated source Anvil lock state.")
 
         report = {
             "gate": "Lowkey independent P0 UUPS authorization, UUID/lockout, direct implementation initialization, ProxyAdmin and Transparent hybrid acceptance",
