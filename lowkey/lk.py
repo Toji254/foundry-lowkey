@@ -14184,6 +14184,7 @@ def _ensure_fixture_context_anvil(config, root, current_rpc, context):
             process.pid,
             purpose="project-fixture-block-context",
             log_path=str(log_path),
+            expected_context=context,
         )
     except Exception as exc:
         try:
@@ -18052,21 +18053,14 @@ def _artifact_catalog(root):
 def _current_deployment_network_identity(config, root, rpc):
     """Capture a project/network identity; unmanaged RPCs get non-reusable invocation UUIDs."""
     root_path = Path(root).expanduser().resolve()
-    chain_raw = rpc_json(rpc, "eth_chainId", []) if rpc else None
-    try:
-        chain_id = int(str(chain_raw), 16) if str(chain_raw).lower().startswith("0x") else int(chain_raw)
-    except (TypeError, ValueError):
-        chain_id = None
-    genesis = rpc_json(rpc, "eth_getBlockByNumber", ["earliest", False]) if rpc else None
-    genesis_hash = genesis.get("hash") if isinstance(genesis, dict) else None
-    rpc_identity = _rpc_identity_fingerprint(rpc)
-    managed = read_project_anvil_state(root_path) or {}
     selected_rpc = str(rpc or "").rstrip("/")
     project_id = hashlib.sha256(str(root_path).encode("utf-8")).hexdigest()
+    managed = read_project_anvil_state(root_path) or {}
     sessions = managed.get("managed_sessions") if isinstance(managed.get("managed_sessions"), dict) else {}
     selected_id = managed.get("active_session_id")
     session = sessions.get(selected_id) if selected_id else None
     session_kind = "managed-anvil"
+
     # Fixture-context nodes are separate managed sessions, not the active
     # development session. Match their explicit fixture-session ID when their
     # RPC is the endpoint selected by the fixture command.
@@ -18093,13 +18087,55 @@ def _current_deployment_network_identity(config, root, rpc):
             selected_id = legacy_id
             session = legacy_session
             session_kind = "managed-anvil"
+
+    chain_raw = rpc_json(rpc, "eth_chainId", []) if rpc else None
+    try:
+        chain_id = int(str(chain_raw), 16) if str(chain_raw).lower().startswith("0x") else int(chain_raw)
+    except (TypeError, ValueError):
+        chain_id = None
+
+    # New sessions pin a specific identity block. For a promoted fixture this
+    # is the exact Foundry-captured block number, not the "earliest" tag, which
+    # is not a reliable selector for Anvil instances started with --number.
+    identity_block_number = None
+    if isinstance(session, dict):
+        raw_number = session.get("identity_block_number")
+        if raw_number is not None:
+            try:
+                identity_block_number = int(str(raw_number), 16) if str(raw_number).lower().startswith("0x") else int(raw_number)
+            except (TypeError, ValueError):
+                identity_block_number = None
+    block_tag = hex(identity_block_number) if identity_block_number is not None and identity_block_number >= 0 else "earliest"
+    identity_block = rpc_json(rpc, "eth_getBlockByNumber", [block_tag, False]) if rpc else None
+    identity_block_hash = identity_block.get("hash") if isinstance(identity_block, dict) else None
+    actual_identity_block_number = None
+    if isinstance(identity_block, dict):
+        raw_actual_number = identity_block.get("number")
+        try:
+            actual_identity_block_number = (
+                int(str(raw_actual_number), 16)
+                if str(raw_actual_number).lower().startswith("0x")
+                else int(raw_actual_number)
+            )
+        except (TypeError, ValueError):
+            actual_identity_block_number = None
+    rpc_identity = _rpc_identity_fingerprint(rpc)
+
+    expected_hash = None
+    if isinstance(session, dict):
+        expected_hash = session.get("identity_block_hash") or session.get("genesis_hash")
     managed_session = bool(
         selected_id and isinstance(session, dict)
         and str(session.get("rpc") or "").rstrip("/") == selected_rpc
         and session.get("project_id") == project_id
         and session.get("status") == "running"
         and session.get("chain_id") == chain_id
-        and str(session.get("genesis_hash") or "").lower() == str(genesis_hash or "").lower()
+        and str(expected_hash or "").lower() == str(identity_block_hash or "").lower()
+        and isinstance(identity_block_hash, str)
+        and (
+            identity_block_number is None
+            or actual_identity_block_number == identity_block_number
+        )
     )
     if managed_session:
         try:
@@ -18123,7 +18159,9 @@ def _current_deployment_network_identity(config, root, rpc):
         "session_kind": session_kind if managed_session else "unmanaged-invocation",
         "reuse_permitted": managed_session,
         "chain_id": chain_id,
-        "genesis_hash": str(genesis_hash).lower() if genesis_hash else None,
+        "genesis_hash": str(identity_block_hash).lower() if identity_block_hash else None,
+        "identity_block_hash": str(identity_block_hash).lower() if identity_block_hash else None,
+        "identity_block_number": identity_block_number,
         "rpc_fingerprint": rpc_identity.get("rpc_fingerprint"),
         "rpc_origin": rpc_identity.get("rpc_origin"),
     }
@@ -18140,7 +18178,8 @@ def _record_network_session_deployment(root, network_identity, address, record):
             key: identity.get(key)
             for key in (
                 "project_id", "project_root", "network_session_id", "session_kind",
-                "chain_id", "genesis_hash", "rpc_fingerprint", "rpc_origin",
+                "chain_id", "genesis_hash", "identity_block_hash",
+                "identity_block_number", "rpc_fingerprint", "rpc_origin",
             )
         }
         session_record["reuse_permitted"] = True

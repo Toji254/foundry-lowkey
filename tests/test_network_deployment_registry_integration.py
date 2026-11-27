@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from lowkey.network_manager import NetworkError, NetworkManager
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("lowkeycast_network_registry", ROOT / "lowkey" / "lk.py")
 lk = importlib.util.module_from_spec(spec)
@@ -14,7 +16,7 @@ spec.loader.exec_module(lk)
 
 
 class NetworkDeploymentRegistryIntegrationTests(unittest.TestCase):
-    def _write_state(self, root, *, session_id="session-a", rpc="http://127.0.0.1:18545", fixture=False):
+    def _write_state(self, root, *, session_id="session-a", rpc="http://127.0.0.1:18545", fixture=False, identity_block_number=None):
         project_id = hashlib.sha256(str(root.resolve()).encode()).hexdigest()
         session = {
             "id": session_id,
@@ -23,6 +25,8 @@ class NetworkDeploymentRegistryIntegrationTests(unittest.TestCase):
             "chain_id": 31337,
             "rpc": rpc,
             "genesis_hash": "0x" + "ab" * 32,
+            **({"identity_block_hash": "0x" + "ab" * 32, "identity_block_number": identity_block_number}
+               if identity_block_number is not None else {}),
             "status": "running",
         }
         state = {
@@ -42,12 +46,126 @@ class NetworkDeploymentRegistryIntegrationTests(unittest.TestCase):
             if method == "eth_getBlockByNumber":
                 if calls is not None:
                     calls.append(list(params or []))
-                # Model a chain whose configured genesis is not block zero.
-                if params != ["earliest", False]:
+                # Legacy state uses earliest; new managed fixtures query their
+                # explicitly persisted identity block number.
+                accepted = {("earliest", False), (hex(genesis_number), False)}
+                if tuple(params or []) not in accepted:
                     return None
                 return {"hash": "0x" + "ab" * 32, "number": hex(genesis_number)}
             raise AssertionError(method)
         return rpc
+
+    def test_register_fixture_process_anchors_to_captured_context_block(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            port = 18545
+            pid = 424242
+            context = {
+                "timestamp": 1700000000,
+                "blockNumber": 12345,
+                "chainId": 31337,
+                "baseFeePerGas": 1000000000,
+                "gasLimit": 30000000,
+            }
+            header = {
+                "hash": "0x" + "ab" * 32,
+                "number": "0x3039",
+                "timestamp": hex(context["timestamp"]),
+                "baseFeePerGas": hex(context["baseFeePerGas"]),
+                "gasLimit": hex(context["gasLimit"]),
+            }
+            calls = []
+
+            def identity(_pid):
+                self.assertEqual(_pid, pid)
+                return {
+                    "pid": pid,
+                    "start_ticks": 99,
+                    "uid": __import__("os").getuid(),
+                    "executable": "/usr/local/bin/anvil",
+                    "argv": f"anvil --host 127.0.0.1 --port {port} --chain-id 31337 --number 12345",
+                }
+
+            def rpc(_url, method, params=None, timeout=1.5):
+                calls.append((method, list(params or [])))
+                if method == "web3_clientVersion":
+                    return "anvil/v1.9.0"
+                if method == "eth_chainId":
+                    return "0x7a69"
+                if method == "eth_getBlockByNumber":
+                    return header if params == ["0x3039", False] else None
+                if method == "eth_accounts":
+                    return ["0x" + "11" * 20, "0x" + "22" * 20]
+                raise AssertionError(method)
+
+            manager = NetworkManager(root, rpc_call=rpc, process_identity=identity)
+            session = manager.register_existing_process(
+                "fixture-context-test",
+                f"http://127.0.0.1:{port}",
+                pid,
+                purpose="project-fixture-block-context",
+                expected_context=context,
+            )
+            self.assertEqual(session["identity_block_number"], 12345)
+            self.assertEqual(session["identity_block_hash"], header["hash"])
+            self.assertEqual(session["genesis_hash"], header["hash"])
+            self.assertIn(("eth_getBlockByNumber", ["0x3039", False]), calls)
+
+            status = manager.status("fixture-context-test")
+            self.assertTrue(status["process_owned"])
+            self.assertTrue(status["rpc_healthy"])
+            self.assertTrue(status["identity_block_matches"])
+
+    def test_register_fixture_process_rejects_wrong_captured_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            port = 18546
+            pid = 424243
+            context = {
+                "timestamp": 1700000000,
+                "blockNumber": 12345,
+                "chainId": 31337,
+                "baseFeePerGas": 1000000000,
+                "gasLimit": 30000000,
+            }
+            header = {
+                "hash": "0x" + "ab" * 32,
+                "number": "0x3039",
+                "timestamp": hex(context["timestamp"] + 1),
+                "baseFeePerGas": hex(context["baseFeePerGas"]),
+                "gasLimit": hex(context["gasLimit"]),
+            }
+
+            def identity(_pid):
+                return {
+                    "pid": pid,
+                    "start_ticks": 100,
+                    "uid": __import__("os").getuid(),
+                    "executable": "/usr/local/bin/anvil",
+                    "argv": f"anvil --host 127.0.0.1 --port {port} --chain-id 31337 --number 12345",
+                }
+
+            def rpc(_url, method, params=None, timeout=1.5):
+                if method == "web3_clientVersion":
+                    return "anvil/v1.9.0"
+                if method == "eth_chainId":
+                    return "0x7a69"
+                if method == "eth_getBlockByNumber":
+                    return header if params == ["0x3039", False] else None
+                if method == "eth_accounts":
+                    return ["0x" + "11" * 20]
+                raise AssertionError(method)
+
+            manager = NetworkManager(root, rpc_call=rpc, process_identity=identity)
+            with self.assertRaisesRegex(NetworkError, "timestamp does not match"):
+                manager.register_existing_process(
+                    "fixture-context-mismatch",
+                    f"http://127.0.0.1:{port}",
+                    pid,
+                    purpose="project-fixture-block-context",
+                    expected_context=context,
+                )
+            self.assertFalse(manager.state_path.exists())
 
     def test_current_identity_uses_active_managed_session_not_a_random_invocation(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -80,7 +198,7 @@ class NetworkDeploymentRegistryIntegrationTests(unittest.TestCase):
     def test_current_identity_accepts_nonzero_genesis_when_block_zero_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            self._write_state(root, fixture=True)
+            self._write_state(root, fixture=True, identity_block_number=12345)
             manager = unittest.mock.Mock()
             manager.list.return_value = [{"id": "session-a", "process_owned": True, "status": "running"}]
             calls = []
@@ -92,7 +210,8 @@ class NetworkDeploymentRegistryIntegrationTests(unittest.TestCase):
                 identity = lk._current_deployment_network_identity({}, root, "http://127.0.0.1:18545")
             self.assertEqual(identity["network_session_id"], "session-a")
             self.assertTrue(identity["reuse_permitted"])
-            self.assertEqual(calls, [["earliest", False]])
+            self.assertEqual(identity["identity_block_number"], 12345)
+            self.assertEqual(calls, [["0x3039", False]])
 
     def test_legacy_rpc_record_is_not_silently_associated_with_a_managed_session(self):
         with tempfile.TemporaryDirectory() as tmp:

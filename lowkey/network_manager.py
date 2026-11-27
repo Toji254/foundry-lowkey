@@ -45,6 +45,21 @@ def _project_id(root: Path) -> str:
     return hashlib.sha256(str(root.resolve()).encode("utf-8")).hexdigest()
 
 
+def _rpc_quantity(value: Any) -> int | None:
+    """Decode an Ethereum JSON-RPC quantity without accepting bools or malformed data."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if not isinstance(value, str):
+        return None
+    try:
+        result = int(value, 16) if value.lower().startswith("0x") else int(value, 10)
+    except ValueError:
+        return None
+    return result if result >= 0 else None
+
+
 def _rpc_request(url: str, method: str, params: list[Any] | None = None, timeout: float = 1.5) -> Any:
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}).encode()
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
@@ -274,11 +289,23 @@ class NetworkManager:
                         raise NetworkError("The selected endpoint did not identify itself as Anvil.")
                     if int(str(reported_chain), 16) != chain_id:
                         raise NetworkError("Anvil returned an unexpected chain ID.")
-                    if not isinstance(genesis, dict) or not re.fullmatch(r"0x[0-9a-fA-F]{64}", str(genesis.get("hash") or "")):
-                        raise NetworkError("Anvil did not return a valid genesis block hash.")
+                    genesis_number = _rpc_quantity(genesis.get("number")) if isinstance(genesis, dict) else None
+                    if (
+                        not isinstance(genesis, dict)
+                        or not re.fullmatch(r"0x[0-9a-fA-F]{64}", str(genesis.get("hash") or ""))
+                        or genesis_number is None
+                    ):
+                        raise NetworkError("Anvil did not return a valid identity block (number and hash).")
                     if not isinstance(accounts, list) or not accounts or any(not re.fullmatch(r"0x[0-9a-fA-F]{40}", str(a)) for a in accounts):
                         raise NetworkError("Anvil did not return a valid account list.")
-                    rpc_data = {"client_version": str(client), "chain_id": chain_id, "genesis_hash": str(genesis["hash"]).lower(), "accounts": [str(a).lower() for a in accounts]}
+                    rpc_data = {
+                        "client_version": str(client),
+                        "chain_id": chain_id,
+                        "genesis_hash": str(genesis["hash"]).lower(),
+                        "identity_block_hash": str(genesis["hash"]).lower(),
+                        "identity_block_number": genesis_number,
+                        "accounts": [str(a).lower() for a in accounts],
+                    }
                     break
                 except NetworkError:
                     self._sleep(0.1)
@@ -295,6 +322,8 @@ class NetworkManager:
                 "rpc": rpc_url,
                 "port": port,
                 "genesis_hash": rpc_data["genesis_hash"],
+                "identity_block_hash": rpc_data["identity_block_hash"],
+                "identity_block_number": rpc_data["identity_block_number"],
                 "client_version": rpc_data["client_version"],
                 "pid": int(process.pid),
                 "process_start_ticks": identity.get("start_ticks"),
@@ -363,11 +392,33 @@ class NetworkManager:
             return None
         try:
             chain = self._rpc(session["rpc"], "eth_chainId", [])
-            genesis = self._rpc(session["rpc"], "eth_getBlockByNumber", ["earliest", False])
-            session["rpc_healthy"] = int(str(chain), 16) == int(session["chain_id"])
-            session["genesis_matches"] = isinstance(genesis, dict) and str(genesis.get("hash", "")).lower() == session["genesis_hash"]
+            anchor_number = _rpc_quantity(session.get("identity_block_number"))
+            block_tag = hex(anchor_number) if anchor_number is not None else "earliest"
+            identity_block = self._rpc(session["rpc"], "eth_getBlockByNumber", [block_tag, False])
+            expected_hash = str(
+                session.get("identity_block_hash") or session.get("genesis_hash") or ""
+            ).lower()
+            actual_hash = (
+                str(identity_block.get("hash") or "").lower()
+                if isinstance(identity_block, dict) else ""
+            )
+            actual_number = (
+                _rpc_quantity(identity_block.get("number"))
+                if isinstance(identity_block, dict) else None
+            )
+            number_matches = anchor_number is None or actual_number == anchor_number
+            session["rpc_healthy"] = _rpc_quantity(chain) == _rpc_quantity(session["chain_id"])
+            session["identity_block_matches"] = bool(
+                re.fullmatch(r"0x[0-9a-f]{64}", actual_hash)
+                and expected_hash
+                and actual_hash == expected_hash
+                and number_matches
+            )
+            # Keep the established field for existing callers.
+            session["genesis_matches"] = session["identity_block_matches"]
         except Exception:
             session["rpc_healthy"] = False
+            session["identity_block_matches"] = False
             session["genesis_matches"] = False
         return session
 
@@ -494,13 +545,16 @@ class NetworkManager:
         fork_origin: str | None = None,
         fork_block: int | None = None,
         log_path: str | None = None,
+        expected_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Register a process started by another Lowkey-owned workflow.
 
         This is used for special-purpose fixture Anvils so they participate in
         the same session identity and safe-stop rules as ordinary managed
         sessions. The process must already be live, owned by this UID, and
-        demonstrably serving the RPC endpoint supplied by the caller.
+        demonstrably serving the RPC endpoint supplied by the caller. When a
+        captured fixture context is supplied, registration pins its exact block
+        number and verifies the timestamp, chain ID, base fee and gas limit.
         """
         name = str(name or "").strip()
         if not name or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", name):
@@ -518,19 +572,75 @@ class NetworkManager:
         }
         if not _safe_process_match(record_for_match, identity):
             raise NetworkError("The process identity does not match an Anvil executable listening on the expected port.")
+        if expected_context is not None and not isinstance(expected_context, dict):
+            raise NetworkError("Expected fixture block context must be an object.")
+        expected_block_number = (
+            _rpc_quantity(expected_context.get("blockNumber"))
+            if expected_context is not None else None
+        )
+        if expected_context is not None and expected_block_number is None:
+            raise NetworkError("Expected fixture block context has no valid blockNumber.")
         try:
             client = self._rpc(rpc_url, "web3_clientVersion", [])
             chain_value = self._rpc(rpc_url, "eth_chainId", [])
-            genesis = self._rpc(rpc_url, "eth_getBlockByNumber", ["earliest", False])
+            chain_id = _rpc_quantity(chain_value)
+            block_tag = hex(expected_block_number) if expected_block_number is not None else "latest"
+            identity_block = self._rpc(rpc_url, "eth_getBlockByNumber", [block_tag, False])
             accounts = self._rpc(rpc_url, "eth_accounts", [])
-            chain_id = int(str(chain_value), 16)
         except Exception as exc:
             raise NetworkError(f"The process RPC could not be independently verified: {exc}") from exc
-        genesis_hash = str((genesis or {}).get("hash") or "").lower()
-        if not isinstance(genesis, dict) or not re.fullmatch(r"0x[0-9a-f]{64}", genesis_hash):
-            raise NetworkError("The process RPC returned no valid genesis hash.")
-        if not isinstance(accounts, list) or any(not re.fullmatch(r"0x[0-9a-fA-F]{40}", str(item)) for item in accounts):
+
+        if "anvil" not in str(client).lower():
+            raise NetworkError("The process RPC endpoint did not identify itself as Anvil.")
+        if chain_id is None or chain_id < 1:
+            raise NetworkError("The process RPC returned an invalid chain ID.")
+        if expected_context is not None:
+            expected_chain_id = _rpc_quantity(expected_context.get("chainId"))
+            if expected_chain_id is None or chain_id != expected_chain_id:
+                raise NetworkError("The fixture RPC chain ID does not match the captured block context.")
+
+        identity_block_hash = (
+            str(identity_block.get("hash") or "").lower()
+            if isinstance(identity_block, dict) else ""
+        )
+        identity_block_number = (
+            _rpc_quantity(identity_block.get("number"))
+            if isinstance(identity_block, dict) else None
+        )
+        if (
+            not isinstance(identity_block, dict)
+            or not re.fullmatch(r"0x[0-9a-f]{64}", identity_block_hash)
+            or identity_block_number is None
+        ):
+            raise NetworkError(
+                f"The process RPC returned no valid identity block at {block_tag}; "
+                "the supplied process and RPC endpoint cannot be tied to a canonical header."
+            )
+        if expected_block_number is not None and identity_block_number != expected_block_number:
+            raise NetworkError(
+                "The fixture RPC returned a different block number than the captured Foundry context."
+            )
+        if expected_context is not None:
+            for context_field, header_field in (
+                ("timestamp", "timestamp"),
+                ("baseFeePerGas", "baseFeePerGas"),
+                ("gasLimit", "gasLimit"),
+            ):
+                expected_value = _rpc_quantity(expected_context.get(context_field))
+                actual_value = _rpc_quantity(identity_block.get(header_field))
+                if expected_value is None or actual_value != expected_value:
+                    raise NetworkError(
+                        f"The fixture RPC {header_field} does not match the captured Foundry block context."
+                    )
+        if (
+            not isinstance(accounts, list)
+            or not accounts
+            or any(not re.fullmatch(r"0x[0-9a-fA-F]{40}", str(item)) for item in accounts)
+        ):
             raise NetworkError("The process RPC returned an invalid account list.")
+        # Compatibility alias: for fixture Anvils this is the captured context
+        # block, not necessarily the special "earliest" block tag.
+        genesis_hash = identity_block_hash
         state = self._read()
         if self._find(state["managed_sessions"], name):
             raise NetworkError(f"A managed network named {name!r} already exists.")
@@ -543,7 +653,10 @@ class NetworkManager:
             "id": session_id, "project_id": self.project_id, "name": name,
             "purpose": str(purpose), "chain_id": chain_id,
             "rpc": str(rpc_url), "port": parsed.port,
-            "genesis_hash": genesis_hash, "client_version": str(client),
+            "genesis_hash": genesis_hash,
+            "identity_block_hash": identity_block_hash,
+            "identity_block_number": identity_block_number,
+            "client_version": str(client),
             "pid": int(pid), "process_start_ticks": identity.get("start_ticks"),
             "process_uid": identity.get("uid"),
             "process_executable": identity.get("executable"),
