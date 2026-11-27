@@ -9,7 +9,11 @@ never adopted or terminated.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+from functools import wraps
 import hashlib
+import fcntl
+import threading
 import json
 import os
 import re
@@ -35,6 +39,22 @@ PORT_RANGE = range(8545, 8566)
 
 class NetworkError(RuntimeError):
     """A network session operation could not be completed safely."""
+
+
+# Share in-process locks across NetworkManager instances that point at the same
+# project registry. flock then extends the critical section across processes.
+_REGISTRY_PROCESS_LOCKS: dict[str, threading.RLock] = {}
+_REGISTRY_PROCESS_LOCKS_GUARD = threading.Lock()
+_REGISTRY_LOCK_STATE = threading.local()
+
+
+def _serialized_registry_operation(function):
+    """Serialize a registry operation across threads, manager instances and processes."""
+    @wraps(function)
+    def wrapped(self, *args, **kwargs):
+        with self._registry_lock():
+            return function(self, *args, **kwargs)
+    return wrapped
 
 
 def _now() -> str:
@@ -157,10 +177,45 @@ class NetworkManager:
         self._port_range = port_range
         self._startup_attempts = startup_attempts
 
+    @contextmanager
+    def _registry_lock(self):
+        """Hold the project registry lock for a complete read/modify/write operation."""
+        key = str(self.state_path)
+        with _REGISTRY_PROCESS_LOCKS_GUARD:
+            process_lock = _REGISTRY_PROCESS_LOCKS.setdefault(key, threading.RLock())
+        with process_lock:
+            held = getattr(_REGISTRY_LOCK_STATE, "held", set())
+            if key in held:
+                # Nested operations (for example stop_session -> stop -> _read)
+                # share the outer open-file-description lock.
+                yield
+                return
+
+            self.audit_dir.mkdir(parents=True, exist_ok=True)
+            lock_path = self.state_path.with_name(self.state_path.name + ".lock")
+            flags = os.O_CREAT | os.O_RDWR
+            fd = os.open(lock_path, flags, 0o600)
+            try:
+                os.fchmod(fd, 0o600)
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                held = set(held)
+                held.add(key)
+                _REGISTRY_LOCK_STATE.held = held
+                try:
+                    yield
+                finally:
+                    held = set(getattr(_REGISTRY_LOCK_STATE, "held", set()))
+                    held.discard(key)
+                    _REGISTRY_LOCK_STATE.held = held
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
     @property
     def project_id(self) -> str:
         return _project_id(self.root)
 
+    @_serialized_registry_operation
     def _read(self) -> dict[str, Any]:
         raw: str | None = None
         try:
@@ -274,6 +329,7 @@ class NetworkManager:
                 f"schema migration was aborted: {exc}"
             ) from exc
 
+    @_serialized_registry_operation
     def _write(self, data: dict[str, Any]) -> None:
         self.audit_dir.mkdir(parents=True, exist_ok=True)
         data["schema_version"] = SCHEMA_VERSION
@@ -316,6 +372,7 @@ class NetworkManager:
                 return int(port)
         raise NetworkError("No free local port is available in the configured Anvil range.")
 
+    @_serialized_registry_operation
     def create(
         self,
         name: str,
@@ -503,6 +560,7 @@ class NetworkManager:
             session["genesis_matches"] = False
         return session
 
+    @_serialized_registry_operation
     def use(self, name: str) -> dict[str, Any]:
         state = self._read()
         match = self._find(state["managed_sessions"], name)
@@ -558,6 +616,7 @@ class NetworkManager:
             raise NetworkError("The requested managed session failed its RPC/genesis identity check.")
         return verified
 
+    @_serialized_registry_operation
     def stop(self, name: str) -> dict[str, Any]:
         state = self._read()
         match = self._find(state["managed_sessions"], name)
@@ -616,6 +675,7 @@ class NetworkManager:
         self._write(state)
         return {"id": session_id, "name": name, "status": "stopped"}
 
+    @_serialized_registry_operation
     def register_existing_process(
         self,
         name: str,
@@ -751,6 +811,7 @@ class NetworkManager:
         self._write(state)
         return dict(session)
 
+    @_serialized_registry_operation
     def stop_session(self, session_id: str) -> dict[str, Any]:
         """Stop an exact registered session without relying on a possibly reused name."""
         state = self._read()
@@ -759,6 +820,7 @@ class NetworkManager:
             raise NetworkError("Managed session ID does not belong to this project.")
         return self.stop(str(session.get("name") or ""))
 
+    @_serialized_registry_operation
     def set_actor(self, session_id: str, actor: str | None) -> dict[str, Any]:
         state = self._read()
         session = state["managed_sessions"].get(session_id)
@@ -774,6 +836,7 @@ class NetworkManager:
             "address": session.get("actors", {}).get(actor) if actor else None,
         }
 
+    @_serialized_registry_operation
     def register_actor(self, session_id: str, account_index: int, alias: str) -> dict[str, Any]:
         """Register a human-readable alias for an unlocked account in one session.
 
@@ -808,6 +871,7 @@ class NetworkManager:
         self._write(state)
         return {"session_id": str(session_id), "actor": name, "address": address.lower(), "created": True}
 
+    @_serialized_registry_operation
     def set_deployment(self, session_id: str, address: str, record: dict[str, Any]) -> None:
         if not re.fullmatch(r"0x[0-9a-fA-F]{40}", str(address)):
             raise NetworkError("Deployment address is invalid.")
@@ -818,6 +882,7 @@ class NetworkManager:
         session.setdefault("deployments", {})[address.lower()] = dict(record)
         self._write(state)
 
+    @_serialized_registry_operation
     def record_deployment(
         self,
         session_id: str,

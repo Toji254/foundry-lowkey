@@ -471,3 +471,73 @@ def test_existing_legacy_backup_is_never_overwritten_with_different_content(tmp_
 
     assert state_path.read_text(encoding="utf-8") == original
     assert backup_path.read_text(encoding="utf-8") == previous_backup
+
+
+def _concurrent_register_actor(root, index, alias, result_queue):
+    try:
+        manager = NetworkManager(root)
+        result_queue.put(("ok", manager.register_actor("session-a", index, alias)))
+    except Exception as exc:
+        result_queue.put(("error", f"{type(exc).__name__}: {exc}"))
+
+
+def test_registry_serializes_concurrent_actor_updates_across_processes(tmp_path):
+    import multiprocessing
+
+    audit = tmp_path / ".audit"
+    audit.mkdir()
+    project_id = NetworkManager(tmp_path).project_id
+    state = {
+        "schema_version": 2,
+        "managed_sessions": {
+            "session-a": {
+                "id": "session-a",
+                "project_id": project_id,
+                "name": "concurrent-test",
+                "status": "running",
+                "actors": {
+                    "lab-deployer": "0x" + "11" * 20,
+                    "anvil-1": "0x" + "22" * 20,
+                    "anvil-2": "0x" + "33" * 20,
+                },
+                "deployments": {},
+            }
+        },
+    }
+    (audit / "anvil.json").write_text(json.dumps(state), encoding="utf-8")
+
+    context = multiprocessing.get_context("fork")
+    queue = context.Queue()
+    processes = [
+        context.Process(target=_concurrent_register_actor, args=(str(tmp_path), 1, "Alice", queue)),
+        context.Process(target=_concurrent_register_actor, args=(str(tmp_path), 2, "Bob", queue)),
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=10)
+    try:
+        assert all(not process.is_alive() for process in processes)
+        assert [process.exitcode for process in processes] == [0, 0]
+        results = [queue.get(timeout=2), queue.get(timeout=2)]
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=2)
+        queue.close()
+
+    assert all(status == "ok" for status, _value in results), results
+    records = NetworkManager(tmp_path).get_deployments("session-a")
+    actors = json.loads((audit / "anvil.json").read_text(encoding="utf-8"))["managed_sessions"]["session-a"]["actors"]
+    assert actors["Alice"] == "0x" + "22" * 20
+    assert actors["Bob"] == "0x" + "33" * 20
+    assert not records
+
+
+def test_registry_file_lock_is_private_and_persistent(tmp_path):
+    manager = NetworkManager(tmp_path)
+    manager.list()
+    lock_path = manager.state_path.with_name(manager.state_path.name + ".lock")
+    assert lock_path.is_file()
+    assert lock_path.stat().st_mode & 0o777 == 0o600
