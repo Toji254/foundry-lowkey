@@ -217,10 +217,17 @@ def _read_uint_call(
 def _price_round(
     rpc: Callable[..., Any], local_url: str, source_url: str | None,
     feed: str, block: int, block_timestamp: int, max_age_seconds: int,
+    after_block: int | None = None,
 ) -> dict[str, Any]:
     code_hash, code_verified = _verify_code_source(
         rpc, local_url, source_url, feed, block, "USD price feed"
     )
+    if after_block is not None:
+        after_identity_hash, _ = _verify_code_source(
+            rpc, local_url, source_url, feed, after_block, "USD price feed post-state"
+        )
+        if after_identity_hash != code_hash:
+            raise TokenEconomicsError("USD price feed proxy/implementation identity changed during the measured transaction.")
     feed_decimals, decimals_verified = _read_uint_call(
         rpc, local_url, source_url, feed, _DECIMALS, block, "price feed decimals"
     )
@@ -376,7 +383,7 @@ def measure_token_portfolio(
         raise TokenEconomicsError("At least one profit account is required.")
     native_price = _price_round(
         rpc, local_url, source_url, spec["native"]["oracle"], before_block,
-        block_timestamp, spec["native"]["max_price_age_seconds"],
+        block_timestamp, spec["native"]["max_price_age_seconds"], after_block,
     )
     results = []
     all_source_verified = source_url is not None and bool(
@@ -482,7 +489,7 @@ def measure_token_portfolio(
         price_feed = token["oracle"] if token["kind"] == "erc20" else token["asset_oracle"]
         price = _price_round(
             rpc, local_url, source_url, price_feed, before_block,
-            block_timestamp, token["max_price_age_seconds"],
+            block_timestamp, token["max_price_age_seconds"], after_block,
         )
         all_source_verified = all_source_verified and bool(
             price["feed_code_source_verified"] and price["source_round_verified"]
