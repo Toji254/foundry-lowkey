@@ -1,0 +1,96 @@
+name: Actual GMX PositionUtils to PositionManager deployment
+
+on:
+  push:
+    branches: [integration-test-drive]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actual-gmx-position-manager:
+    name: Pinned GMX V1 compile, link, deploy and verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout immutable GMX V1 source revision
+        uses: actions/checkout@v4
+        with:
+          repository: gmx-io/gmx-contracts
+          ref: fe55c4ba8911ae2378b50bfb9bece5ee50cf2af8
+          path: gmx-source
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "18.20.8"
+          cache: npm
+          cache-dependency-path: gmx-source/package-lock.json
+
+      - name: Prepare isolated automation home
+        run: |
+          set -euo pipefail
+          isolated_home="$RUNNER_TEMP/lowkey-gmx-acceptance-home"
+          mkdir -p "$isolated_home" "$isolated_home/.config"
+          echo "HOME=$isolated_home" >> "$GITHUB_ENV"
+          echo "XDG_CONFIG_HOME=$isolated_home/.config" >> "$GITHUB_ENV"
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.9.0
+          cache: false
+
+      - name: Verify pinned Foundry
+        run: |
+          set -euo pipefail
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.foundry/bin:$PATH"
+          python3 scripts/verify_foundry_toolchain.py 1.9.0
+          anvil --version
+          cast --version
+
+      - name: Prepare actual GMX project-local dependencies
+        working-directory: gmx-source
+        run: |
+          set -euo pipefail
+          cp env.example.json env.json
+          npm ci
+
+      - name: Compile the pinned GMX source with its project Hardhat settings
+        working-directory: gmx-source
+        run: |
+          set -euo pipefail
+          npx hardhat compile
+          test -s artifacts/contracts/core/PositionUtils.sol/PositionUtils.json
+          test -s artifacts/contracts/core/PositionManager.sol/PositionManager.json
+          test -d artifacts/build-info
+
+      - name: Install Lowkey into isolated automation home
+        run: bash install.sh
+
+      - name: Execute actual GMX library deployment and target verification
+        env:
+          LOWKEY_NONINTERACTIVE_DEPLOY: "1"
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/gmx-positionutils-positionmanager-e2e.py
+          python3 scripts/gmx-positionutils-positionmanager-e2e.py --gmx-root "$GITHUB_WORKSPACE/gmx-source"
+
+      - name: Upload actual GMX deployment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: actual-gmx-positionutils-positionmanager-${{ github.run_number }}
+          path: gmx-source/.audit/gmx-positionutils-acceptance/
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 30
