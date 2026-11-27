@@ -492,7 +492,7 @@ class ProtocolExplorerTests(unittest.TestCase):
                 "canonical_trace_events": [{
                     "seq": 4,
                     "backend": "anvil-calltracer",
-                    "kind": "Call",
+                    "kind": "CALL",
                     "accessor": "0x1111111111111111111111111111111111111111",
                     "account": "0x2222222222222222222222222222222222222222",
                     "depth": 1,
