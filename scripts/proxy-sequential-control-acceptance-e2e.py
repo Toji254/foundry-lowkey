@@ -834,84 +834,6 @@ def run_implementation_initializer_campaign(
 
 
 
-def make_implementation_initializer_manifest(
-    forge: str,
-    fork_block: int,
-    implementation: str,
-    actor: str,
-) -> dict[str, Any]:
-    test_name = "test_paired_implementation_initializer_lock_prevents_takeover"
-    selector = "0xc4d66de8"  # initialize(address)
-    argv = [
-        forge, "test", "--match-path", "test/ProxySequentialControls.t.sol",
-        "--match-test", test_name, "--fork-url", RPC,
-        "--fork-block-number", str(fork_block), "-vv",
-    ]
-    return {
-        "trace_backend": "forge-state-diff",
-        "paired_forge_experiment": True,
-        "target_authenticity": "fixture",
-        "family": "proxy",
-        "proxy_family": "IMPLEMENTATION_INITIALIZATION",
-        "non_economic": True,
-        "expected_chain_id": 31337,
-        "expected_fork_block": fork_block,
-        "target_address": implementation,
-        "function": "initialize(address)",
-        "same_calls_id": "p0-implementation-initializer-lock-v1",
-        "metric_name": "implementation_takeover_accepted",
-        "prestate_addresses": [implementation.lower(), actor.lower()],
-        "prestate_slots": [
-            {"address": implementation, "slot": "0x0"},
-            {"address": implementation, "slot": "0x1"},
-            {"address": actor, "slot": "0x0"},
-        ],
-        "metric_addresses": [actor],
-        "metric_storage": {
-            "address": actor, "slot": "0x0", "kind": "uint256_delta",
-            "description": "ImplementationInitializationActor.takeoverAccepted; increments only when direct initialize(address) succeeds.",
-        },
-        "scenario_parameters": [{
-            "name": "implementation_initialization_lock",
-            "address": implementation,
-            "slot": "0x0",
-            "control_value": "0x" + ("0" * 62) + "ff",
-            "attack_value": "0x" + ("0" * 64),
-            "description": "The sole scenario difference: initializedVersion is locked to uint8 max versus zero on the same deployed implementation.",
-        }],
-        "trace_expectations": [{
-            "address": implementation, "selector": selector,
-            "control_min_calls": 1, "control_max_calls": 1,
-            "attack_min_calls": 1, "attack_max_calls": 1,
-            "description": "The same unrelated actor sends identical initialize(address) calldata directly to the same implementation in both branches.",
-        }],
-        "evidence_requirements": {"call_tree": "exact", "calldata": "exact", "storage": "derived"},
-        "require_trace_storage": True,
-        "control": {
-            "harness": "test/ProxySequentialControls.t.sol",
-            "support_files": ["src/ProxySequentialFixtures.sol", "src/LowkeyForgeStateDiffRecorder.sol"],
-            "state_diff_file": ".audit/godmode/control-implementation-initializer-state-diff.json",
-            "argv": argv, "semantic_check_argv": argv, "semantic_check_test": test_name,
-        },
-        "attack": {
-            "harness": "test/ProxySequentialControls.t.sol",
-            "support_files": ["src/ProxySequentialFixtures.sol", "src/LowkeyForgeStateDiffRecorder.sol"],
-            "state_diff_file": ".audit/godmode/attack-implementation-initializer-state-diff.json",
-            "argv": argv, "semantic_check_argv": argv, "semantic_check_test": test_name,
-        },
-        "fidelity_sources": [
-            "test/ProxySequentialControls.t.sol",
-            "src/ProxySequentialFixtures.sol",
-            "src/LowkeyForgeStateDiffRecorder.sol",
-        ],
-        "notes": (
-            "Fixture-only direct implementation initializer-locking paired control. "
-            "The secure branch applies the initialized-version lock before the call; the vulnerable "
-            "branch restores the same deployment's uninitialized state. Result remains SIMULATED_BREAK."
-        ),
-    }
-
-
 
 def check_pair_result(root: Path, report_prefix: str, evidence_dir: Path) -> dict[str, Any]:
     control_report = root / ".audit" / "godmode" / "control.json"
@@ -1220,7 +1142,7 @@ def main() -> int:
             raise AssertionError("Implementation initializer fork campaign mutated source Anvil state.")
 
         report = {
-            "gate": "Lowkey independent P0 UUPS authorization, UUID/lockout, ProxyAdmin and Transparent hybrid acceptance",
+            "gate": "Lowkey independent P0 UUPS authorization, UUID/lockout, direct implementation initialization, ProxyAdmin and Transparent hybrid acceptance",
             "status": "PASS",
             "source_sha": expected_sha,
             "installed_git_sha": installed.get("git_sha"),
