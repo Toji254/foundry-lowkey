@@ -801,10 +801,11 @@ def _explicit_rpc_matches_selected_identity(config, explicit_rpc):
     except Exception:
         pass
 
-    # If a target/actor exists but its RPC provenance cannot be established,
-    # an explicit endpoint is unscoped; matching chain IDs are not enough.
-    if isinstance(config, dict) and (config.get("target") or config.get("actor")):
-        return False
+    # No selected project/network identity is available to compare. Preserve
+    # an explicitly configured target for a deliberately explicit RPC. A real
+    # managed/project mismatch above still detaches the context and sets the
+    # sticky _explicit_rpc_unscoped marker; repeated resolution cannot reattach
+    # that stale target after the active-session record has been cleared.
     return True
 
 
