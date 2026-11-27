@@ -30749,7 +30749,7 @@ def _apply_command_help_audit_catalog():
             notes=[
                 ("Fail-closed selection", "If several managed sessions exist without an active selection, RPC-consuming commands stop and request an explicit use selection. Lowkey does not fall back to another RPC.", "lk lab network use attack-lab"),
                 ("Process safety", "Lowkey validates PID, process start time, UID, executable and command line before signalling; unmanaged Anvil processes are never terminated.", "lk lab network status local-dev"),
-                ("Session actors", "Register an alias with lk actor <index> <name>, select it by name with lk actor <name>, or select it by account index with lk actor <index>. Account zero is reserved for the internal deployer; no private key is stored.", "lk actor Alice"),
+                ("Session actors", "Register an alias with lk actor <index> <name>, select it by name with lk actor <name>, or select it by account index with lk actor <index>. Account zero is reserved for the internal deployer; no private key is stored.", "lk actor 1 Alice"),
                 ("Deployment identity", "A deployment record is scoped to project, session UUID, chain ID and address; the same address on another session is a different deployment.", "lk lab network status attack-lab"),
             ],
             related=["lk actor", "lk actors", "lk status", "lk deployments"],
