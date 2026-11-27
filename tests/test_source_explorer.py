@@ -190,6 +190,9 @@ class ProtocolExplorerTests(unittest.TestCase):
         self.assertIn("function renderSourceWindow(source)", document)
         self.assertIn("INHERITANCE / C3 LINEARIZATION", document)
         self.assertIn("COMPILER DISPATCH FACTS", document)
+        self.assertIn("INTERFACE IMPLEMENTATION BINDING", document)
+        self.assertIn("ASSERTED ASSUMPTION", document)
+        self.assertIn("function manualBindingEdges(sourceEdges)", document)
         self.assertIn('id="bookmark-explorer"', document)
         self.assertIn("function saveWorkspaceState()", document)
         self.assertIn("function loadWorkspaceState()", document)
@@ -457,6 +460,73 @@ class ProtocolExplorerTests(unittest.TestCase):
                     with self.assertRaises(urllib.error.HTTPError) as error:
                         urllib.request.urlopen(url, timeout=5)
                     self.assertEqual(error.exception.code, 400)
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+            server.server_close()
+
+    def test_project_workspace_api_persists_interface_assumptions_merge_safely(self):
+        interface = next(
+            item for item in self.model["nodes"]
+            if item["type"] == "declaration" and item["declaration_kind"] == "interface"
+        )
+        implementation = next(
+            item for item in self.model["nodes"]
+            if item["type"] == "declaration" and item["declaration_kind"] == "contract"
+        )
+        audit = self.root / ".audit"
+        audit.mkdir()
+        context_path = audit / "context.json"
+        context_path.write_text(json.dumps({
+            "schema_version": 1,
+            "project": {"root": str(self.root), "name": self.root.name},
+            "target": {"address": "0x" + "1" * 40, "contract": "Protocol", "artifact": None},
+            "custom_preserved_marker": {"keep": True},
+        }), encoding="utf-8")
+
+        server = create_explorer_server(self.index, root=self.root, port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            host, port = server.server_address[:2]
+            base = f"http://{host}:{port}"
+            payload = {
+                "version": 1,
+                "workspace_key": self.model["workspace_key"],
+                "interface_bindings": [[interface["id"], implementation["id"]]],
+            }
+            request = urllib.request.Request(
+                base + "/api/workspace",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                saved = json.loads(response.read())
+            self.assertTrue(saved["ok"])
+            self.assertTrue(saved["persisted"])
+            self.assertEqual(saved["workspace"]["interface_bindings"], [[interface["id"], implementation["id"]]])
+
+            with urllib.request.urlopen(base + "/api/workspace", timeout=5) as response:
+                loaded = json.loads(response.read())
+            self.assertEqual(loaded["interface_bindings"], [[interface["id"], implementation["id"]]])
+
+            persisted = json.loads(context_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["target"]["address"], "0x" + "1" * 40)
+            self.assertEqual(persisted["custom_preserved_marker"], {"keep": True})
+            self.assertEqual(persisted["protocol_graph_workspace"]["interface_bindings"], [[interface["id"], implementation["id"]]])
+
+            invalid = dict(payload)
+            invalid["interface_bindings"] = [[interface["id"], interface["id"]]]
+            request = urllib.request.Request(
+                base + "/api/workspace",
+                data=json.dumps(invalid).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(error.exception.code, 400)
         finally:
             server.shutdown()
             thread.join(timeout=5)
