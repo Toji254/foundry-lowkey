@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Lowkey — Protocol Graph · Figma frame 9:2</title>
+<style>
+:root{color-scheme:dark;--bg:#080f1b;--panel:#0d1726;--panel2:#101d2e;--line:#23364d;--muted:#8296af;--text:#e5edf8;--cyan:#63d5f3;--green:#68d5ad;--violet:#b09af5;--amber:#efbd70;--pink:#d993dc}
+*{box-sizing:border-box}
+html,body{margin:0;min-width:1120px;min-height:700px;width:100%;height:100%;background:var(--bg);color:var(--text);font:12px/1.4 Inter,ui-sans-serif,system-ui,-apple-system,sans-serif}
+button,input{font:inherit}
+button{color:inherit;cursor:pointer}
+#app{position:relative;width:1440px;height:900px;margin:0 auto;overflow:hidden;background:#080f1b;border:1px solid #1a2a40}
+.topbar{position:absolute;inset:0 0 auto;height:58px;display:flex;align-items:center;gap:0;background:#0b1523;border-bottom:1px solid #1e3046;z-index:5}
+.brand{width:320px;display:flex;align-items:center;gap:12px;padding-left:20px;white-space:nowrap}
+.brand-mark{height:28px;width:28px;border:1px solid #42b7dc;border-radius:8px;display:grid;place-items:center;color:#78e1ff;font-weight:900;font-size:15px;box-shadow:0 0 18px #44c8ef26}
+.brand-name{font-size:13px;font-weight:900;letter-spacing:.13em;color:#f0f6ff}
+.brand-tag{font-size:9px;font-weight:700;letter-spacing:.1em;color:#7890aa;margin-left:5px}
+.project{width:230px;display:flex;align-items:center;gap:9px;color:#a6b9ce;font-size:11px}
+.project strong{color:#dbe7f3;font-weight:650}
+.demo{font-size:9px;letter-spacing:.08em;color:#93c4d9;border:1px solid #31536d;background:#11283a;border-radius:5px;padding:4px 7px}
+.modes{display:flex;align-items:center;gap:5px;margin-left:20px}
+.mode{height:30px;padding:0 12px;border:1px solid transparent;border-radius:7px;background:transparent;color:#879bb3;font-size:10px;font-weight:750}
+.mode.active{border-color:#2d617e;background:#123047;color:#a8eaff;box-shadow:inset 0 -2px #5acbed}
+.search{margin-left:auto;margin-right:20px;width:235px;height:32px;display:flex;align-items:center;gap:8px;padding:0 10px;border:1px solid #2b4059;background:#0c1929;border-radius:8px;color:#7890aa}
+.search input{min-width:0;width:100%;border:0;outline:0;background:transparent;color:#e5edf8;font-size:10px}
+.search input::placeholder{color:#7288a2}
+.activity{position:absolute;left:0;top:58px;bottom:0;width:58px;background:#0a1422;border-right:1px solid #1c3047;display:flex;align-items:center;flex-direction:column;padding-top:16px;gap:12px}
+.rail-btn{width:40px;height:42px;border:1px solid transparent;background:transparent;border-radius:9px;color:#728ba6;font-size:16px;display:grid;place-items:center}
+.rail-btn.active{color:#78dcfa;background:#102b40;border-color:#285978;box-shadow:inset 2px 0 #61d6f5}
+.rail-sep{width:30px;height:1px;background:#263a50;margin:3px 0}
+.rail-bottom{margin-top:auto;margin-bottom:18px}
+.explorer{position:absolute;left:58px;top:58px;bottom:44px;width:252px;background:#0d1726;border-right:1px solid #22364d;padding:20px 14px;overflow:hidden}
+.eyebrow{font-size:9px;font-weight:850;letter-spacing:.13em;color:#7f96b0;text-transform:uppercase}
+.explorer h1{font-size:19px;line-height:1.2;margin:8px 0 5px;font-weight:760;color:#eef5ff}
+.explorer .sub{font-size:10px;color:#7f96b0;margin:0 0 18px}
+.scope{height:25px;display:flex;align-items:center;gap:7px;border:1px solid #294158;background:#102137;border-radius:6px;padding:0 8px;color:#a8c1d8;font-size:9px;margin-bottom:15px}
+.scope i{width:6px;height:6px;border-radius:50%;background:#65d5ad;box-shadow:0 0 7px #65d5ad77}
+.search-local{height:32px;border:1px solid #2a4059;background:#091523;border-radius:7px;padding:0 9px;display:flex;align-items:center;gap:7px;color:#8298b2;margin-bottom:17px}
+.search-local input{background:transparent;border:0;outline:0;min-width:0;width:100%;color:#e5edf8;font-size:10px}
+.group{margin:0 0 17px}
+.group-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.group-head span:first-child{font-size:9px;letter-spacing:.11em;color:#8299b4;font-weight:850}
+.count{font-size:9px;color:#7189a4;font-variant-numeric:tabular-nums}
+.tree-row{height:30px;display:flex;align-items:center;gap:8px;padding:0 7px;border:1px solid transparent;border-radius:6px;color:#b6c7da;font-size:10px}
+.tree-row.active{background:#122e43;border-color:#2b5e7a;color:#e7f6ff}
+.tree-row.child{padding-left:20px;color:#93a9c2}
+.tree-icon{width:17px;height:17px;display:grid;place-items:center;border-radius:5px;background:#17334a;color:#78d8f7;font-size:9px}
+.tree-row .trail{margin-left:auto;color:#728ba6;font-size:9px}
+.tree-row.active .trail{color:#80d8f6}
+.divider{height:1px;background:#22364c;margin:12px 0}
+.entry{display:flex;align-items:center;justify-content:space-between;color:#c3d2e3;font-size:10px;padding:6px 7px;border-radius:5px}
+.entry span:last-child{font-size:9px;color:#7d93ad}
+.tag{display:inline-flex;align-items:center;border:1px solid #2c5970;background:#102b3b;color:#8ad8f1;border-radius:4px;padding:2px 5px;font-size:8px;font-weight:750;letter-spacing:.05em}
+.canvas{position:absolute;left:310px;top:58px;width:835px;height:798px;background:radial-gradient(ellipse at 47% 38%,#112943 0%,#0a1625 60%,#091321 100%);overflow:hidden}
+.canvas-title{position:absolute;left:22px;top:22px;z-index:2}
+.canvas-title strong{display:block;font-size:15px;font-weight:760;color:#edf5ff}
+.canvas-title small{display:block;margin-top:4px;color:#7e96b2;font-size:9px;letter-spacing:.04em}
+.grid-bg{position:absolute;inset:0;background-image:radial-gradient(#35516c66 .7px,transparent .7px);background-size:22px 22px;opacity:.38;pointer-events:none}
+.graph{position:absolute;left:0;top:0;width:835px;height:627px;overflow:visible}
+.graph path.edge{fill:none;stroke-width:1.7;opacity:.78;stroke-linecap:round}
+.graph path.call{stroke:#55cda4}
+.graph path.state{stroke:#67c5df;stroke-dasharray:4 5}
+.graph path.asset{stroke:#d48bdc;stroke-width:2;stroke-dasharray:7 6}
+.graph path.manual{stroke:#d9ad68;stroke-dasharray:3 5}
+.graph path.inherit{stroke:#ad9af0;stroke-dasharray:2 5}
+.graph text.edge-label{font-size:9px;fill:#8ea6bf;paint-order:stroke;stroke:#0b1827;stroke-width:4px;stroke-linejoin:round}
+.node{cursor:pointer;transition:opacity .15s}
+.node .halo{fill:none;stroke:#51d7f4;stroke-width:1.4;opacity:.19}
+.node .ring{fill:#0d1b2a;stroke:#4b8baa;stroke-width:1.5}
+.node .core{fill:#112a3d;stroke:#60cee9;stroke-width:1}
+.node .glyph{font-size:13px;font-weight:800;fill:#bceeff;text-anchor:middle;dominant-baseline:middle}
+.node .label{font-size:10px;font-weight:700;fill:#dce9f7;text-anchor:middle}
+.node .sub{font-size:8px;fill:#7890aa;text-anchor:middle}
+.node.fn .ring{stroke:#64c8a8}.node.fn .core{fill:#15382f;stroke:#65d2aa}.node.fn .glyph{fill:#a8f4d5}
+.node.state-node .ring{stroke:#67bad8}.node.state-node .core{fill:#142f42;stroke:#74cce8}.node.state-node .glyph{fill:#b4eaff}
+.node.contract-node .ring{stroke:#aa98ee}.node.contract-node .core{fill:#282343;stroke:#b29cf4}.node.contract-node .glyph{fill:#d8caff}
+.node.asset-node .ring{stroke:#cd91da}.node.asset-node .core{fill:#38243c;stroke:#db9be8}.node.asset-node .glyph{fill:#f0c5fa}
+.node.oracle-node .ring{stroke:#dcb16d}.node.oracle-node .core{fill:#392b1b;stroke:#e6bc7a}.node.oracle-node .glyph{fill:#f7d8a4}
+.node.selected .halo{opacity:.85;stroke-width:1.5;filter:drop-shadow(0 0 8px #3ed8ff88)}
+.node.selected .ring{stroke:#86e9ff;stroke-width:2.1}
+.node.selected .core{fill:#113b54;stroke:#8eeaff;stroke-width:1.6}
+.node.dim{opacity:.2}
+.node:hover .ring{stroke:#c6f5ff;stroke-width:2}
+.controls{position:absolute;left:636px;top:90px;z-index:3;display:flex;align-items:center;gap:0;height:32px;border:1px solid #2a4059;background:#0c1a2a;border-radius:8px;overflow:hidden;box-shadow:0 6px 20px #0004}
+.controls button{height:30px;min-width:31px;padding:0 8px;border:0;border-right:1px solid #23384f;background:transparent;color:#a9bdd1;font-size:11px}
+.controls button:hover{background:#19334a;color:#e5f7ff}
+.controls span{font-size:9px;color:#8ea4bb;padding:0 8px}
+.graph-hint{position:absolute;left:10px;top:580px;font-size:8px;letter-spacing:.06em;color:#7790a9;background:#0b1928cc;border:1px solid #263b52;border-radius:5px;padding:5px 7px}
+.legend{position:absolute;left:486px;top:557px;height:28px;display:flex;align-items:center;gap:10px;padding:0 10px;background:#0c1b2acb;border:1px solid #2b415b;border-radius:7px;z-index:2}
+.legend span{display:flex;align-items:center;gap:5px;font-size:8px;color:#9cb1c7;white-space:nowrap}
+.swatch{width:17px;height:2px;display:inline-block;background:#55cda4}.swatch.state{background:#67c5df}.swatch.manual{background:#d9ad68;border-top:1px dashed #d9ad68}
+.inspector{position:absolute;right:0;top:58px;bottom:44px;width:295px;background:#0d1726;border-left:1px solid #22364d;padding:22px 21px;overflow:hidden}
+.inspector h2{margin:7px 0 5px;font-size:19px;line-height:1.2;font-weight:790;color:#f0f6ff}
+.path{font-size:9px;color:#8399b2;overflow-wrap:anywhere}
+.badges{display:flex;gap:6px;margin-top:12px}
+.pill{padding:4px 7px;font-size:8px;font-weight:800;letter-spacing:.06em;color:#8edcf4;border:1px solid #2b6078;background:#112d3e;border-radius:4px}
+.pill.ok{color:#83ddb8;border-color:#2d6a54;background:#112e27}
+.inspector-rule{height:1px;background:#263a50;margin:16px 0}
+.inspector-head{font-size:9px;font-weight:850;letter-spacing:.12em;color:#8299b2;margin-bottom:10px}
+.statrow{display:flex;justify-content:space-between;align-items:center;margin:12px 0;color:#9cb0c5;font-size:10px}
+.statrow b{font-size:10px;color:#dce7f3;font-variant-numeric:tabular-nums}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{padding:5px 7px;border:1px solid #2b435b;background:#102035;color:#b3c6d9;border-radius:5px;font-size:9px}
+.asset-line{display:flex;justify-content:space-between;align-items:center;font-size:9px;color:#a9bdd0;padding:6px 0;border-bottom:1px solid #1e3146}
+.asset-line b{font-weight:700;color:#dbe6f4}
+.evidence{display:flex;gap:6px;flex-wrap:wrap}
+.evidence .pill{font-size:7px}
+.action{height:31px;width:100%;margin-top:8px;text-align:left;padding:0 10px;border:1px solid #2a425a;border-radius:6px;background:#102035;color:#b9cadd;font-size:9px}
+.action:hover{background:#162d43;border-color:#4a7d9a}
+.source-peek{position:absolute;left:310px;top:685px;width:818px;height:154px;background:#0b1624;border:1px solid #2a4059;border-radius:7px;z-index:4;padding:13px 19px;box-shadow:0 10px 24px #0003}
+.source-head{display:flex;justify-content:space-between;align-items:flex-start}
+.source-head strong{display:block;font-size:10px;letter-spacing:.12em;color:#8298b1}
+.source-path{font-size:9px;color:#bdcde0;margin-top:4px}
+.code-status{font-size:8px;color:#9adabb;border:1px solid #32624f;border-radius:4px;background:#102b25;padding:4px 7px}
+.source-rule{height:1px;background:#293e55;margin:10px 0 7px}
+.code{font:9px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;color:#aec6da;white-space:pre}
+.code .kw{color:#9abcf1}.code .fn{color:#95e0bd}.code .comment{color:#7893aa}
+.footer{position:absolute;left:58px;right:0;bottom:0;height:44px;background:#0b1523;border-top:1px solid #263a50;display:flex;align-items:center;gap:27px;padding:0 20px;color:#8ca3bd;font-size:9px}
+.footer strong{font-weight:650;color:#c1d2e4}
+.footer .spacer{flex:1}
+.footer .local{color:#70cfaa}
+@media(max-width:1440px){#app{margin-left:0;margin-right:0}}
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand"><div class="brand-mark">L</div><div><span class="brand-name">LOWKEY</span><span class="brand-tag">// PROTOCOL GRAPH</span></div></div>
+    <div class="project"><strong>Vault.sol</strong><span class="demo">LOCAL DEMO</span></div>
+    <nav class="modes" aria-label="Graph mode">
+      <button class="mode active" data-mode="Architecture">Architecture</button>
+      <button class="mode" data-mode="Function flow">Function flow</button>
+      <button class="mode" data-mode="Storage">Storage</button>
+      <button class="mode" data-mode="Assets">Assets</button>
+      <button class="mode" data-mode="Review leads">Review leads</button>
+    </nav>
+    <label class="search"><span>⌕</span><input id="search" placeholder="Search the protocol graph…"></label>
+  </header>
+  <aside class="activity" aria-label="Activity">
+    <button class="rail-btn active" title="Protocol graph">⌘</button>
+    <button class="rail-btn" title="Sources">▤</button>
+    <button class="rail-btn" title="Traces">⌁</button>
+    <button class="rail-btn" title="Bookmarks">◇</button>
+    <div class="rail-sep"></div>
+    <button class="rail-btn rail-bottom" title="Settings">⚙</button>
+  </aside>
+  <aside class="explorer">
+    <div class="eyebrow">Project explorer</div>
+    <h1>Vault.sol</h1>
+    <p class="sub">contracts/core/Vault.sol</p>
+    <div class="scope"><i></i> FIRST-PARTY SOURCE <span class="count" style="margin-left:auto">1 FILE</span></div>
+    <label class="search-local"><span>⌕</span><input id="local-search" placeholder="Find a declaration…"></label>
+    <section class="group">
+      <div class="group-head"><span>CONTRACTS</span><span class="count">03</span></div>
+      <div class="tree-row active"><span class="tree-icon">C</span>Vault<span class="trail">●</span></div>
+      <div class="tree-row child"><span class="tree-icon">I</span>IVault<span class="trail">12</span></div>
+      <div class="tree-row child"><span class="tree-icon">L</span>VaultUtils<span class="trail">08</span></div>
+    </section>
+    <div class="divider"></div>
+    <section class="group">
+      <div class="group-head"><span>ENTRY POINTS</span><span class="count">06</span></div>
+      <div class="entry"><span>deposit</span><span class="tag">WRITE</span></div>
+      <div class="entry"><span>collectFees</span><span class="tag">WRITE</span></div>
+      <div class="entry"><span>increase</span><span class="tag">WRITE</span></div>
+      <div class="entry"><span>transferIn</span><span class="tag">WRITE</span></div>
+    </section>
+    <div class="divider"></div>
+    <section class="group">
+      <div class="group-head"><span>BOOKMARKED</span><span class="count">02</span></div>
+      <div class="tree-row"><span class="tree-icon">ƒ</span>deposit</div>
+      <div class="tree-row"><span class="tree-icon">S</span>positions</div>
+    </section>
+    <div class="divider"></div>
+    <section class="group">
+      <div class="group-head"><span>VISIBLE LAYERS</span><span class="count">ALL</span></div>
+      <div class="entry"><span>Function calls</span><span class="count">●</span></div>
+      <div class="entry"><span>State effects</span><span class="count">●</span></div>
+      <div class="entry"><span>Asset movement</span><span class="count">●</span></div>
+      <div class="entry"><span>Manual links</span><span class="count">○</span></div>
+    </section>
+  </aside>
+  <main class="canvas">
+    <div class="grid-bg"></div>
+    <div class="canvas-title"><strong>Protocol relationship map</strong><small>VAULT · FUNCTION / STATE / ASSET RELATIONSHIPS</small></div>
+    <div class="controls" aria-label="Graph controls">
+      <button id="fit" title="Fit graph">⌗</button><button id="zoom-minus" title="Zoom out">−</button><span id="zoom-label">100%</span><button id="zoom-plus" title="Zoom in">＋</button><button id="reset" title="Reset">⋯</button>
+    </div>
+    <svg class="graph" id="graph" viewBox="310 58 835 627" role="img" aria-label="Protocol graph with function, state and asset nodes">
+      <defs>
+        <marker id="arrow-call" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6" fill="none" stroke="#55cda4" stroke-width="1"/></marker>
+        <marker id="arrow-state" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6" fill="none" stroke="#67c5df" stroke-width="1"/></marker>
+      </defs>
+      <g id="edges">
+        <path class="edge inherit" d="M420 588 C400 520 410 420 440 360"/>
+        <path class="edge call" d="M440 360 C480 350 535 365 688 405" marker-end="url(#arrow-call)"/>
+        <path class="edge call" d="M688 405 C640 365 620 315 610 270" marker-end="url(#arrow-call)"/>
+        <path class="edge call" d="M610 270 C665 255 710 245 756 250" marker-end="url(#arrow-call)"/>
+        <path class="edge call" d="M756 250 C790 210 820 180 850 160" marker-end="url(#arrow-call)"/>
+        <path class="edge manual" d="M688 405 C755 405 810 425 865 445"/>
+        <path class="edge call" d="M850 160 C900 185 925 230 965 300" marker-end="url(#arrow-call)"/>
+        <path class="edge call" d="M965 300 C1000 305 1015 330 1030 360" marker-end="url(#arrow-call)"/>
+        <path class="edge state" d="M1030 360 C1058 335 1070 310 1090 280" marker-end="url(#arrow-state)"/>
+        <path class="edge state" d="M1090 280 C1080 245 1060 220 1040 200" marker-end="url(#arrow-state)"/>
+        <path class="edge state" d="M1090 280 C1040 285 1000 295 965 300" marker-end="url(#arrow-state)"/>
+        <path class="edge call" d="M688 405 C670 455 650 500 660 535" marker-end="url(#arrow-call)"/>
+        <path class="edge state" d="M688 405 C640 445 585 490 535 535" marker-end="url(#arrow-state)"/>
+        <path class="edge state" d="M535 535 C545 560 550 580 560 600" marker-end="url(#arrow-state)"/>
+        <path class="edge asset" d="M865 445 C850 470 830 495 820 515"/>
+        <path class="edge asset" d="M865 445 C910 470 950 510 975 555"/>
+        <path class="edge state" d="M700 435 C670 470 625 510 535 535"/>
+        <path class="edge call" d="M515 190 C560 195 610 180 660 180" marker-end="url(#arrow-call)"/>
+        <path class="edge state" d="M660 180 C640 220 625 250 610 270" marker-end="url(#arrow-state)"/>
+        <path class="edge asset" d="M660 535 C735 530 775 520 820 515"/>
+        <text class="edge-label" x="533" y="345">calls</text>
+        <text class="edge-label" x="626" y="325">validates</text>
+        <text class="edge-label" x="816" y="215">uses</text>
+        <text class="edge-label" x="1000" y="335">reads price</text>
+        <text class="edge-label" x="605" y="475">writes</text>
+        <text class="edge-label" x="883" y="486">transfers</text>
+      </g>
+      <g id="nodes">
+        <g class="node contract-node" data-name="vaultContract" data-kind="Contract" data-meta="contracts/core/Vault.sol" transform="translate(420 590)"><circle class="ring" r="23"/><circle class="core" r="19"/><text class="glyph" y="1">C</text><text class="label" y="48">vaultContract</text><text class="sub" y="62">contract</text></g>
+        <g class="node fn" data-name="whenNotPaused" data-kind="Modifier" data-meta="modifier · access control" transform="translate(440 360)"><circle class="ring" r="20"/><circle class="core" r="16"/><text class="glyph" y="1">⌑</text><text class="label" y="43">whenNotPaused</text><text class="sub" y="56">modifier</text></g>
+        <g class="node fn" data-name="collectFees" data-kind="Function" data-meta="fee collection path" transform="translate(515 190)"><circle class="ring" r="20"/><circle class="core" r="16"/><text class="glyph" y="1">ƒ</text><text class="label" y="43">collectFees</text><text class="sub" y="56">function</text></g>
+        <g class="node fn" data-name="marginFee" data-kind="Function" data-meta="fee calculation" transform="translate(660 180)"><circle class="ring" r="20"/><circle class="core" r="16"/><text class="glyph" y="1">ƒ</text><text class="label" y="43">marginFee</text><text class="sub" y="56">function</text></g>
+        <g class="node selected fn" data-name="deposit" data-kind="Function" data-meta="contracts/core/Vault.sol · entrypoint" transform="translate(688 405)"><circle class="halo" r="37"/><circle class="ring" r="28"/><circle class="core" r="24"/><text class="glyph" y="1">ƒ</text><text class="label" y="47">deposit</text><text class="sub" y="61">entrypoint · payable</text></g>
+        <g class="node fn" data-name="executeDeposit" data-kind="Function" data-meta="deposit execution" transform="translate(610 270)"><circle class="ring" r="20"/><circle class="core" r="16"/><text class="glyph" y="1">ƒ</text><text class="label" y="43">executeDeposit</text><text class="sub" y="56">function</text></g>
+        <g class="node contract-node" data-name="positionManager" data-kind="Contract" data-meta="PositionManager.sol" transform="translate(850 160)"><circle class="ring" r="23"/><circle class="core" r="19"/><text class="glyph" y="1">C</text><text class="label" y="46">positionManager</text><text class="sub" y="59">contract</text></g>
+        <g class="node fn" data-name="validateDeposit" data-kind="Function" data-meta="deposit validation" transform="translate(756 250)"><circle class="ring" r="20"/><circle class="core" r="16"/><text class="glyph" y="1">✓</text><text class="label" y="43">validateDeposit</text><text class="sub" y="56">function</text></g>
+        <g class="node fn" data-name="increase" data-kind="Function" data-meta="position update" transform="translate(828 344)"><circle class="ring" r="20"/><circle class="core" r="16"/><text class="glyph" y="1">↗</text><text class="label" y="43">increase</text><text class="sub" y="56">function</text></g>
+        <g class="node state-node" data-name="priceMin" data-kind="State" data-meta="minimum accepted price" transform="translate(965 300)"><circle class="ring" r="20"/><circle class="core" r="16"/><text class="glyph" y="1">S</text><text class="label" y="43">priceMin</text><text class="sub" y="56">state</text></g>
+        <g class="node state-node" data-name="priceMax" data-kind="State" data-meta="maximum accepted price" transform="translate(1040 200)"><circle class="ring" r="20"/><circle class="core" r="16"/><text class="glyph" y="1">S</text><text class="label" y="43">priceMax</text><text class="sub" y="56">state</text></g>
+        <g class="node oracle-node" data-name="oracle" data-kind="Oracle" data-meta="price source boundary" transform="translate(1090 280)"><circle class="ring" r="23"/><circle class="core" r="19"/><text class="glyph" y="1">◎</text><text class="label" y="46">oracle</text><text class="sub" y="59">external source</text></g>
+        <g class="node fn" data-name="transferIn" data-kind="Function" data-meta="token transfer in" transform="translate(865 445)"><circle class="ring" r="20"/><circle class="core" r="16"/><text class="glyph" y="1">↘</text><text class="label" y="43">transferIn</text><text class="sub" y="56">function</text></g>
+        <g class="node state-node" data-name="feeReserves" data-kind="State" data-meta="fee reserve storage" transform="translate(660 535)"><circle class="ring" r="20"/><circle class="core" r="16"/><text class="glyph" y="1">S</text><text class="label" y="43">feeReserves</text><text class="sub" y="56">state</text></g>
+        <g class="node state-node" data-name="positions" data-kind="State" data-meta="position storage" transform="translate(535 535)"><circle class="ring" r="20"/><circle class="core" r="16"/><text class="glyph" y="1">S</text><text class="label" y="43">positions</text><text class="sub" y="56">state</text></g>
+        <g class="node state-node" data-name="globalShort" data-kind="State" data-meta="global short aggregate" transform="translate(560 600)"><circle class="ring" r="20"/><circle class="core" r="16"/><text class="glyph" y="1">S</text><text class="label" y="43">globalShort</text><text class="sub" y="56">state</text></g>
+        <g class="node asset-node" data-name="weth" data-kind="Asset" data-meta="wrapped native asset" transform="translate(820 515)"><circle class="ring" r="20"/><circle class="core" r="16"/><text class="glyph" y="1">◈</text><text class="label" y="43">weth</text><text class="sub" y="56">asset</text></g>
+        <g class="node asset-node" data-name="token" data-kind="Asset" data-meta="ERC-20 token" transform="translate(975 555)"><circle class="ring" r="20"/><circle class="core" r="16"/><text class="glyph" y="1">◈</text><text class="label" y="43">token</text><text class="sub" y="56">asset</text></g>
+        <g class="node state-node" data-name="priceFeed" data-kind="State" data-meta="price feed reference" transform="translate(1030 360)"><circle class="ring" r="20"/><circle class="core" r="16"/><text class="glyph" y="1">S</text><text class="label" y="43">priceFeed</text><text class="sub" y="56">state</text></g>
+        <g class="node contract-node" data-name="storageUtils" data-kind="Library" data-meta="storage helpers" transform="translate(700 435)"><circle class="ring" r="20"/><circle class="core" r="16"/><text class="glyph" y="1">L</text><text class="label" y="43">storageUtils</text><text class="sub" y="56">library</text></g>
+      </g>
+    </svg>
+    <div class="graph-hint">SELECT A NODE TO INSPECT · DRAG TO PAN · SCROLL TO ZOOM</div>
+    <div class="legend"><span><i class="swatch"></i>Call</span><span><i class="swatch state"></i>State</span><span><i class="swatch manual"></i>Manual</span><span>● Selected</span></div>
+  </main>
+  <aside class="inspector" id="inspector">
+    <div class="eyebrow">Selected node · Function</div>
+    <h2 id="node-title">deposit</h2>
+    <div class="path" id="node-path">contracts/core/Vault.sol</div>
+    <div class="badges"><span class="pill">ENTRYPOINT</span><span class="pill ok">STATIC INDEXED</span></div>
+    <div class="inspector-rule"></div>
+    <div class="inspector-head">RELATIONSHIPS</div>
+    <div class="statrow"><span>Outgoing calls</span><b id="outgoing">4</b></div>
+    <div class="statrow"><span>Incoming links</span><b id="incoming">2</b></div>
+    <div class="statrow"><span>Graph depth</span><b id="depth">0</b></div>
+    <div class="inspector-rule"></div>
+    <div class="inspector-head">EFFECTS</div>
+    <div class="chips"><span class="chip">Reads · 3</span><span class="chip">Writes · 2</span></div>
+    <div class="inspector-rule"></div>
+    <div class="inspector-head">ASSET RELATIONSHIPS</div>
+    <div class="asset-line"><span>Token inputs</span><b>ERC-20 · WETH</b></div>
+    <div class="asset-line"><span>Flow direction</span><b>Inbound</b></div>
+    <div class="inspector-rule"></div>
+    <div class="inspector-head">EVIDENCE</div>
+    <div class="evidence"><span class="pill">STATIC SOURCE</span><span class="pill">RUNTIME NOT OBSERVED</span></div>
+    <div class="statrow"><span>Resolution</span><b>Source-linked</b></div>
+    <div class="inspector-rule"></div>
+    <div class="inspector-head">ACTIONS</div>
+    <button class="action" id="expand-node">↗ &nbsp; Expand relationships</button>
+    <button class="action" id="open-source">⌘ &nbsp; Open source location</button>
+    <button class="action" id="bookmark-node">◇ &nbsp; Bookmark node</button>
+  </aside>
+  <section class="source-peek">
+    <div class="source-head"><div><strong>SOURCE PREVIEW</strong><div class="source-path" id="source-path">contracts/core/Vault.sol · selected function: deposit</div></div><span class="code-status">STATIC SOURCE</span></div>
+    <div class="source-rule"></div>
+    <div class="code"><span class="kw">function</span> <span class="fn">deposit</span>(address token, uint256 amount, address receiver) external {
+  <span class="comment">// Source preview is a design placeholder; live source comes from Lowkey's index.</span>
+  validateDeposit(token, amount, receiver);
+  executeDeposit(token, amount, receiver);
+}</div>
+  </section>
+  <footer class="footer">
+    <span>SELECTED <strong id="footer-selection">deposit</strong></span>
+    <span>VISIBLE NODES <strong>20</strong></span>
+    <span>EVIDENCE <strong>STATIC SOURCE</strong></span>
+    <span>SAVED TRACES <strong>0</strong></span>
+    <span class="spacer"></span><span class="local">● LOCAL WORKSPACE</span>
+  </footer>
+</div>
+<script>
+(function(){
+  "use strict";
+  const nodes=[...document.querySelectorAll(".node")];
+  const title=document.getElementById("node-title");
+  const path=document.getElementById("node-path");
+  const footer=document.getElementById("footer-selection");
+  const source=document.getElementById("source-path");
+  function select(node){
+    nodes.forEach(n=>n.classList.toggle("selected",n===node));
+    const name=node.dataset.name, kind=node.dataset.kind, meta=node.dataset.meta;
+    title.textContent=name;
+    path.textContent=meta;
+    footer.textContent=name;
+    source.textContent=kind+" · "+name+" · "+meta;
+    document.querySelector(".inspector .eyebrow").textContent="Selected node · "+kind;
+    document.getElementById("outgoing").textContent=kind==="Function"?"4":"—";
+    document.getElementById("incoming").textContent=kind==="Function"?"2":"—";
+    document.getElementById("depth").textContent=kind==="Function"?"0":"—";
+  }
+  nodes.forEach(node=>node.addEventListener("click",()=>select(node)));
+  const search=document.getElementById("search");
+  const local=document.getElementById("local-search");
+  function filter(value){
+    const q=value.trim().toLowerCase();
+    nodes.forEach(n=>n.classList.toggle("dim",!!q&&!n.dataset.name.toLowerCase().includes(q)));
+  }
+  search.addEventListener("input",()=>{local.value=search.value;filter(search.value)});
+  local.addEventListener("input",()=>{search.value=local.value;filter(local.value)});
+  document.querySelectorAll(".mode").forEach(btn=>btn.addEventListener("click",()=>{
+    document.querySelectorAll(".mode").forEach(b=>b.classList.toggle("active",b===btn));
+    document.querySelector(".canvas-title small").textContent=btn.dataset.mode.toUpperCase()+" · PROTOCOL RELATIONSHIPS";
+  }));
+  let zoom=100;
+  function setZoom(v){zoom=Math.max(70,Math.min(140,v));document.getElementById("zoom-label").textContent=zoom+"%";document.getElementById("graph").style.transform="scale("+zoom/100+")";document.getElementById("graph").style.transformOrigin="50% 48%"}
+  document.getElementById("zoom-plus").addEventListener("click",()=>setZoom(zoom+10));
+  document.getElementById("zoom-minus").addEventListener("click",()=>setZoom(zoom-10));
+  document.getElementById("fit").addEventListener("click",()=>setZoom(100));
+  document.getElementById("reset").addEventListener("click",()=>{setZoom(100);filter("")});
+  document.getElementById("expand-node").addEventListener("click",()=>{document.querySelector(".canvas-title small").textContent="EXPANDED RELATIONSHIPS · "+title.textContent.toUpperCase()});
+  document.getElementById("open-source").addEventListener("click",()=>{document.querySelector(".source-peek").scrollIntoView({block:"nearest"})});
+  document.getElementById("bookmark-node").addEventListener("click",e=>{e.currentTarget.textContent="✓  Bookmarked"});
+})();
+</script>
+</body>
+</html>
