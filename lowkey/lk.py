@@ -6630,9 +6630,20 @@ def run_logs(config,args):
         return result_code
 
     command=["cast","logs","--json"]+args
-    rpc=effective_rpc(config)
-    if rpc:
-        command.extend(["--rpc-url",rpc])
+    explicit_rpc = _explicit_cast_rpc(args)
+    rpc = effective_rpc(config, explicit_rpc=explicit_rpc)
+    if not rpc:
+        return _lowkey_command_error(
+            "RPC selection is blocked: decoded event-log retrieval has no explicit --rpc-url or unambiguous active Lowkey network. "
+            "Select a managed network with 'lk lab network use <name>' or provide --rpc-url. "
+            "No Cast command was executed.",
+            2,
+            config=config,
+            target=config.get("target"),
+            command="logs",
+        )
+    if explicit_rpc is None:
+        command.extend(["--rpc-url", rpc])
     code,output,error=cast_output(command)
     if code!=0:
         print(error or "cast logs failed",file=sys.stderr)
@@ -10928,24 +10939,58 @@ def snapshot_path(config,chain=None):
 def run_snapshot(config,slots=None):
     if not config.get("target"):
         return fail("Error: Set target first.")
+    rpc = effective_rpc(config)
+    if not rpc:
+        return _lowkey_command_error(
+            "RPC selection is blocked: a storage snapshot requires an explicit or unambiguous active Lowkey network. "
+            "Select a managed network with 'lk lab network use <name>'. No Cast command was executed.",
+            2,
+            config=config,
+            target=config.get("target"),
+            command="snapshot",
+        )
     values=list(slots or [])
     block=None
     if "--block" in values:
         i=values.index("--block")
         if i+1>=len(values):
-            print("Usage: lk snapshot [slot ...] [--block BLOCK]"); return
+            print("Usage: lk snapshot [slot ...] [--block BLOCK]"); return 2
         block=values[i+1]; del values[i:i+2]
     requested=values or [str(i) for i in range(10)]
     state={}
     storage_args=[]
     if block: storage_args=["--block",block]
+
+    def read_snapshot_value(arguments, label):
+        result = run_cast(arguments,config,capture=True)
+        result_code = getattr(result,"code",result if isinstance(result,int) else 0)
+        result_text = str(getattr(result,"text",result if result is not None else "") or "").strip()
+        if result_code != 0:
+            print(result_text or f"Snapshot blocked: {label} read failed.",file=sys.stderr)
+            return None, int(result_code)
+        if not result_text:
+            print(f"Snapshot blocked: {label} returned no data.",file=sys.stderr)
+            return None, 2
+        return result_text, 0
+
     for slot in requested:
-        state[str(slot)]=run_cast(["st",str(slot)]+storage_args,config,capture=True)
-    current_block=block or run_cast(["block-number"],config,capture=True)
-    chain=run_cast(["chain-id"],config,capture=True) or "unknown-chain"
-    payload={"target":config["target"],"rpc":rpc_display(config.get("rpc")),"block":current_block,"chain":chain,"saved_at":datetime.now().astimezone().isoformat(timespec="seconds"),"slots":state}
+        value, result_code = read_snapshot_value(["st",str(slot)]+storage_args,f"storage slot {slot}")
+        if result_code:
+            return record_status(result_code)
+        state[str(slot)]=value
+    if block:
+        current_block=block
+    else:
+        current_block, result_code = read_snapshot_value(["block-number"],"current block")
+        if result_code:
+            return record_status(result_code)
+    chain, result_code = read_snapshot_value(["chain-id"],"chain ID")
+    if result_code:
+        return record_status(result_code)
+    payload={"target":config["target"],"rpc":rpc_display(rpc),"block":current_block,"chain":chain,"saved_at":datetime.now().astimezone().isoformat(timespec="seconds"),"slots":state}
     path=snapshot_path(config,chain); Path(path).write_text(json.dumps(payload,indent=4),encoding="utf-8")
     print(f"Snapshot saved: {path}")
+    return 0
 def run_diff(config):
     path=snapshot_path(config)
     if not os.path.exists(path): print("No snapshot for the current target/chain."); return

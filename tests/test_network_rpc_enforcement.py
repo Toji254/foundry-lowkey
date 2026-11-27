@@ -321,3 +321,60 @@ def test_explicit_rpc_override_matching_active_session_keeps_actor_identity():
     assert "_explicit_rpc_unscoped" not in config
     assert config["_active_network_session"]["id"] == "managed-session-a"
     assert lk._actor_profile_entry(config, "anvil-1")["address"] == "0x" + "2" * 40
+
+
+def test_decoded_logs_fail_closed_without_selected_rpc():
+    config = {}
+    with patch.object(lk, "effective_rpc", return_value=None) as resolver, patch.object(
+        lk, "_lowkey_command_error", return_value=2
+    ) as command_error, patch.object(lk, "cast_output") as cast:
+        result = lk.run_logs(config, ["--decode", "--from-block", "1"])
+
+    assert result == 2
+    resolver.assert_called_once_with(config, explicit_rpc=None)
+    command_error.assert_called_once()
+    cast.assert_not_called()
+
+
+def test_decoded_logs_use_explicit_rpc_override():
+    config = {}
+    endpoint = "http://127.0.0.1:18547"
+    with patch.object(lk, "effective_rpc", return_value=endpoint) as resolver, patch.object(
+        lk, "cast_output", return_value=(0, "[]", "")
+    ) as cast, patch("builtins.print"):
+        result = lk.run_logs(config, ["--decode", "--rpc-url", endpoint])
+
+    assert result == 0
+    resolver.assert_called_once_with(config, explicit_rpc=endpoint)
+    command = cast.call_args.args[0]
+    assert command == ["cast", "logs", "--json", "--rpc-url", endpoint]
+
+
+def test_snapshot_refuses_to_run_without_selected_rpc():
+    config = {"target": "0x" + "11" * 20}
+    with patch.object(lk, "effective_rpc", return_value=None) as resolver, patch.object(
+        lk, "_lowkey_command_error", return_value=2
+    ) as command_error, patch.object(lk, "run_cast") as cast, patch.object(
+        lk, "snapshot_path"
+    ) as path:
+        result = lk.run_snapshot(config, ["1"])
+
+    assert result == 2
+    resolver.assert_called_once_with(config)
+    command_error.assert_called_once()
+    cast.assert_not_called()
+    path.assert_not_called()
+
+
+def test_snapshot_does_not_persist_when_a_storage_read_fails():
+    config = {"target": "0x" + "11" * 20}
+    failed_read = lk.CommandResult("RPC read failed", 2)
+    with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:18548"), patch.object(
+        lk, "run_cast", return_value=failed_read
+    ) as cast, patch.object(lk, "snapshot_path") as path, patch("sys.stderr"):
+        result = lk.run_snapshot(config, ["1"])
+
+    assert result == 2
+    cast.assert_called_once_with(["st", "1"], config, capture=True)
+    path.assert_not_called()
+
