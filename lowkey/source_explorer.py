@@ -246,6 +246,207 @@ def _make_review_leads(nodes: list[dict[str, Any]], edges: list[dict[str, Any]])
     return leads
 
 
+def _attach_compiler_dispatch_facts(
+    root: Path,
+    nodes_by_id: dict[str, dict[str, Any]],
+    edges: list[dict[str, Any]],
+    declarations: dict[str, dict[str, Any]],
+    by_name_file: dict[tuple[str, str], str],
+) -> dict[str, Any]:
+    """Attach only fresh compiler-AST C3/override facts to matching source nodes."""
+    try:
+        try:
+            from .protocol_graph import compiler_ast_graph
+        except ImportError:  # pragma: no cover - script/module invocation
+            from protocol_graph import compiler_ast_graph
+        compiler = compiler_ast_graph(root)
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError) as error:
+        return {"status": "AST_UNAVAILABLE", "reason": str(error), "c3_contracts": 0, "override_edges": 0}
+
+    status = str(compiler.get("status") or "AST_UNAVAILABLE")
+    if status != "AST_OBSERVED":
+        rejected = compiler.get("rejected_sources") or []
+        reason = "; ".join(
+            str(item.get("reason") or "compiler source unavailable")
+            for item in rejected[:3] if isinstance(item, dict)
+        ) or "Fresh Foundry build-info is not available."
+        return {
+            "status": status, "reason": reason,
+            "accepted_builds": compiler.get("accepted_builds", 0),
+            "c3_contracts": 0, "override_edges": 0,
+        }
+
+    ast_nodes = [item for item in compiler.get("nodes") or [] if isinstance(item, dict)]
+    contracts = {str(item.get("id")): item for item in ast_nodes if item.get("kind") == "contract"}
+    compiler_contract_to_ui: dict[str, str] = {}
+    c3_count = 0
+
+    for ast_contract in contracts.values():
+        name, source_path = str(ast_contract.get("name") or ""), str(ast_contract.get("source") or "")
+        ui_id = by_name_file.get((name, source_path))
+        if not ui_id or ui_id not in nodes_by_id:
+            continue
+        compiler_contract_to_ui[str(ast_contract.get("id"))] = ui_id
+        linearized: list[dict[str, Any]] = []
+        ordered_keys = ast_contract.get("linearized_base_contracts")
+        if isinstance(ordered_keys, list):
+            for rank, base_key in enumerate(ordered_keys):
+                base_ast = contracts.get(str(base_key))
+                if not base_ast:
+                    continue
+                base_ui_id = by_name_file.get((
+                    str(base_ast.get("name") or ""),
+                    str(base_ast.get("source") or ""),
+                ))
+                base_ui = nodes_by_id.get(base_ui_id or "")
+                if not base_ui:
+                    continue
+                linearized.append({
+                    "id": base_ui["id"],
+                    "name": base_ui.get("name") or base_ui.get("label"),
+                    "file": base_ui.get("file") or base_ast.get("source"),
+                    "rank": rank + 1,
+                    "role": "SELF" if str(base_ast.get("id")) == str(ast_contract.get("id")) else "BASE",
+                    "evidence": "COMPILER_AST",
+                })
+        expected = len(ast_contract.get("linearized_base_ids") or [])
+        target = nodes_by_id[ui_id]
+        target["c3_linearization"] = linearized
+        target["c3_expected_count"] = expected
+        target["c3_status"] = (
+            "COMPILER_AST" if expected > 0 and len(linearized) == expected
+            else "PARTIAL" if linearized else "UNAVAILABLE"
+        )
+        target["c3_evidence"] = "COMPILER_AST"
+        c3_count += 1
+
+    functions = [item for item in ast_nodes if item.get("kind") == "function"]
+    compiler_function_to_ui: dict[str, str] = {}
+    compiler_function_by_id = {str(item.get("id")): item for item in functions}
+    for ast_function in functions:
+        contract = contracts.get(str(ast_function.get("contract") or ""))
+        if not contract:
+            continue
+        owner_id = by_name_file.get((
+            str(contract.get("name") or ""),
+            str(contract.get("source") or ""),
+        ))
+        if not owner_id:
+            continue
+        candidates = [
+            item for item in nodes_by_id.values()
+            if item.get("type") == "function"
+            and item.get("contract_id") == owner_id
+            and item.get("name") == ast_function.get("name")
+        ]
+        signature = str(ast_function.get("signature") or "")
+        exact = [item for item in candidates if str(item.get("signature") or "") == signature]
+        match = exact[0] if len(exact) == 1 else (candidates[0] if len(candidates) == 1 else None)
+        if not match:
+            continue
+        compiler_id = str(ast_function.get("id"))
+        compiler_function_to_ui[compiler_id] = match["id"]
+        match["compiler_dispatch"] = {
+            "evidence": "COMPILER_AST",
+            "compiler_declaration_id": ast_function.get("compiler_id"),
+            "is_virtual": bool(ast_function.get("is_virtual")),
+            "has_override_specifier": bool(ast_function.get("has_override_specifier")),
+            "base_function_count": len(ast_function.get("base_function_ids") or []),
+        }
+
+    def source_line(source_path: str, source_span: Any) -> int | None:
+        if not isinstance(source_span, str):
+            return None
+        parts = source_span.split(":")
+        if len(parts) != 3:
+            return None
+        try:
+            byte_offset = int(parts[0])
+            candidate = (root / source_path).resolve(strict=True)
+            candidate.relative_to(root.resolve())
+            if byte_offset < 0 or candidate.stat().st_size > MAX_UPLOAD_FILE_BYTES:
+                return None
+            with candidate.open("rb") as handle:
+                prefix = handle.read(min(MAX_UPLOAD_FILE_BYTES + 1, byte_offset))
+            return prefix.count(b"\\n") + 1
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return None
+
+    edge_lookup = {
+        (str(edge.get("source")), str(edge.get("target")), str(edge.get("kind")))
+        for edge in edges
+    }
+    added_override_edges = 0
+    for raw_edge in compiler.get("edges") or []:
+        if not isinstance(raw_edge, dict):
+            continue
+        raw_kind = raw_edge.get("kind")
+        if raw_kind not in {"compiler_override_candidate", "compiler_call_candidate"}:
+            continue
+        source_ui = compiler_function_to_ui.get(str(raw_edge.get("source")))
+        target_ui = compiler_function_to_ui.get(str(raw_edge.get("target")))
+        if not source_ui or not target_ui:
+            continue
+        kind = "OVERRIDES" if raw_kind == "compiler_override_candidate" else "CALLS"
+        key = (source_ui, target_ui, kind)
+        source_function = compiler_function_by_id.get(str(raw_edge.get("source")), {})
+        source_path = str(source_function.get("source") or "")
+        line = source_line(source_path, raw_edge.get("source_span"))
+        if key in edge_lookup:
+            for existing in edges:
+                if (existing.get("source"), existing.get("target"), existing.get("kind")) == key:
+                    details = existing.setdefault("details", {})
+                    if isinstance(details, dict):
+                        details["compiler_ast_reference"] = raw_edge.get("source_span")
+                        details["compiler_ast_evidence"] = "COMPILER_AST"
+                    break
+            continue
+        digest = hashlib.sha256(
+            f"{kind}|{source_ui}|{target_ui}|{raw_edge.get('source_span')}".encode("utf-8")
+        ).hexdigest()[:24]
+        detail = (
+            "Solidity compiler AST identifies this declaration as a base-function override. "
+            "This is a static declaration relationship, not proof of a deployed runtime target."
+            if kind == "OVERRIDES"
+            else "Solidity compiler AST resolves this source call expression to a declaration. "
+                 "This does not establish that the call executed at runtime."
+        )
+        edge = {
+            "id": "compiler-ast:" + digest,
+            "source": source_ui, "target": target_ui, "kind": kind,
+            "source_kind": raw_kind,
+            "label": EDGE_LABELS.get(kind, kind),
+            "resolution": "DIRECT", "evidence": "COMPILER_AST",
+            "file": source_path, "line": line, "detail": detail,
+            "via": [], "access_path": "", "status": "", "asset": "",
+            "direction": "", "recipient": "", "amount": "", "method": "",
+            "receiver": "", "implementation_resolution": "",
+            "call_kind": "compiler_ast", "source_excerpt": (
+                _source_excerpt(root, source_path, line) if line else ""
+            ),
+            "details": {
+                "compiler_ast_edge_kind": raw_kind,
+                "source_span": raw_edge.get("source_span"),
+                "certainty": raw_edge.get("certainty") or "referenced_declaration",
+            },
+        }
+        edges.append(edge)
+        edge_lookup.add(key)
+        nodes_by_id[source_ui]["outgoing"] += 1
+        nodes_by_id[target_ui]["incoming"] += 1
+        if kind == "OVERRIDES":
+            added_override_edges += 1
+
+    return {
+        "status": "AST_OBSERVED",
+        "accepted_builds": compiler.get("accepted_builds", 0),
+        "compiler_versions": compiler.get("compiler_versions") or [],
+        "c3_contracts": c3_count,
+        "override_edges": added_override_edges,
+        "limitations": compiler.get("limitations") or [],
+    }
+
+
 def build_explorer_model(index: dict[str, Any], root: str | Path = ".") -> dict[str, Any]:
     """Preserve source-index declarations and edges in one UI-ready evidence graph."""
     root_path = Path(root).expanduser().resolve()
@@ -395,8 +596,12 @@ def build_explorer_model(index: dict[str, Any], root: str | Path = ".") -> dict[
             nodes_by_id[parent]["outgoing"] += 1
             node["incoming"] += 1
 
+    compiler_dispatch = _attach_compiler_dispatch_facts(
+        root_path, nodes_by_id, edges, declarations, by_name_file
+    )
+
     source_paths = {
-        str(raw.get("file") or "") for raw in raw_nodes.values()
+        str(raw.get("file") or "") for raw in raw_nodes.values
         if str(raw.get("file") or "").lower().endswith(".sol")
     }
     sources = _source_file_inventory(root_path, source_paths)
@@ -473,7 +678,7 @@ def build_explorer_model(index: dict[str, Any], root: str | Path = ".") -> dict[
         "parser": index.get("parser", "LEXICAL"), "ast": index.get("ast") or {},
         "effect_propagation": index.get("effect_propagation") or {},
         "nodes": sorted(nodes, key=lambda item: (item["folder"], item["type"], item["label"].casefold(), item["id"])),
-        "edges": edges, "sources": sources,
+        "edges": edges, "sources": sources, "compiler_dispatch": compiler_dispatch,
         "source_inventory": {"files": len(sources), "embedded_files": sum(1 for item in sources if item.get("status") == "EMBEDDED"), "embedded_bytes": source_bytes, "embedding_budget_bytes": MAX_EMBEDDED_SOURCE_BYTES},
         "overview_edges": list(overview.values()),
         "groups": sorted(groups.values(), key=lambda item: item["folder"].casefold()),
