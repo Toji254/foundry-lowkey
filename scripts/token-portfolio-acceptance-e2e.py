@@ -265,6 +265,24 @@ print("LOWKEY_TRACE_TX_HASH " + match.group(0))
             ]
             output = run(command, project, env=env, timeout=900)
             payload = json.loads(output)
+            tx_hash = payload.get("tx_hash")
+            if not isinstance(tx_hash, str) or not re.fullmatch(r"0x[0-9a-fA-F]{64}", tx_hash):
+                raise AssertionError("Reproof did not retain the mined transaction hash for opcode tracing.")
+            opcode_output = run(
+                [lk, "opcodes", "--tx", tx_hash, "--fork", "cancun"],
+                project, env=env, timeout=180,
+            )
+            json_start = opcode_output.find("{")
+            if json_start < 0:
+                raise AssertionError("Installed lk opcodes did not emit its OpcodeTrace JSON.")
+            opcode_trace, _ = json.JSONDecoder().raw_decode(opcode_output[json_start:])
+            if (
+                opcode_trace.get("supported") is not True
+                or opcode_trace.get("schema") != "OpcodeTrace"
+                or not opcode_trace.get("steps")
+                or opcode_trace["steps"][0].get("schema") != "OpcodeStep"
+            ):
+                raise AssertionError("Installed lk opcodes did not return bounded OpcodeStep execution evidence.")
             if payload.get("legacy_status") != "LOCAL_PROFITABLE":
                 raise AssertionError("Local token portfolio result was not LOCAL_PROFITABLE:\n" + output[-10000:])
             if payload.get("status") == "PROFITABLE":
