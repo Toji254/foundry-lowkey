@@ -75,7 +75,7 @@ source_index → source_ast → source_graph → source_explorer
 - source_graph.py provides graph projection/serialization over source-index facts.
 - source_explorer.py builds the embedded HTML/CSS/JavaScript/SVG graph workspace and local source-serving endpoints.
 - source_link.py backs CLI source tracing and related source navigation.
-- protocol_graph.py builds a compiler-AST graph and a separate canonical validated runtime-trace graph. Its compiler-AST facts are now joined into the source explorer for C3 linearization and override metadata. Runtime graph output is not yet unified into the main source-explorer canvas.
+- protocol_graph.py builds fresh compiler-AST facts and validates saved canonical TraceEvent v2 streams. source_explorer.py joins compiler C3/override facts into the source model and now overlays validated runtime observations on the same SVG canvas as detached address-only runtime endpoints. The overlay retains trace artifact/run/sequence/backend metadata. It deliberately does not join runtime addresses to source declarations without verified network/deployment/proxy identity.
 - Deployment/proxy intelligence lives in separate deployment modules and remains a distinct source of deployment identity and proxy resolution evidence.
 
 ## Existing graph model and evidence contracts
@@ -104,18 +104,18 @@ The pre-upgrade remote baseline snapshot at commit 1f7714aa reported:
 
 The Foundry acceptance failure was traced to an over-escaped raw regex in scripts/project-native-foundry-deployment-e2e.py. It failed to recognise a valid printed .audit/deployment-reviews/<64-hex-id>.json path. That regex was corrected.
 
-The first graph implementation validation reported 2,621 Python tests passing and 32 RPC checks passing. Later feature additions increased the suite to 2,626 tests. The last completed Python run on commit b7062037 reported 2 failures: one nested-type fixture could not locate the struct parent field in the explorer model; one compiler-backed override fact was merged into a lexical edge without upgrading its evidence metadata. Both defects were corrected in subsequent commits (model now carries struct/enum field-parent metadata; merged compiler-confirmed edges carry COMPILER_AST evidence and compiler location). The follow-up validation is queued behind in-progress integration/corpus jobs at the time this report was written; its result must be checked before treating the branch as green.
+The first graph implementation validation reported 2,621 Python tests passing and 32 RPC checks passing. Later feature additions increased the suite to 2,626 tests. The 2,626-test Python unit suite on commit 1b9b4d1ef88a0d24c93ae9d60f5b6ef37ea6becd completed successfully (OK, 3 skipped). This run includes both previously failing graph regressions: Solidity return data-location metadata is preserved, and compiler-confirmed override facts upgrade the ambiguous lexical placeholder. The subsequent RPC/deployment-review pytest command reported 46 passed and one failure in tests/test_native_hardhat_deployment_review.py: the fixture called Path.mkdir() for the same scripts directory twice. The fixture now uses mkdir(parents=True, exist_ok=True); a rerun on the current head is pending.
 
 Remote multi-Anvil isolation and P3 genericity acceptances have passed in the recent runs. The pinned GMX deployment acceptance has passed on an earlier graph-stage commit; a later run remained in progress at the time of reporting.
 
 ## Known test and acceptance gaps
 
 - The full command/default/flag/side-effect matrix has not been executed from the installed CLI.
-- Existing graph tests assert model/HTML content; a real browser E2E harness and viewport/pointer/console/accessibility acceptance have not been demonstrated.
-- Large-protocol performance has not been benchmarked with hundreds/thousands of declarations and dense edges in a real browser.
+- A real Chromium Playwright acceptance script and CI job now exercise entrypoint focus, source drawer/call-site synchronization, bookmarks and investigation state, search, filters, keyboard shortcuts, reload persistence, a 768px viewport and a generated 60-contract graph. The job has been added but has not yet completed on the current head; do not treat browser acceptance as passed until its artifact and logs are reviewed.
+- The browser performance fixture exercises a generated 60-contract protocol and measures cluster expansion; thousands-of-functions/dense-edge stress testing and accessibility/keyboard-only audit remain open.
 - The user's laptop working tree and uncommitted modifications are not visible through the GitHub integration.
 - Figma's shared file was identified, but the design-context and screenshot endpoints were rate-limited during this session. The reference frame has not been visually inspected here.
-- Runtime trace address-to-source/deployment joins remain incomplete and must require strict project/network session/chain/genesis/deployment/proxy identity.
+- Runtime trace events are now visible in the same canvas as address-only RUNTIME_TRACE endpoints. Source-contract mapping remains intentionally unavailable until a strict project/network session/chain/genesis/deployment/proxy identity join is implemented and evidenced.
 
 ## Security and compatibility requirements
 
@@ -125,3 +125,15 @@ Remote multi-Anvil isolation and P3 genericity acceptances have passed in the re
 - Do not edit target project configuration as a side effect of graph generation.
 - Do not infer deployed implementation identity from interface names or a source-level binding.
 - Preserve existing CLI routes, deployment/proxy evidence, trace schemas, and project audit context.
+
+
+## Follow-up implementation checkpoint — 2026-11-27
+
+Current branch head at this checkpoint: `9c41024fbbe452e21fe6647af5f2b7ff2f72fa3a`.
+
+- Added a detached validated runtime trace layer to the existing source explorer canvas. Edges use `RUNTIME_CALL_OBSERVED` / `RUNTIME_TRACE`; endpoints are address-only and cannot be mistaken for source contract nodes. Trace run/artifact/stream/sequence/backend/selector/depth/revert metadata is retained in the relationship inspector.
+- Added positive and negative runtime-overlay unit tests: validated canonical streams should appear; malformed/non-contiguous streams must not create runtime nodes or edges.
+- Added `scripts/protocol-graph-browser-e2e.py` and a `protocol-graph-browser` CI job using Playwright/Chromium. It is a real browser test over generated generic Solidity fixtures, not a mocked DOM test. Its pending result must be checked on the latest head.
+- The 2,626 base unit tests passed on `1b9b4d1`. A later unrelated Hardhat review test fixture failed because its temporary `scripts` directory was created twice; fixture setup is now idempotent and awaits CI revalidation.
+- The full all-command runtime/side-effect matrix is still incomplete. Existing static inventory remains 161 root help keys and 28 aliases; a graph-focused safe CLI matrix is the next command-level acceptance.
+- Figma MCP Starter-plan call quota remains exhausted. The supplied prototype frame has not been visually inspected; no visual-match claim is made.
