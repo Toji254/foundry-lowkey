@@ -65,6 +65,27 @@ def registered_commands(source_path: pathlib.Path) -> tuple[list[str], dict[str,
     return sorted(canonical), aliases
 
 
+def launcher_commands(launcher_path: pathlib.Path) -> list[str]:
+    """Extract first-argument routes from the installed shell launcher."""
+    text = launcher_path.read_text(encoding="utf-8")
+    commands: set[str] = set()
+    commands.update(re.findall(
+        r'\\[\\[\\s*"\\$\\{1:-\\}"\\s*==\\s*"([A-Za-z0-9][A-Za-z0-9_-]*)"',
+        text,
+    ))
+    for match in re.finditer(
+        r'case\\s+"\\$\\{1:-\\}"\\s+in(.*?)(?:^\\s*esac\\b)',
+        text,
+        flags=re.MULTILINE | re.DOTALL,
+    ):
+        for line in match.group(1).splitlines():
+            candidate = line.split("#", 1)[0].strip()
+            labels = re.fullmatch(r"([A-Za-z0-9_-]+(?:\\|[A-Za-z0-9_-]+)*)\\)", candidate)
+            if labels:
+                commands.update(labels.group(1).split("|"))
+    return sorted(commands)
+
+
 def run_help(executable: str, command: str, env: dict[str, str], timeout: float) -> dict:
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]*", command):
         return {"command": command, "status": "INVALID_REGISTRY_KEY"}
@@ -120,8 +141,19 @@ def main() -> int:
         parser.error("--timeout must be between 0 and 30 seconds.")
 
     canonical, aliases = registered_commands(ROOT / "lowkey" / "lk.py")
-    commands = sorted(set(canonical) | set(aliases))
+    launcher = launcher_commands(ROOT / "bin" / "lk")
+    commands = sorted(set(canonical) | set(aliases) | set(launcher))
     env = os.environ.copy()
+    root_help = subprocess.run(
+        [executable, "--help"], cwd=ROOT, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        timeout=args.timeout, check=False,
+    )
+    if root_help.returncode != 0 or not root_help.stdout.strip():
+        raise AssertionError(
+            "Installed lk --help failed: "
+            + root_help.stderr[-2000:] + root_help.stdout[-2000:]
+        )
     env["BROWSER"] = "true"
     env["LOWKEY_DISABLE_AUTO_GUIDANCE"] = "1"
     results = [run_help(executable, command, env, args.timeout) for command in commands]
@@ -129,6 +161,9 @@ def main() -> int:
     report = {
         "canonical_help_keys": len(canonical),
         "aliases": len(aliases),
+        "launcher_routes": len(launcher),
+        "root_help_exit_code": root_help.returncode,
+        "root_help_output_bytes": len(root_help.stdout.encode("utf-8")),
         "unique_invocations": len(commands),
         "passed": len(results) - len(failures),
         "failed": len(failures),
@@ -143,7 +178,7 @@ def main() -> int:
         "LOWKEY COMMAND HELP MATRIX: "
         f"{report['passed']}/{report['unique_invocations']} passed "
         f"({report['canonical_help_keys']} registered commands, "
-        f"{report['aliases']} aliases)"
+        f"{report['aliases']} aliases, {report['launcher_routes']} launcher routes)"
     )
     for item in failures:
         print(
