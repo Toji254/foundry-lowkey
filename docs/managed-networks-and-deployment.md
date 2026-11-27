@@ -19,6 +19,26 @@ Creation starts Anvil on a loopback address with a separate account seed and a g
 
 Lowkey does not adopt or terminate arbitrary processes merely because they are listening on an Anvil port. A recorded process is eligible for shutdown only when the live Linux process identity still matches the persisted process record. A stale or unowned record is reported and is not signalled.
 
+### Live two-session acceptance
+
+The CI workflow `.github/workflows/live-multi-anvil-acceptance.yml` runs
+`scripts/multi-anvil-network-acceptance-e2e.py` against two real Anvil
+processes. It creates two sessions through the installed `lk lab network`
+CLI, records their independent process and chain identities, registers
+`Alice` separately in both sessions, switches active context, restarts the
+manager, removes active selection to assert ambiguity fails closed, and checks
+that an explicit RPC override detaches the other session's actor context.
+
+The same run sends value transactions to both networks, checks recipient
+balance deltas and cross-network transaction-hash absence, deploys runtime
+bytecode only on the first network, and verifies both the EVM code and
+supporting-deployment record remain session-local. The script writes
+`.audit/network-multi-anvil-acceptance/latest.json` and uploads that evidence
+as a CI artifact. The gate has passed on real GitHub-hosted Anvil runners; it
+does not replace a repository-wide audit of every RPC-consuming CLI command,
+nor does it prove real GMX library reuse or proxy deployment readiness.
+
+
 An RPC endpoint is not a network identity by itself. An explicit `--rpc-url` that differs from the selected project/session endpoint is treated as unscoped: session-owned actor, target and deployment identity is detached for that invocation. The explicit endpoint still controls the RPC operation, but Lowkey does not borrow the other network's actor or target context.
 
 ## Session-scoped actors

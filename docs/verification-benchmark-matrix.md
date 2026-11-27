@@ -21,6 +21,8 @@ This matrix is the acceptance contract for generic verification. "Implemented" m
 
 | Project / protocol family | Build system / language | Failure modes to seed | Status |
 |---|---|---|---|
+| Managed Anvil identity | Lowkey CLI + Anvil JSON-RPC | Session/process/genesis collision; actor alias leakage; cross-network transactions/deployments; ambiguous selection; explicit-RPC actor detachment | Live CI pass: two independent Anvil processes, separate session/process/chain/account identities, session-local Alice aliases, registry restart, ambiguous-selection rejection, explicit-RPC detachment, real isolated value transactions and contract deployment. This is a focused live gate, not exhaustive cross-command RPC coverage. |
+|---|---|---|---|
 | Access control / ownership | Solidity + Foundry | Unauthorized caller succeeds; role handoff regression | Pending |
 | ERC-20 / allowance flows | Solidity + Foundry | Allowance bypass; incorrect transfer accounting | Pending |
 | Vault / lending accounting | Solidity + Foundry | Share inflation; solvency invariant violation | Pending |
