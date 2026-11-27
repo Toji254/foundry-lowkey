@@ -93,7 +93,10 @@ def launcher_commands(launcher_path: pathlib.Path) -> list[str]:
             labels = re.fullmatch(r"([A-Za-z0-9_-]+(?:\|[A-Za-z0-9_-]+)*)\)", candidate)
             if labels:
                 commands.update(labels.group(1).split("|"))
-    return sorted(commands)
+    return sorted(
+        command for command in commands
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", command)
+    )
 
 
 def run_help(executable: str, command: str, env: dict[str, str], timeout: float) -> dict:
