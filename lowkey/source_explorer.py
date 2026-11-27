@@ -38,6 +38,7 @@ EDGE_LABELS = {
     "UNRESOLVED_MUTATION": "UNRESOLVED MUTATION", "USES_TYPE": "USES TYPE",
     "IMPORTS": "IMPORTS", "INHERITS": "INHERITS", "USES_LIBRARY": "USES LIBRARY",
     "ASSET_FLOW": "ASSET FLOW", "EMITS": "EMITS", "REVERTS": "REVERTS",
+    "RUNTIME_CALL_OBSERVED": "RUNTIME CALL OBSERVED",
     "DECLARES": "CONTAINS",
 }
 CALL_KINDS = {"CALLS", "LIBRARY_CALL", "EXTERNAL_CALL", "APPLIES_MODIFIER", "OVERRIDES"}
@@ -674,6 +675,97 @@ def build_explorer_model(index: dict[str, Any], root: str | Path = ".") -> dict[
         root_path, nodes_by_id, edges, declarations, by_name_file
     )
 
+    # Validated runtime events share the protocol canvas, but remain detached
+    # from source declarations until a deployment/network identity join exists.
+    try:
+        try:
+            from .protocol_graph import runtime_trace_graph
+        except ImportError:  # pragma: no cover - script/module invocation
+            from protocol_graph import runtime_trace_graph
+        runtime_trace = runtime_trace_graph(root_path)
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError) as error:
+        runtime_trace = {
+            "status": "RUNTIME_TRACE_UNAVAILABLE", "streams": 0, "edges": [],
+            "rejected": [{"reason": str(error)}],
+            "limitations": ["Runtime trace ingestion could not be loaded."],
+        }
+
+    runtime_edges_added = 0
+    for observed in runtime_trace.get("edges") or []:
+        if not isinstance(observed, dict):
+            continue
+        endpoint_ids: dict[str, str] = {}
+        for field in ("source", "target"):
+            address = str(observed.get(field) or "").lower()
+            if not re.fullmatch(r"0x[0-9a-f]{40}", address):
+                continue
+            endpoint_id = "runtime-address:" + address
+            endpoint_ids[field] = endpoint_id
+            if endpoint_id not in nodes_by_id:
+                short = address[:8] + "…" + address[-6:]
+                nodes_by_id[endpoint_id] = {
+                    "id": endpoint_id, "type": "external", "kind": "runtime_address",
+                    "label": short, "qualified_name": address, "name": address,
+                    "contract": address, "contract_id": endpoint_id,
+                    "declaration_kind": "runtime endpoint",
+                    "file": "", "line": None, "location": address,
+                    "folder": "Runtime observations/" + address,
+                    "origin": "runtime", "vendor": "Runtime observations",
+                    "scope": "external", "evidence": "RUNTIME_TRACE",
+                    "runtime_address": address, "runtime_observation_count": 0,
+                    "visibility": None, "mutability": None, "signature": None,
+                    "parameters": [], "storage_class": None, "type_text": "",
+                    "mapping_keys": [], "mapping_value_type": "", "initializer": None,
+                    "bases": [], "ancestors": [], "using_libraries": [],
+                    "incoming": 0, "outgoing": 0, "source_excerpt": "",
+                }
+        if "source" not in endpoint_ids or "target" not in endpoint_ids:
+            continue
+        source_id, target_id = endpoint_ids["source"], endpoint_ids["target"]
+        digest_payload = "|".join(str(observed.get(key) or "") for key in (
+            "artifact", "stream", "seq", "kind", "source", "target", "selector"
+        ))
+        edge_id = "runtime-observed:" + hashlib.sha256(digest_payload.encode("utf-8")).hexdigest()[:24]
+        detail = (
+            "Observed in a validated canonical TraceEvent v2 stream. "
+            "This is evidence for this recorded execution only, not exhaustive reachability."
+        )
+        edge_details = {
+            "runtime_operation": observed.get("operation_kind"),
+            "depth": observed.get("depth"),
+            "selector": observed.get("selector"),
+            "backend": observed.get("backend"),
+            "reverted": observed.get("reverted"),
+            "run_id": observed.get("run_id"),
+            "artifact": observed.get("artifact"),
+            "stream": observed.get("stream"),
+            "seq": observed.get("seq"),
+        }
+        edges.append({
+            "id": edge_id, "source": source_id, "target": target_id,
+            "kind": "RUNTIME_CALL_OBSERVED", "source_kind": "runtime_call_observed",
+            "label": EDGE_LABELS["RUNTIME_CALL_OBSERVED"],
+            "resolution": "OBSERVED", "evidence": "RUNTIME_TRACE",
+            "file": "", "line": None, "detail": detail, "via": [],
+            "access_path": "", "status": "OBSERVED", "asset": "", "direction": "",
+            "recipient": "", "amount": "", "method": "", "receiver": "",
+            "implementation_resolution": "", "call_kind": str(observed.get("operation_kind") or ""),
+            "source_excerpt": "", "details": edge_details,
+        })
+        nodes_by_id[source_id]["outgoing"] += 1
+        nodes_by_id[target_id]["incoming"] += 1
+        nodes_by_id[source_id]["runtime_observation_count"] += 1
+        nodes_by_id[target_id]["runtime_observation_count"] += 1
+        runtime_edges_added += 1
+    runtime_trace_summary = {
+        "status": runtime_trace.get("status") or "RUNTIME_TRACE_UNAVAILABLE",
+        "streams": int(runtime_trace.get("streams") or 0),
+        "observations": runtime_edges_added,
+        "rejected": runtime_trace.get("rejected") or [],
+        "limitations": runtime_trace.get("limitations") or [],
+        "source_join": "UNAVAILABLE_WITHOUT_VERIFIED_DEPLOYMENT_AND_NETWORK_IDENTITY",
+    }
+
     source_paths = {
         str(raw.get("file") or "") for raw in raw_nodes.values()
         if str(raw.get("file") or "").lower().endswith(".sol")
@@ -696,6 +788,17 @@ def build_explorer_model(index: dict[str, Any], root: str | Path = ".") -> dict[
         group["vendors"].add(node["vendor"])
         group["third_party" if node["origin"] == "third-party" else "first_party"] += 1
     for node in nodes:
+        if node.get("kind") == "runtime_address":
+            group_id = "group:" + node["folder"]
+            groups[group_id] = {
+                "id": group_id, "folder": node["folder"],
+                "label": "Runtime endpoint · " + node["label"],
+                "count": 1, "functions": 0, "storage": 0,
+                "vendors": {"Runtime observations"}, "first_party": 0,
+                "third_party": 0, "declarations": [node["id"]],
+                "runtime_endpoint": True,
+            }
+            continue
         owner = nodes_by_id.get(node.get("contract_id") or "")
         if not owner or owner["type"] != "declaration":
             continue
@@ -754,6 +857,7 @@ def build_explorer_model(index: dict[str, Any], root: str | Path = ".") -> dict[
         "effect_propagation": index.get("effect_propagation") or {},
         "nodes": sorted(nodes, key=lambda item: (item["folder"], item["type"], item["label"].casefold(), item["id"])),
         "edges": edges, "sources": sources, "compiler_dispatch": compiler_dispatch,
+        "runtime_trace": runtime_trace_summary,
         "source_inventory": {"files": len(sources), "embedded_files": sum(1 for item in sources if item.get("status") == "EMBEDDED"), "embedded_bytes": source_bytes, "embedding_budget_bytes": MAX_EMBEDDED_SOURCE_BYTES},
         "overview_edges": list(overview.values()),
         "groups": sorted(groups.values(), key=lambda item: item["folder"].casefold()),
@@ -776,9 +880,13 @@ def build_explorer_model(index: dict[str, Any], root: str | Path = ".") -> dict[
             "groups": len(groups), "third_party_declarations": sum(1 for item in nodes if item["type"] == "declaration" and item["origin"] == "third-party"),
             "review_leads": len(leads), "unresolved": summary.get("unresolved", 0),
             "ambiguous": summary.get("ambiguous", 0), "coverage_complete": bool(inventory.get("complete", False)),
+            "runtime_streams": runtime_trace_summary["streams"],
+            "runtime_observations": runtime_trace_summary["observations"],
         },
         "limitations": [
             "Static source relationships are not proof of runtime execution or success.",
+            "Runtime trace endpoints remain separate from source contracts until a strict deployment and network identity join is available.",
+            "Runtime trace relationships describe only validated events in the saved trace artifacts.",
             "Inferred helper effects need branch and execution-context review.",
             "Interface declarations do not prove the deployed implementation selected at a runtime address.",
             "Asset-flow edges are source candidates; verify call success and balance changes with traces.",
@@ -828,7 +936,7 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
 .source-line.selected .source-line-number{color:#8bdcf9}
 .graph-toolbar{display:flex;align-items:center;gap:6px;padding:7px 11px;border-bottom:1px solid #1d314b;background:#0b1728cc}.toolbar-label{font-size:10px;color:#849bb5;font-weight:800;letter-spacing:.1em}.toolbar-spacer{flex:1}.rel-filter{border:1px solid var(--line);background:#0f1d31;color:#b9c9dc;border-radius:7px;padding:7px 8px;max-width:160px}
 .graph-stage{position:relative;min-height:0;overflow:hidden;background-image:radial-gradient(#24405f66 1px,transparent 1px);background-size:22px 22px}#graph{width:100%;height:100%;display:block;touch-action:none;cursor:grab}#graph.dragging{cursor:grabbing}
-.edge{fill:none;stroke:#607f9f;stroke-width:2;opacity:.76;marker-end:url(#arrow);transition:opacity .18s,stroke-width .18s}.edge.CALLS{stroke:#54c6a0}.edge.LIBRARY_CALL,.edge.USES_LIBRARY{stroke:#64c69d}.edge.EXTERNAL_CALL{stroke:#e6a66a;stroke-dasharray:3 4}.edge.APPLIES_MODIFIER{stroke:#9d9fea}.edge.OVERRIDES,.edge.INHERITS,.edge.USES_TYPE{stroke:#a68ef0}.edge.READS,.edge.WRITES,.edge.DELETES{stroke:#64bbd9}.edge.ASSET_FLOW{stroke:#d68ae3;stroke-width:2.5;stroke-dasharray:8 6;animation:flowMotion 1.45s linear infinite}@keyframes flowMotion{to{stroke-dashoffset:-28}}@media(prefers-reduced-motion:reduce){.edge.ASSET_FLOW{animation:none}}.edge.IMPORTS{stroke:#6a829d;stroke-dasharray:5 6}.edge.CONTAINS{stroke:#314a63;stroke-width:1.1;stroke-dasharray:3 5;marker-end:none;opacity:.45}.edge.hot{opacity:1;stroke-width:3.5}.edge.ASSERTED_BINDING{stroke:#c58ada;stroke-dasharray:7 5;opacity:.98}.edge.dimmed{opacity:.12;marker-end:none;animation:none}.edge-label{font-size:10px;fill:#aebed1;paint-order:stroke;stroke:#091321;stroke-width:4px;pointer-events:none}.edge-label.dimmed{opacity:.12}
+.edge{fill:none;stroke:#607f9f;stroke-width:2;opacity:.76;marker-end:url(#arrow);transition:opacity .18s,stroke-width .18s}.edge.CALLS{stroke:#54c6a0}.edge.LIBRARY_CALL,.edge.USES_LIBRARY{stroke:#64c69d}.edge.EXTERNAL_CALL{stroke:#e6a66a;stroke-dasharray:3 4}.edge.APPLIES_MODIFIER{stroke:#9d9fea}.edge.OVERRIDES,.edge.INHERITS,.edge.USES_TYPE{stroke:#a68ef0}.edge.READS,.edge.WRITES,.edge.DELETES{stroke:#64bbd9}.edge.ASSET_FLOW{stroke:#d68ae3;stroke-width:2.5;stroke-dasharray:8 6;animation:flowMotion 1.45s linear infinite}@keyframes flowMotion{to{stroke-dashoffset:-28}}@media(prefers-reduced-motion:reduce){.edge.ASSET_FLOW{animation:none}}.edge.IMPORTS{stroke:#6a829d;stroke-dasharray:5 6}.edge.RUNTIME_CALL_OBSERVED{stroke:#e8b85d;stroke-width:2.5;stroke-dasharray:2 5}.edge.CONTAINS{stroke:#314a63;stroke-width:1.1;stroke-dasharray:3 5;marker-end:none;opacity:.45}.edge.hot{opacity:1;stroke-width:3.5}.edge.ASSERTED_BINDING{stroke:#c58ada;stroke-dasharray:7 5;opacity:.98}.edge.dimmed{opacity:.12;marker-end:none;animation:none}.edge-label{font-size:10px;fill:#aebed1;paint-order:stroke;stroke:#091321;stroke-width:4px;pointer-events:none}.edge-label.dimmed{opacity:.12}
 .graph-node{cursor:pointer}.graph-node rect{fill:#14243b;stroke:#55708e;stroke-width:1.5;rx:10;filter:drop-shadow(0 7px 12px #0005)}.graph-node.declaration rect{fill:#112e48;stroke:#399bd0}.graph-node.interface rect{fill:#281f45;stroke:#a88af0}.graph-node.library rect{fill:#143c33;stroke:#57c69c}.graph-node.function rect,.graph-node.modifier rect{fill:#192944;stroke:#7fa6d3}.graph-node.state rect{fill:#19372e;stroke:#64b68e}.graph-node.asset rect{fill:#35213d;stroke:#c58ada}.graph-node.external rect,.graph-node.unresolved_state rect{fill:#38291f;stroke:#d6a55e}.graph-node.group rect{fill:#142b43;stroke:#3e86ae;stroke-width:2}.graph-node.selected rect{stroke:#59ddff;stroke-width:3;filter:drop-shadow(0 0 13px #42c9f888)}.graph-node.dimmed{opacity:.2;filter:saturate(.35)}.graph-node.focused rect{stroke-width:2.3}.graph-node:hover rect{stroke:#9deaff;stroke-width:2.5}.graph-node text{pointer-events:none}.node-title{font-size:14px;font-weight:800;fill:#eff7ff}.node-subtitle{font-size:10px;fill:#9eb3cc}
 .graph-empty{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none}.graph-empty span{max-width:420px;text-align:center;color:#9cb0c9;background:#0d1c30e8;border:1px solid #284563;border-radius:12px;padding:16px}
 #minimap{position:absolute;right:12px;bottom:12px;width:154px;height:95px;border:1px solid #36516e;border-radius:8px;background:#091626dd;pointer-events:auto;cursor:crosshair;touch-action:manipulation}.graph-hint{position:absolute;left:13px;bottom:13px;color:#7f96b2;font-size:10px;background:#081523cc;border:1px solid #253e5c;border-radius:6px;padding:5px 8px;pointer-events:none}
@@ -916,6 +1024,7 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
           <label class="checkline"><input type="checkbox" data-edge="OVERRIDES" checked> Overrides</label>
           <label class="checkline"><input type="checkbox" data-edge="EMITS" checked> Events</label>
           <label class="checkline"><input type="checkbox" data-edge="REVERTS" checked> Errors</label>
+          <label class="checkline"><input type="checkbox" data-edge="RUNTIME_CALL_OBSERVED" checked> Runtime observed</label>
           <label class="checkline"><input type="checkbox" data-edge="IMPORTS"> Imports</label>
         </div>
       </div>
@@ -1554,6 +1663,7 @@ function currentProjection(){
   if(mode==="architecture"){
     if(!selected)return overviewProjection();
     if(selected.type==="group")return folderProjection(selected.folder);
+    if(selected.kind==="runtime_address")return folderProjection(selected.folder);
     if(selected.type==="declaration")return selectedContractProjection(selectedId);
     return overviewProjection();
   }
@@ -1625,6 +1735,7 @@ function curve(a,b,index){
   return "M"+a.x+" "+a.y+" C"+c1.x+" "+c1.y+" "+c2.x+" "+c2.y+" "+b.x+" "+b.y;
 }
 function subtitle(n){
+  if(n.kind==="runtime_address")return "observed runtime endpoint · source identity unresolved";
   if(n.type==="declaration")return (n.declaration_kind||"contract")+" · "+(n.folder||"");
   if(n.type==="function"||n.type==="modifier")return (n.special_function_kind||n.visibility||"visibility unknown")+" · "+(n.mutability||"nonpayable");
   if(n.type==="state")return (n.storage_class||"storage")+" · "+(n.type_text||"state");
@@ -1822,6 +1933,17 @@ function showEdgeDetails(e){
   add(root,"div","section-head","RELATIONSHIP EVIDENCE");add(root,"div","entity-name",e.label||e.kind);
   add(root,"p","entity-meta",(node(e.source)?.label||e.source)+" → "+(node(e.target)?.label||e.target));
   const badge=add(root,"div","coverage "+(e.resolution==="DIRECT"?"ok":"warn"),e.resolution+" · "+e.evidence);
+  if(e.evidence==="RUNTIME_TRACE"){
+    add(root,"div","coverage warn","OBSERVED RUNTIME TRACE · "+(e.details?.backend||"backend unavailable"));
+    add(root,"p","muted","This edge was observed in a validated saved trace. It proves only that this event appears in that artifact; it does not establish every possible path or identify a source contract.");
+    [["Operation",e.details?.runtime_operation],["Depth",e.details?.depth],["Selector",e.details?.selector],["Run",e.details?.run_id],["Trace artifact",e.details?.artifact],["Stream",e.details?.stream],["Event sequence",e.details?.seq],["Reverted",e.details?.reverted===true?"yes":e.details?.reverted===false?"no":"unknown"]].forEach(function(pair){
+      if(pair[1]===undefined||pair[1]===null||pair[1]==="")return;
+      add(root,"p","muted",pair[0]+": "+pair[1]);
+    });
+    add(root,"p","muted","Source mapping: unavailable until the trace and deployed contract are joined by verified network/deployment identity.");
+    renderGraph();
+    return;
+  }
   if(e.evidence==="ASSERTED ASSUMPTION"){
     add(root,"div","coverage warn","ASSERTED ASSUMPTION");
     add(root,"p","muted","This overlay is a user-supplied association only. The original EXTERNAL_CALL source relationship remains unchanged and unresolved for deployed implementation identity.");
@@ -1855,7 +1977,10 @@ function showEdgeDetails(e){
       }else toast(value);
     });
   }
-  const button=add(root,"button","tool-button primary","Open call site in source");button.addEventListener("click",function(){openSourceDrawer(e.file,e.line,e.label||e.kind)});
+  if(e.file&&e.line){
+    const button=add(root,"button","tool-button primary","Open call site in source");
+    button.addEventListener("click",function(){openSourceDrawer(e.file,e.line,e.label||e.kind)});
+  }
   renderGraph();
   if(e.file&&e.line)openSourceDrawer(e.file,e.line,e.label||e.kind);
 }
@@ -2128,6 +2253,12 @@ function renderInspector(){
       const excluded=add(root,"div","inspector-section");add(excluded,"div","section-head","EXCLUDED SOURCE DIRECTORIES · "+MODEL.inventory.excluded_directories.length);
       MODEL.inventory.excluded_directories.forEach(function(item){add(excluded,"p","muted",item.path+" · "+item.reason)});
     }
+    if(MODEL.runtime_trace){
+      const runtime=add(root,"div","coverage "+(MODEL.runtime_trace.observations?"warn":""));
+      add(runtime,"strong","","RUNTIME TRACE EVIDENCE · "+MODEL.runtime_trace.status);
+      add(runtime,"p","","Validated streams: "+MODEL.runtime_trace.streams+" · observed calls: "+MODEL.runtime_trace.observations+" · rejected streams: "+MODEL.runtime_trace.rejected.length);
+      add(runtime,"p","","Trace endpoints are shown separately from source contracts until verified network and deployment identity is available.");
+    }
     const leadSection=add(root,"div","inspector-section");add(leadSection,"div","section-head","AUDIT REVIEW LEADS · "+MODEL.review_leads.length);
     MODEL.review_leads.forEach(function(lead){const b=add(leadSection,"button","inspect-item","");add(b,"strong","",lead.label);add(b,"small","",lead.tier+" · "+lead.score+"/10");b.addEventListener("click",function(){openNode(lead.function,true)})});
     if(MODEL.inventory.uninspected.length){
@@ -2231,6 +2362,20 @@ function renderInspector(){
           row.addEventListener("click",function(){if(other)openNode(other.id,true)});
         });
       }
+    }else if(selected.kind==="runtime_address"){
+      add(body,"div","section-head","RUNTIME ADDRESS");
+      add(body,"p","inspect-item","Address: "+(selected.runtime_address||selected.name));
+      add(body,"p","muted","This address appears in validated trace events. Lowkey keeps it detached from source declarations because the available trace does not establish chain, deployment and proxy identity.");
+      add(body,"p","muted","Observed event references: "+(selected.runtime_observation_count||0));
+      const events=MODEL.edges.filter(function(edge){return edge.evidence==="RUNTIME_TRACE"&&(edge.source===selected.id||edge.target===selected.id)});
+      add(body,"div","section-head","OBSERVED CALLS · "+events.length);
+      events.forEach(function(edge){
+        const other=node(edge.source===selected.id?edge.target:edge.source);
+        const row=add(body,"button","inspect-item","");
+        add(row,"strong","",(edge.source===selected.id?"Called ":"Called from ")+(other?other.label:edge.target));
+        add(row,"small","",edge.details?.artifact+" · event "+edge.details?.seq+" · "+edge.resolution);
+        row.addEventListener("click",function(){showEdgeDetails(edge)});
+      });
     }else add(body,"p","muted",selected.type_text||"Indexed source declaration or relationship endpoint.");
   }else if(selectedTab==="state"){
     renderSection(body,"STATE DECLARATIONS",state,"No state variables indexed.");
