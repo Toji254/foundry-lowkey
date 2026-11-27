@@ -627,7 +627,7 @@ class ProtocolExplorerTests(unittest.TestCase):
             invalid_scope["scope_preferences"] = {
                 "include_support_sources": False,
                 "inline_libraries": True,
-                "excluded_contract_ids": [interface["id"]],
+                "excluded_contract_ids": [implementation["id"]],
                 "excluded_path_prefixes": ["../outside"],
             }
             request = urllib.request.Request(
@@ -639,6 +639,23 @@ class ProtocolExplorerTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as scope_error:
                 urllib.request.urlopen(request, timeout=5)
             self.assertEqual(scope_error.exception.code, 400)
+
+            invalid_contract_scope = dict(payload)
+            invalid_contract_scope["scope_preferences"] = {
+                "include_support_sources": False,
+                "inline_libraries": True,
+                "excluded_contract_ids": [interface["id"]],
+                "excluded_path_prefixes": ["test/fixtures"],
+            }
+            request = urllib.request.Request(
+                base + "/api/workspace",
+                data=json.dumps(invalid_contract_scope).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as contract_scope_error:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(contract_scope_error.exception.code, 400)
         finally:
             server.shutdown()
             thread.join(timeout=5)
