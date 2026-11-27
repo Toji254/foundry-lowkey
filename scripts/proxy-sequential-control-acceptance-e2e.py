@@ -619,7 +619,7 @@ def main() -> int:
             raise AssertionError("Transparent hybrid campaign mutated the source Anvil implementation slot.")
 
         report = {
-            "gate": "Lowkey independent P0 UUPS and ProxyAdmin sequential-control acceptance",
+            "gate": "Lowkey independent P0 UUPS, ProxyAdmin and Transparent hybrid sequential-control acceptance",
             "status": "PASS",
             "source_sha": expected_sha,
             "installed_git_sha": installed.get("git_sha"),
