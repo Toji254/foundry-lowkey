@@ -882,6 +882,11 @@ def effective_rpc(config, explicit_rpc=None, target=None):
                     "genesis_hash": managed.get("genesis_hash"),
                     "rpc": managed.get("rpc"),
                     "project_id": managed.get("project_id"),
+                    # Keep the active actor registry attached to the resolved
+                    # session. run_status() re-resolves the RPC and must not
+                    # erase the addresses needed to render/resolve the actor.
+                    "actors": dict(managed.get("actors") or {}),
+                    "active_actor": managed.get("active_actor"),
                 }
                 config.pop("_network_selection_error", None)
                 return selected
@@ -1382,6 +1387,11 @@ def actor_display(config):
         return f"{actor} ({address}) [Anvil #{index}]"
     if isinstance(entry,dict) and entry.get("source")=="anvil-impersonated":
         address = entry.get("address", "?")
+        session_id = entry.get("network_session_id")
+        session = config.get("_active_network_session") if isinstance(config, dict) else None
+        if session_id and isinstance(session, dict) and str(session.get("id")) == str(session_id):
+            session_name = str(session.get("name") or "managed")
+            return f"{actor} ({address}) [managed network {session_name}]"
         return f"{actor} ({address}) [impersonated]"
     if isinstance(entry,dict) and entry.get("env"):
         return f"{actor} (env:{entry['env']})"
@@ -2423,6 +2433,7 @@ def resolve_runtime_context(config, root=None, *, explicit_target=None, explicit
             "genesis_hash": managed_session.get("genesis_hash"),
             "rpc": managed_session.get("rpc"),
             "actors": network_actors,
+            "active_actor": session_actor,
         }
     elif managed_error:
         resolved["network_selection_error"] = managed_error

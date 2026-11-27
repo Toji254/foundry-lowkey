@@ -72,6 +72,21 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertIn("lk actor <name>", rendered)
         self.assertIn("active-session alias takes precedence", rendered)
 
+    def test_actor_display_includes_address_and_session_for_managed_actor(self):
+        address = "0x" + "12" * 20
+        config = {
+            "actor": "Alice",
+            "_active_network_session": {
+                "id": "session-alpha",
+                "name": "alpha",
+                "actors": {"Alice": address},
+            },
+        }
+        self.assertEqual(
+            lk.actor_display(config),
+            f"Alice ({address}) [managed network alpha]",
+        )
+
     def test_status_rpc_provenance_uses_resolved_source_not_hydrated_rpc_presence(self):
         rpc = "http://127.0.0.1:8545"
         managed = {

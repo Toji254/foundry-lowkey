@@ -123,8 +123,8 @@ def main():
                 status_a = cli(lk, root, evidence, "status")
                 actors_a = cli(lk, root, evidence, "actors")
                 checks["managed_actor_name_selection_persists_across_cli_processes"] = (
-                    "Actor  : Alice (" in status_a
-                    and "Actor: Alice (" in actors_a
+                    f"Actor  : Alice ({a['actors']['Alice']}) [managed network gmx-dev]" in status_a
+                    and f"Actor: Alice ({a['actors']['Alice']}) [managed network gmx-dev]" in actors_a
                     and "* Alice" in actors_a
                 )
                 checks["status_reports_managed_rpc_provenance"] = "(managed network)" in status_a
@@ -136,8 +136,8 @@ def main():
                 status_b = cli(lk, root, evidence, "status")
                 actors_b = cli(lk, root, evidence, "actors")
                 checks["managed_actor_name_selection_is_session_scoped"] = (
-                    "Actor  : Alice (" in status_b
-                    and "Actor: Alice (" in actors_b
+                    f"Actor  : Alice ({b['actors']['Alice']}) [managed network gmx-attack]" in status_b
+                    and f"Actor: Alice ({b['actors']['Alice']}) [managed network gmx-attack]" in actors_b
                     and "* Alice" in actors_b
                 )
                 cb = manager.get_by_id(b["id"])
@@ -147,9 +147,8 @@ def main():
                 restored_a_status = cli(lk, root, evidence, "status")
                 restored_a_actors = cli(lk, root, evidence, "actors")
                 checks["switching_sessions_restores_the_selected_actor"] = (
-                    "Actor  : Alice (" in restored_a_status
-                    and a["actors"]["Alice"].lower() in restored_a_status.lower()
-                    and "Actor: Alice (" in restored_a_actors
+                    f"Actor  : Alice ({a['actors']['Alice']}) [managed network gmx-dev]" in restored_a_status
+                    and f"Actor: Alice ({a['actors']['Alice']}) [managed network gmx-dev]" in restored_a_actors
                     and "* Alice" in restored_a_actors
                 )
 
@@ -157,9 +156,8 @@ def main():
                 restored_b_status = cli(lk, root, evidence, "status")
                 restored_b_actors = cli(lk, root, evidence, "actors")
                 checks["switching_back_restores_the_other_actor"] = (
-                    "Actor  : Alice (" in restored_b_status
-                    and b["actors"]["Alice"].lower() in restored_b_status.lower()
-                    and "Actor: Alice (" in restored_b_actors
+                    f"Actor  : Alice ({b['actors']['Alice']}) [managed network gmx-attack]" in restored_b_status
+                    and f"Actor: Alice ({b['actors']['Alice']}) [managed network gmx-attack]" in restored_b_actors
                     and "* Alice" in restored_b_actors
                 )
                 active = manager.active()
