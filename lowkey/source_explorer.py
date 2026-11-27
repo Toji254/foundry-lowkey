@@ -153,7 +153,8 @@ def _source_file_inventory(root: Path, paths: set[str]) -> list[dict[str, Any]]:
             if size > MAX_UPLOAD_FILE_BYTES:
                 records.append({"path": relative, "status": "FILE_SIZE_LIMIT", "byte_size": size, "sha256": None, "line_count": None, "content": None})
                 continue
-            raw = resolved.read_bytes()
+            with resolved.open("rb") as handle:
+                raw = handle.read(MAX_UPLOAD_FILE_BYTES + 1)
             if len(raw) > MAX_UPLOAD_FILE_BYTES:
                 records.append({"path": relative, "status": "FILE_SIZE_LIMIT", "byte_size": len(raw), "sha256": None, "line_count": None, "content": None})
                 continue
@@ -1280,7 +1281,7 @@ function showEdgeDetails(e){
   if(e.file&&e.line)openSourceDrawer(e.file,e.line,e.label||e.kind);
 }
 const SOURCE_WINDOW_LINES=500;
-let activeSourcePath="",activeSourceLine=1,sourceWindowStart=1;
+let activeSourcePath="",activeSourceLine=1,sourceWindowStart=1,sourceRequestSerial=0;
 const SOLIDITY_KEYWORDS=new Set(["pragma","solidity","contract","interface","library","abstract","is","function","modifier","constructor","fallback","receive","public","external","internal","private","view","pure","payable","returns","return","if","else","for","while","require","revert","emit","event","error","mapping","struct","enum","memory","storage","calldata","immutable","constant","virtual","override","using","new","delete","assembly","unchecked"]);
 function sourceTokenize(value,parent){
   const chunks=value.split(/(\/\/.*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b[A-Za-z_]\w*\b|\b\d+\b)/g);
@@ -1317,6 +1318,7 @@ function renderSourceWindow(source){
   if(selected)selected.scrollIntoView({block:"center"});
 }
 async function openSourceDrawer(file,line,title){
+  const requestSerial=++sourceRequestSerial;
   const path=String(file||"").replace(/\\/g,"/").replace(/^\.\//,"");
   if(!path||path.startsWith("/")||path.split("/").includes("..")){toast("No safe project-relative source path is available.");return}
   activeSourcePath=path;
@@ -1337,19 +1339,22 @@ async function openSourceDrawer(file,line,title){
     try{
       const response=await fetch("/api/source?path="+encodeURIComponent(path),{headers:{"Accept":"application/json"}});
       const result=await response.json();
+      if(requestSerial!==sourceRequestSerial)return;
       if(!response.ok)throw new Error(result.error||"Source could not be loaded.");
       source=result;sourceFilesByPath.set(path,source);
     }catch(error){
+      if(requestSerial!==sourceRequestSerial)return;
       clear(view);add(view,"div","source-status",String(error.message||error));return;
     }
   }
+  if(requestSerial!==sourceRequestSerial)return;
   if(typeof source.content!=="string"){
     clear(view);add(view,"div","source-status","Full source is unavailable: "+(source.status||"not embedded")+".");
     return;
   }
   renderSourceWindow(source);
 }
-function closeSourceDrawer(){document.getElementById("source-drawer").hidden=true}
+function closeSourceDrawer(){sourceRequestSerial++;document.getElementById("source-drawer").hidden=true}
 function changeSourceWindow(delta){
   const source=sourceFilesByPath.get(activeSourcePath);
   if(!source||typeof source.content!=="string")return;
@@ -2079,7 +2084,8 @@ def create_explorer_server(
                     size = resolved.stat().st_size
                     if size > MAX_UPLOAD_FILE_BYTES:
                         raise ValueError("Source file exceeds the 2 MiB per-file limit.")
-                    raw = resolved.read_bytes()
+                    with resolved.open("rb") as handle:
+                        raw = handle.read(MAX_UPLOAD_FILE_BYTES + 1)
                     if len(raw) > MAX_UPLOAD_FILE_BYTES:
                         raise ValueError("Source file exceeds the 2 MiB per-file limit.")
                     source = raw.decode("utf-8-sig", errors="replace")
