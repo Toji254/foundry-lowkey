@@ -74,7 +74,7 @@ def launcher_commands(launcher_path: pathlib.Path) -> list[str]:
         text,
     ))
     for match in re.finditer(
-        r'case\\s+"\\$\\{1:-\\}"\\s+in(.*?)(?:^\\s*esac\\b)',
+        r'case\\s*"\\$\\{1:-\\}"\\s+in(.*?)(?:^\\s*esac\\b)',
         text,
         flags=re.MULTILINE | re.DOTALL,
     ):
