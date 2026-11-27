@@ -286,6 +286,21 @@ jobs:
           include-hidden-files: true
           retention-days: 21
 
+      - name: P0 executable EIP-2535 Diamond paired-control acceptance
+        env:
+          LOWKEY_RPC_URL: http://127.0.0.1:8545
+        run: python3 scripts/proxy-diamond-acceptance-e2e.py
+
+      - name: Upload Diamond proxy acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy-diamond-acceptance-${{ github.run_number }}
+          path: .audit/proxy-diamond-acceptance/
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 21
+
       - name: Upload independent proxy control evidence
         if: always()
         uses: actions/upload-artifact@v4
