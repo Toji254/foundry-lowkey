@@ -688,27 +688,135 @@ def make_implementation_initializer_manifest(
 
 
 
-def run_implementation_initializer_campaign(
+
+def make_uups_reinitializer_replay_manifest(
+    forge: str,
+    cast: str,
+    root: Path,
+    env: dict[str, str],
+    fork_block: int,
+    proxy: str,
+    actor: str,
+    secure_implementation: str,
+    vulnerable_implementation: str,
+) -> dict[str, Any]:
+    signature = "reinitializeV2(address)"
+    selector = run([cast, "sig", signature], root, env).stdout.strip().lower()
+    if (
+        len(selector) != 10
+        or not selector.startswith("0x")
+        or any(character not in "0123456789abcdef" for character in selector[2:])
+    ):
+        raise AssertionError(f"cast returned an invalid selector for {signature}: {selector!r}")
+
+    test_name = "test_paired_uups_reinitializer_replay"
+    argv = [
+        forge, "test", "--match-path", "test/ProxySequentialControls.t.sol",
+        "--match-test", test_name, "--fork-url", RPC,
+        "--fork-block-number", str(fork_block), "-vv",
+    ]
+    return {
+        "trace_backend": "forge-state-diff",
+        "paired_forge_experiment": True,
+        "target_authenticity": "fixture",
+        "family": "proxy",
+        "proxy_family": "UUPS",
+        "non_economic": True,
+        "expected_chain_id": 31337,
+        "expected_fork_block": fork_block,
+        "target_address": proxy,
+        "function": signature,
+        "same_calls_id": "p0-uups-reinitializer-replay-v1",
+        "metric_name": "successful_reinitializer_replays",
+        "prestate_addresses": list(dict.fromkeys(
+            value.lower() for value in (
+                proxy, actor, secure_implementation, vulnerable_implementation,
+            )
+        )),
+        "prestate_slots": [
+            {"address": proxy, "slot": "0x0"},
+            {"address": proxy, "slot": "0x1"},
+            {"address": proxy, "slot": IMPLEMENTATION_SLOT},
+            {"address": actor, "slot": "0x0"},
+        ],
+        "metric_addresses": [actor],
+        "metric_storage": {
+            "address": actor,
+            "slot": "0x0",
+            "kind": "uint256_delta",
+            "description": "ProxyUpgradeActor.successfulCalls; increments only when the repeated reinitializeV2(address) call succeeds.",
+        },
+        "scenario_parameters": [{
+            "name": "reinitializer_implementation",
+            "address": proxy,
+            "slot": IMPLEMENTATION_SLOT,
+            "control_value": address_word(secure_implementation),
+            "attack_value": address_word(vulnerable_implementation),
+            "description": "The sole scenario difference: secure code enforces initializedVersion < 2; vulnerable code omits the replay guard.",
+        }],
+        "trace_expectations": [{
+            "address": proxy,
+            "selector": selector,
+            "control_min_calls": 1,
+            "control_max_calls": 1,
+            "attack_min_calls": 1,
+            "attack_max_calls": 1,
+            "description": "The same actor submits identical reinitializeV2(address) calldata through the same UUPS proxy after both branches complete V1 and V2 setup.",
+        }],
+        "evidence_requirements": {"call_tree": "exact", "calldata": "exact", "storage": "derived"},
+        "require_trace_storage": True,
+        "control": {
+            "harness": "test/ProxySequentialControls.t.sol",
+            "support_files": ["src/ProxySequentialFixtures.sol", "src/LowkeyForgeStateDiffRecorder.sol"],
+            "state_diff_file": ".audit/godmode/control-uups-reinitializer-replay-state-diff.json",
+            "argv": argv,
+            "semantic_check_argv": argv,
+            "semantic_check_test": test_name,
+        },
+        "attack": {
+            "harness": "test/ProxySequentialControls.t.sol",
+            "support_files": ["src/ProxySequentialFixtures.sol", "src/LowkeyForgeStateDiffRecorder.sol"],
+            "state_diff_file": ".audit/godmode/attack-uups-reinitializer-replay-state-diff.json",
+            "argv": argv,
+            "semantic_check_argv": argv,
+            "semantic_check_test": test_name,
+        },
+        "fidelity_sources": [
+            "test/ProxySequentialControls.t.sol",
+            "src/ProxySequentialFixtures.sol",
+            "src/LowkeyForgeStateDiffRecorder.sol",
+        ],
+        "notes": (
+            "Fixture-only UUPS reinitializer replay pair. Both branches complete the same V1 and V2 setup; "
+            "the same actor then repeats the same V2 calldata. Only the secure implementation rejects "
+            "the replay through a monotonic version guard. This result remains SIMULATED_BREAK."
+        ),
+    }
+
+
+def run_proxy_paired_campaign(
     lk: str,
     root: Path,
     env: dict[str, str],
     manifest_name: str,
     evidence_root: Path,
+    *,
+    campaign_name: str,
+    campaign_title: str,
 ) -> dict[str, Any]:
-    campaign_name = "implementation-initializer"
     destination = evidence_root / campaign_name
     destination.mkdir(parents=True, exist_ok=True)
     manifest_path = root / manifest_name
     if not manifest_path.is_file():
-        raise AssertionError(f"Implementation initializer manifest is missing: {manifest_path}")
+        raise AssertionError(f"{campaign_title} manifest is missing: {manifest_path}")
     shutil.copy2(manifest_path, destination / "control-manifest.json")
 
-    freeze_path = ".audit/godmode/implementation-initializer.freeze.json"
-    validation_report_path = ".audit/godmode/implementation-initializer-validation.json"
-    report_path = ".audit/godmode/implementation-initializer-control.json"
+    freeze_path = f".audit/godmode/{campaign_name}.freeze.json"
+    validation_report_path = f".audit/godmode/{campaign_name}-validation.json"
+    report_path = f".audit/godmode/{campaign_name}-control.json"
     raw_paths = {
-        "control": root / ".audit" / "godmode" / "control-implementation-initializer-state-diff.json",
-        "attack": root / ".audit" / "godmode" / "attack-implementation-initializer-state-diff.json",
+        "control": root / ".audit" / "godmode" / f"control-{campaign_name}-state-diff.json",
+        "attack": root / ".audit" / "godmode" / f"attack-{campaign_name}-state-diff.json",
     }
     common = [
         lk, "proxy", "campaign",
@@ -727,7 +835,7 @@ def run_implementation_initializer_campaign(
         (destination / f"{name}-stderr.txt").write_text(result.stderr or "", encoding="utf-8")
         if result.returncode != 0:
             raise AssertionError(
-                f"Implementation initializer {name} command failed ({result.returncode}): {argv!r}\n"
+                f"{campaign_title} {name} command failed ({result.returncode}): {argv!r}\n"
                 f"stdout:\n{(result.stdout or '')[-12000:]}\n"
                 f"stderr:\n{(result.stderr or '')[-12000:]}"
             )
@@ -741,7 +849,7 @@ def run_implementation_initializer_campaign(
         )
         frozen = root / freeze_path
         if not frozen.is_file():
-            raise AssertionError("Implementation initializer frozen manifest was not written.")
+            raise AssertionError(f"{campaign_title} frozen manifest was not written.")
         shutil.copy2(frozen, destination / "freeze.json")
 
         capture_step(
@@ -751,10 +859,10 @@ def run_implementation_initializer_campaign(
         )
         validation = root / validation_report_path
         if not validation.is_file():
-            raise AssertionError("Implementation initializer freeze-validation report was not written.")
+            raise AssertionError(f"{campaign_title} freeze-validation report was not written.")
         validation_payload = json.loads(validation.read_text(encoding="utf-8"))
         if validation_payload.get("status") != "PROPOSED" or validation_payload.get("freeze_valid") is not True or validation_payload.get("execution_attempted") is not False:
-            raise AssertionError(f"Implementation initializer manifest did not validate without execution: {validation_payload}")
+            raise AssertionError(f"{campaign_title} manifest did not validate without execution: {validation_payload}")
         shutil.copy2(validation, destination / "freeze-validation.json")
 
         # Save stdout/stderr and both raw state-diff files before interpreting
@@ -775,29 +883,29 @@ def run_implementation_initializer_campaign(
             shutil.copy2(report_file, destination / "control-report.json")
         if execution.returncode != 0:
             raise AssertionError(
-                f"Implementation initializer execution command failed ({execution.returncode}).\n"
+                f"{campaign_title} execution command failed ({execution.returncode}).\n"
                 f"stdout:\n{(execution.stdout or '')[-12000:]}\n"
                 f"stderr:\n{(execution.stderr or '')[-12000:]}"
             )
         if not report_file.is_file():
-            raise AssertionError("Lowkey proxy campaign did not write the Implementation initializer report.")
+            raise AssertionError(f"Lowkey proxy campaign did not write the {campaign_title} report.")
         if not all(raw_path.is_file() for raw_path in raw_paths.values()):
             missing = [name for name, raw_path in raw_paths.items() if not raw_path.is_file()]
-            raise AssertionError(f"Implementation initializer raw state-diff artifacts are missing: {missing}")
+            raise AssertionError(f"{campaign_title} raw state-diff artifacts are missing: {missing}")
 
         report = json.loads(report_file.read_text(encoding="utf-8"))
         if report.get("status") != "SIMULATED_BREAK" or report.get("legacy_status") != "SIMULATED_BREAK":
-            raise AssertionError(f"Implementation initializer fixture must remain SIMULATED_BREAK: {report}")
+            raise AssertionError(f"{campaign_title} fixture must remain SIMULATED_BREAK: {report}")
         if report.get("target_authenticity") != "fixture" or report.get("control_delta") != 1:
-            raise AssertionError(f"Implementation initializer campaign lacks fixture fidelity or the expected metric delta: {report}")
+            raise AssertionError(f"{campaign_title} campaign lacks fixture fidelity or the expected metric delta: {report}")
         runs = report.get("runs") or {}
         control, attack = runs.get("control") or {}, runs.get("attack") or {}
         if control.get("trace_error") or attack.get("trace_error"):
-            raise AssertionError(f"Implementation initializer campaign has a trace error: {runs}")
+            raise AssertionError(f"{campaign_title} campaign has a trace error: {runs}")
         if control.get("metric") != 0 or attack.get("metric") != 1:
-            raise AssertionError(f"Implementation initializer metrics must be secure=0/vulnerable=1: {runs}")
+            raise AssertionError(f"{campaign_title} metrics must be secure=0/vulnerable=1: {runs}")
         if control.get("execution_verified") is not True or attack.get("execution_verified") is not True:
-            raise AssertionError(f"Implementation initializer Forge executions were not independently verified: {runs}")
+            raise AssertionError(f"{campaign_title} Forge executions were not independently verified: {runs}")
         for field in (
             "state_diff_pair_verified",
             "same_entry_call_verified",
@@ -810,12 +918,12 @@ def run_implementation_initializer_campaign(
             "semantic_invariant_verified",
         ):
             if report.get(field) is not True:
-                raise AssertionError(f"Implementation initializer pair did not verify {field}: {report}")
+                raise AssertionError(f"{campaign_title} pair did not verify {field}: {report}")
         proof_axes = report.get("proof_axes") or {}
         if proof_axes.get("fidelity") not in {"synthetic_state", "simulated_caller"}:
-            raise AssertionError(f"Implementation initializer fidelity was not simulation-specific: {proof_axes}")
+            raise AssertionError(f"{campaign_title} fidelity was not simulation-specific: {proof_axes}")
         if proof_axes.get("confirmation_eligible") is not False:
-            raise AssertionError(f"Fixture-only Implementation initializer evidence became confirmation eligible: {proof_axes}")
+            raise AssertionError(f"Fixture-only {campaign_title} evidence became confirmation eligible: {proof_axes}")
         return report
     except Exception as exc:
         (destination / "failure-diagnostics.txt").write_text(
@@ -1002,6 +1110,10 @@ def main() -> int:
         )
         implementation_initializer = deploy(forge, root, env, "UUPSImplementationInitializationFixture")
         implementation_initializer_actor = deploy(forge, root, env, "ImplementationInitializationActor")
+        reinitializer_secure_impl = deploy(forge, root, env, "UUPSReinitializerSecureImplementation")
+        reinitializer_vulnerable_impl = deploy(forge, root, env, "UUPSReinitializerVulnerableImplementation")
+        reinitializer_proxy = deploy(forge, root, env, "LowkeyUUPSProxy", reinitializer_vulnerable_impl)
+        reinitializer_actor = deploy(forge, root, env, "ProxyUpgradeActor")
         fork_block = int(run([cast, "block-number", "--rpc-url", RPC], root, env).stdout.strip(), 0)
 
         env.update({
@@ -1014,6 +1126,10 @@ def main() -> int:
             "P0_UUPS_LOCKOUT_ACTOR": uuid_actor,
             "P0_IMPLEMENTATION_INITIALIZER_TARGET": implementation_initializer,
             "P0_IMPLEMENTATION_INITIALIZER_ACTOR": implementation_initializer_actor,
+            "P0_UUPS_REINITIALIZER_PROXY": reinitializer_proxy,
+            "P0_UUPS_REINITIALIZER_SECURE_IMPLEMENTATION": reinitializer_secure_impl,
+            "P0_UUPS_REINITIALIZER_VULNERABLE_IMPLEMENTATION": reinitializer_vulnerable_impl,
+            "P0_UUPS_REINITIALIZER_ACTOR": reinitializer_actor,
         })
         evidence_root = repo_root / ".audit" / "proxy-sequential-acceptance"
         if evidence_root.exists():
@@ -1136,11 +1252,39 @@ def main() -> int:
         locked_initializer_slot = "0x" + ("0" * 62) + "ff"
         if rpc_storage(cast, root, env, implementation_initializer, "0x0") != locked_initializer_slot:
             raise AssertionError("Implementation initializer fixture constructor did not lock initialization.")
-        initializer_case = run_implementation_initializer_campaign(
+        initializer_case = run_proxy_paired_campaign(
             lk, root, env, initializer_manifest_name, evidence_root,
+            campaign_name="implementation-initializer",
+            campaign_title="Implementation initializer",
         )
         if rpc_storage(cast, root, env, implementation_initializer, "0x0") != locked_initializer_slot:
             raise AssertionError("Implementation initializer fork campaign mutated source Anvil lock state.")
+
+        reinitializer_manifest = make_uups_reinitializer_replay_manifest(
+            forge=forge,
+            cast=cast,
+            root=root,
+            env=env,
+            fork_block=fork_block,
+            proxy=reinitializer_proxy,
+            actor=reinitializer_actor,
+            secure_implementation=reinitializer_secure_impl,
+            vulnerable_implementation=reinitializer_vulnerable_impl,
+        )
+        reinitializer_manifest_name = "uups-reinitializer-replay-control.json"
+        (root / reinitializer_manifest_name).write_text(
+            json.dumps(reinitializer_manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        if rpc_storage(cast, root, env, reinitializer_proxy, IMPLEMENTATION_SLOT) != address_word(reinitializer_vulnerable_impl):
+            raise AssertionError("UUPS reinitializer proxy did not start with the vulnerable implementation.")
+        reinitializer_case = run_proxy_paired_campaign(
+            lk, root, env, reinitializer_manifest_name, evidence_root,
+            campaign_name="uups-reinitializer-replay",
+            campaign_title="UUPS reinitializer replay",
+        )
+        if rpc_storage(cast, root, env, reinitializer_proxy, IMPLEMENTATION_SLOT) != address_word(reinitializer_vulnerable_impl):
+            raise AssertionError("UUPS reinitializer fork campaign mutated source Anvil implementation slot.")
 
         report = {
             "gate": "Lowkey independent P0 UUPS authorization, UUID/lockout, direct implementation initialization, ProxyAdmin and Transparent hybrid acceptance",
@@ -1162,8 +1306,9 @@ def main() -> int:
             "transparent_uups_second_surface": hybrid_case,
             "uups_uuid_lockout": uuid_case,
             "implementation_initialization": initializer_case,
+            "uups_reinitializer_replay": reinitializer_case,
             "classification_policy": (
-                "UUPS authorization, UUID/lockout, direct implementation initialization, ProxyAdmin and Transparent hybrid results are fixture-only paired experiments. "
+                "UUPS authorization, UUID/lockout, direct implementation initialization, UUPS reinitializer replay, ProxyAdmin and Transparent hybrid results are fixture-only paired experiments. "
                 "The secure and vulnerable paths use equivalent fork snapshots, the same proxy, actor and "
                 "encoded upgrade calldata where paired. Transparent routing and a non-admin UUPS second "
                 "upgrade surface are demonstrated only for this fixture. Results remain SIMULATED_BREAK "
@@ -1172,7 +1317,7 @@ def main() -> int:
         }
         (evidence_root / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(json.dumps(report, indent=2, sort_keys=True))
-        print("PASS: UUPS authorization, UUID/lockout, implementation-initializer locking, ProxyAdmin, Transparent routing and hybrid paired controls verified.")
+        print("PASS: UUPS authorization, UUID/lockout, implementation-initializer locking, reinitializer replay, ProxyAdmin, Transparent routing and hybrid paired controls verified.")
         run([lk, "target", "reset"], root, env)
     return 0
 

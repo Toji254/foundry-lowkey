@@ -317,3 +317,46 @@ contract ImplementationInitializationActor {
     }
 }
 
+
+
+// Reinitializer replay pair. Both variants share an identical storage layout
+// and V1/V2 setup sequence. The sole security difference is enforcement of
+// the monotonic version guard on the V2 migration entrypoint.
+contract UUPSReinitializerSecureImplementation {
+    address public owner;
+    uint8 public initializedVersion;
+    address public migrationOwner;
+
+    function initializeV1(address initialOwner) external {
+        require(initializedVersion == 0, "ALREADY_INITIALIZED");
+        require(initialOwner != address(0), "ZERO_OWNER");
+        owner = initialOwner;
+        initializedVersion = 1;
+    }
+
+    function reinitializeV2(address nextOwner) external {
+        require(initializedVersion < 2, "ALREADY_REINITIALIZED");
+        initializedVersion = 2;
+        migrationOwner = nextOwner;
+    }
+}
+
+contract UUPSReinitializerVulnerableImplementation {
+    address public owner;
+    uint8 public initializedVersion;
+    address public migrationOwner;
+
+    function initializeV1(address initialOwner) external {
+        require(initializedVersion == 0, "ALREADY_INITIALIZED");
+        require(initialOwner != address(0), "ZERO_OWNER");
+        owner = initialOwner;
+        initializedVersion = 1;
+    }
+
+    function reinitializeV2(address nextOwner) external {
+        // Deliberate lab defect: version 2 is assigned but never checked,
+        // allowing an untrusted caller to replay the migration.
+        initializedVersion = 2;
+        migrationOwner = nextOwner;
+    }
+}

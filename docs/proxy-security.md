@@ -85,6 +85,7 @@ These are **candidate signals only**. A PUSH20 address may be unrelated data; a 
 CI now accepts fixture-level paired-control campaigns for:
 
 - Standard UUPS implementation replacement with an owner-gated control.
+- UUPS reinitializer replay after identical V1/V2 setup on the same proxy: secure version guard rejects the repeated V2 call; vulnerable fixture accepts it and changes migration state. Trace/state-diff evidence remains fixture-only `SIMULATED_BREAK`.
 - UUPS UUID validation: the secure implementation rejects a candidate with a mismatched `proxiableUUID()`; the paired weak implementation accepts it and leaves the proxy unable to execute a subsequent UUPS recovery call.
 - Direct implementation initialization locking: the paired test submits identical `initialize(address)` calldata to the same implementation with and without its initialized-version lock, proving that the unlocked state permits takeover while the locked state rejects it.
 - Transparent admin/non-admin selector routing and a UUPS second upgrade surface behind a Transparent proxy.
@@ -104,13 +105,13 @@ The live-deployment inspector and broader proxy subsystem still do not provide:
 - Full ERC-7201 compiler-backed namespace compatibility and migration proof.
 - Generic production broadcast, deployment or upgrade execution.
 
-The following executable attack areas remain pending: reinitializer replay and proxy-versus-implementation initialization ordering; caller-dependent Beacon behavior and automatic dependent-proxy fan-out discovery; nested-clone and custom-proxy attack campaigns; and broader target-specific storage migration/invariant campaigns.
+The following executable attack areas remain pending: proxy-versus-implementation initialization ordering; caller-dependent Beacon behavior and automatic dependent-proxy fan-out discovery; nested-clone and custom-proxy attack campaigns; and broader target-specific storage migration/invariant campaigns.
 
 These remain partial until the relevant deployment-specific adapters, paired controls, trace-backed assertions and adversarial CI fixtures exist. A source pattern, ABI method name, coherent Loupe response or storage comparison is never automatically reported as a vulnerability.
 
 ## Test boundary
 
-`tests/test_proxy_engine.py` covers slot decoding and conflicts, exact clone matching, UUPS UUID interpretation, Beacon caller-dependence, Diamond Loupe candidate handling, bounded authority candidates, storage-layout comparisons, source anchors, bounded event reconciliation and non-executed attack plans. The proxy P0 CI workflow additionally runs fixture-level UUPS authorization, UUID/lockout and direct implementation-initializer locking controls, Transparent admin/non-admin and hybrid dispatch, ProxyAdmin controls, the shared-Beacon paired campaign, and the EIP-2535 Diamond acceptance. The Diamond gate runs eight Forge scenarios and three independent Lowkey paired-control campaigns for cut authorization, selector removal and malicious initializer takeover. It also exercises authorized replacement, selector collision rejection, compatible/incompatible facet storage behavior, migration and Loupe consistency. Every fixture campaign remains `SIMULATED_BREAK`; none is a production vulnerability finding.
+`tests/test_proxy_engine.py` covers slot decoding and conflicts, exact clone matching, UUPS UUID interpretation, Beacon caller-dependence, Diamond Loupe candidate handling, bounded authority candidates, storage-layout comparisons, source anchors, bounded event reconciliation and non-executed attack plans. The proxy P0 CI workflow additionally runs fixture-level UUPS authorization, UUID/lockout, direct implementation-initializer locking and UUPS reinitializer replay controls, Transparent admin/non-admin and hybrid dispatch, ProxyAdmin controls, the shared-Beacon paired campaign, and the EIP-2535 Diamond acceptance. The Diamond gate runs eight Forge scenarios and three independent Lowkey paired-control campaigns for cut authorization, selector removal and malicious initializer takeover. It also exercises authorized replacement, selector collision rejection, compatible/incompatible facet storage behavior, migration and Loupe consistency. Every fixture campaign remains `SIMULATED_BREAK`; none is a production vulnerability finding.
 
 ## Bounded upgrade history
 

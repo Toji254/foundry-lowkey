@@ -16,11 +16,18 @@ import {
     LowkeyUUPSLockoutProxy,
     UUPSLockoutActor,
     UUPSImplementationInitializationFixture,
-    ImplementationInitializationActor
+    ImplementationInitializationActor,
+    UUPSReinitializerSecureImplementation,
+    UUPSReinitializerVulnerableImplementation
 } from "../src/ProxySequentialFixtures.sol";
 
 interface ILowkeyTransparentOwner {
     function owner() external view returns (address);
+}
+
+interface ILowkeyReinitializerState {
+    function initializedVersion() external view returns (uint8);
+    function migrationOwner() external view returns (address);
 }
 
 contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
@@ -310,6 +317,81 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
         require(implementation.initializedVersion() == 1, "IMPLEMENTATION_INITIALIZER_VERSION_NOT_SET");
         require(implementation.owner() == address(actor), "IMPLEMENTATION_TAKEOVER_OWNER_MISMATCH");
         _lowkeyWriteTrace(".audit/godmode/attack-implementation-initializer-state-diff.json");
+    }
+
+
+
+    function _prepareReinitializerProxy(
+        address owner,
+        LowkeyUUPSProxy proxy,
+        address implementation_
+    ) private {
+        vm.prank(owner);
+        proxy.setImplementationForLab(implementation_);
+
+        (bool initialized, ) = address(proxy).call(
+            abi.encodeWithSignature("initializeV1(address)", owner)
+        );
+        require(initialized, "REINITIALIZER_V1_SETUP_FAILED");
+        (bool migrated, ) = address(proxy).call(
+            abi.encodeWithSignature("reinitializeV2(address)", owner)
+        );
+        require(migrated, "REINITIALIZER_V2_SETUP_FAILED");
+
+        ILowkeyReinitializerState state = ILowkeyReinitializerState(address(proxy));
+        require(state.initializedVersion() == 2, "REINITIALIZER_VERSION_NOT_PRIMED");
+        require(state.migrationOwner() == owner, "REINITIALIZER_OWNER_NOT_PRIMED");
+    }
+
+    function test_paired_uups_reinitializer_replay() external {
+        address owner = vm.envAddress("P0_OWNER");
+        LowkeyUUPSProxy proxy = LowkeyUUPSProxy(
+            payable(vm.envAddress("P0_UUPS_REINITIALIZER_PROXY"))
+        );
+        address secureImplementation = vm.envAddress("P0_UUPS_REINITIALIZER_SECURE_IMPLEMENTATION");
+        address vulnerableImplementation = vm.envAddress("P0_UUPS_REINITIALIZER_VULNERABLE_IMPLEMENTATION");
+        ProxyUpgradeActor actor = ProxyUpgradeActor(
+            vm.envAddress("P0_UUPS_REINITIALIZER_ACTOR")
+        );
+        ILowkeyReinitializerState state = ILowkeyReinitializerState(address(proxy));
+        bytes memory replayCall = abi.encodeWithSignature(
+            "reinitializeV2(address)", ATTACKER
+        );
+        uint256 baseline = vm.snapshot();
+
+        // Secure control: both branches receive the same completed V1/V2
+        // setup before the replay call is measured.
+        _prepareReinitializerProxy(owner, proxy, secureImplementation);
+        _lowkeyStartTrace(address(proxy));
+        require(proxy.implementation() == secureImplementation, "REINITIALIZER_CONTROL_IMPLEMENTATION_MISMATCH");
+        require(state.initializedVersion() == 2, "REINITIALIZER_CONTROL_VERSION_MISMATCH");
+        require(state.migrationOwner() == owner, "REINITIALIZER_CONTROL_OWNER_MISMATCH");
+        require(actor.successfulCalls() == 0, "REINITIALIZER_CONTROL_METRIC_PRESTATE");
+        vm.prank(ATTACKER);
+        bool controlAccepted = actor.execute(address(proxy), replayCall);
+        require(!controlAccepted, "SECURE_REINITIALIZER_ACCEPTED_REPLAY");
+        require(actor.successfulCalls() == 0, "SECURE_REINITIALIZER_METRIC_CHANGED");
+        require(state.initializedVersion() == 2, "SECURE_REINITIALIZER_VERSION_CHANGED");
+        require(state.migrationOwner() == owner, "SECURE_REINITIALIZER_OWNER_CHANGED");
+        _lowkeyWriteTrace(".audit/godmode/control-uups-reinitializer-replay-state-diff.json");
+
+        require(vm.revertTo(baseline), "REINITIALIZER_REPLAY_BASELINE_REVERT_FAILED");
+
+        // Attack: only the implementation changes. The actor, proxy and exact
+        // replay calldata are identical to the secure control.
+        _prepareReinitializerProxy(owner, proxy, vulnerableImplementation);
+        _lowkeyStartTrace(address(proxy));
+        require(proxy.implementation() == vulnerableImplementation, "REINITIALIZER_ATTACK_IMPLEMENTATION_MISMATCH");
+        require(state.initializedVersion() == 2, "REINITIALIZER_ATTACK_VERSION_MISMATCH");
+        require(state.migrationOwner() == owner, "REINITIALIZER_ATTACK_OWNER_MISMATCH");
+        require(actor.successfulCalls() == 0, "REINITIALIZER_ATTACK_METRIC_PRESTATE");
+        vm.prank(ATTACKER);
+        bool attackAccepted = actor.execute(address(proxy), replayCall);
+        require(attackAccepted, "VULNERABLE_REINITIALIZER_REJECTED_REPLAY");
+        require(actor.successfulCalls() == 1, "VULNERABLE_REINITIALIZER_METRIC_MISSING");
+        require(state.initializedVersion() == 2, "VULNERABLE_REINITIALIZER_VERSION_MISMATCH");
+        require(state.migrationOwner() == ATTACKER, "VULNERABLE_REINITIALIZER_REPLAY_NOT_APPLIED");
+        _lowkeyWriteTrace(".audit/godmode/attack-uups-reinitializer-replay-state-diff.json");
     }
 
 }
