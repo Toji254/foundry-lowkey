@@ -477,9 +477,13 @@ def compiler_dependency_evidence(
     seen_edges: set[tuple[Any, ...]] = set()
 
     def add_edge(edge: dict[str, Any]) -> None:
+        # Function/creation phase are part of edge identity. Two compiler
+        # observations can share a source line and target while describing
+        # different deployment-time and runtime creation sites.
         key = (
             edge.get("from"), edge.get("to"), edge.get("kind"),
             edge.get("source"), edge.get("line"),
+            edge.get("function"), edge.get("creation_phase"),
             tuple(tuple(item) for item in edge.get("link_references", [])),
         )
         if key not in seen_edges:
