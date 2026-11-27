@@ -1679,11 +1679,58 @@ function renderInspector(){
     add(body,"p","muted",(selected.origin||"source")+" · "+selected.evidence+(selected.vendor!=="First-party"?" · "+selected.vendor:""));
     if(selected.type==="declaration"){
       add(body,"div","section-head","DECLARATION SUMMARY");add(body,"p","inspect-item",functions.length+" functions / modifiers · "+state.length+" state declarations");
+      if(Array.isArray(selected.bases)&&selected.bases.length){
+        const inheritance=add(body,"div","inspector-section");
+        add(inheritance,"div","section-head","INHERITANCE / C3 LINEARIZATION");
+        if(Array.isArray(selected.c3_linearization)&&selected.c3_linearization.length){
+          const evidence=add(inheritance,"div","coverage "+(selected.c3_status==="COMPILER_AST"?"ok":"warn"),
+            selected.c3_status+" · "+selected.c3_evidence+" · "+selected.c3_linearization.length+"/"+selected.c3_expected_count+" declarations");
+          add(evidence,"p","","Order comes from the fresh Solidity compiler AST. It describes inheritance linearization, not a deployed implementation address.");
+          selected.c3_linearization.forEach(function(item){
+            const row=add(inheritance,"button","inspect-item","");
+            add(row,"strong","",item.rank+". "+item.name+(item.role==="SELF"?" · SELF":""));
+            add(row,"small","",item.file+" · "+item.evidence);
+            row.addEventListener("click",function(){openNode(item.id,true)});
+          });
+        }else{
+          const detail=MODEL.compiler_dispatch&&MODEL.compiler_dispatch.reason;
+          add(inheritance,"p","muted","C3 order unavailable · "+(detail||"Fresh compiler build-info did not provide a complete linearization. The lexical base list is not treated as compiler proof."));
+        }
+      }else if(selected.c3_linearization&&selected.c3_linearization.length){
+        const inheritance=add(body,"div","inspector-section");
+        add(inheritance,"div","section-head","COMPILER C3 LINEARIZATION");
+        selected.c3_linearization.forEach(function(item){
+          const row=add(inheritance,"button","inspect-item","");
+          add(row,"strong","",item.rank+". "+item.name+(item.role==="SELF"?" · SELF":""));
+          add(row,"small","",item.file+" · "+item.evidence);
+          row.addEventListener("click",function(){openNode(item.id,true)});
+        });
+      }
       renderSection(body,"KEY ENTRY POINTS",functions.filter(isEntryPoint),"No public, external, receive or fallback entry points indexed.");
       renderSection(body,"STATE SURFACE",state,"No state declarations indexed.");
     }else if(selected.type==="function"||selected.type==="modifier"){
       add(body,"div","section-head","FUNCTION PROFILE");
       [["Visibility",selected.visibility],["Mutability",selected.mutability],["Parameters",(selected.parameters||[]).join(", ")||"none recorded"],["Contract",selected.contract]].forEach(function(pair){add(body,"p","inspect-item",pair[0]+": "+(pair[1]||"unknown"))});
+      if(selected.compiler_dispatch){
+        const dispatch=selected.compiler_dispatch;
+        const card=add(body,"div","inspector-section");
+        add(card,"div","section-head","COMPILER DISPATCH FACTS");
+        add(card,"div","coverage ok","COMPILER AST · "+(dispatch.is_virtual?"VIRTUAL":"NOT DECLARED VIRTUAL"));
+        add(card,"p","muted","Override specifier: "+(dispatch.has_override_specifier?"present":"not present")+" · base function references: "+dispatch.base_function_count);
+        add(card,"p","muted","Compiler declaration metadata does not prove which implementation a deployed address executes.");
+      }
+      const overrideEdges=MODEL.edges.filter(function(edge){return edge.kind==="OVERRIDES"&&(edge.source===selected.id||edge.target===selected.id)});
+      if(overrideEdges.length){
+        const card=add(body,"div","inspector-section");
+        add(card,"div","section-head","OVERRIDE RELATIONSHIPS · "+overrideEdges.length);
+        overrideEdges.forEach(function(edge){
+          const other=node(edge.source===selected.id?edge.target:edge.source);
+          const row=add(card,"button","inspect-item","");
+          add(row,"strong","",(edge.source===selected.id?"Overrides ":"Overridden by ")+(other?other.label:edge.target));
+          add(row,"small","",edge.evidence+" · "+edge.resolution+(edge.file?" · "+edge.file+":"+(edge.line||"?"):""));
+          row.addEventListener("click",function(){if(other)openNode(other.id,true)});
+        });
+      }
     }else add(body,"p","muted",selected.type_text||"Indexed source declaration or relationship endpoint.");
   }else if(selectedTab==="state"){
     renderSection(body,"STATE DECLARATIONS",state,"No state variables indexed.");
