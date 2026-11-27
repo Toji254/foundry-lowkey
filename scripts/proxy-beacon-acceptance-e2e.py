@@ -83,6 +83,11 @@ def preserve_failure_evidence(repo_root: Path, root: Path, error: BaseException)
 
     copied: list[str] = []
     source_audit = root / ".audit"
+    godmode_source = source_audit / "godmode"
+    control_source = godmode_source / "control.json"
+    beacon_source = godmode_source / "beacon-control-report.json"
+    if control_source.is_file() and not beacon_source.is_file():
+        shutil.copy2(control_source, beacon_source)
     for name in ("godmode", "proxy"):
         source = source_audit / name
         target = destination / name
@@ -117,7 +122,7 @@ def preserve_failure_evidence(repo_root: Path, root: Path, error: BaseException)
 
     expected = [
         "control-manifest.json",
-        "godmode/control.freeze.json",
+        "godmode/proxy-campaign.freeze.json",
         "godmode/control.json",
         "godmode/beacon-control-report.json",
         "godmode/control-beacon-state-diff.json",
@@ -287,7 +292,7 @@ def execute_campaign(lk: str, root: Path, env: dict[str, str], manifest: str) ->
     log_root = root / ".audit" / "campaign-logs"
     run(common + ["--freeze"], root, env, diagnostic_path=log_root / "freeze.json")
     run(common + ["--validate"], root, env, diagnostic_path=log_root / "validate.json")
-    report_path = ".audit/godmode/beacon-control-report.json"
+    report_path = ".audit/godmode/control.json"
     run(
         common + ["--output", report_path, "--non-economic"],
         root,
@@ -296,7 +301,9 @@ def execute_campaign(lk: str, root: Path, env: dict[str, str], manifest: str) ->
     )
     path = root / report_path
     if not path.is_file():
-        raise AssertionError("lk proxy campaign did not write its control report.")
+        raise AssertionError("lk proxy campaign did not write .audit/godmode/control.json.")
+    beacon_report = root / ".audit" / "godmode" / "beacon-control-report.json"
+    shutil.copy2(path, beacon_report)
     report = json.loads(path.read_text(encoding="utf-8"))
     if report.get("status") != "SIMULATED_BREAK":
         raise AssertionError(f"Beacon fixture must remain SIMULATED_BREAK, got {report.get('status')!r}: {report}")
