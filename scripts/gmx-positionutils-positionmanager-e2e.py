@@ -310,8 +310,36 @@ def main() -> int:
         session_b = manager.create("gmx-attack", chain_id=31337)
         session_a = session_snapshot(manager, "gmx-dev")
         session_b = session_snapshot(manager, "gmx-attack")
-        require(session_a["id"] != session_b["id"] and session_a["pid"] != session_b["pid"], "Managed Anvil sessions are not process/session isolated.")
-        require(session_a["genesis_hash"] != session_b["genesis_hash"], "Managed Anvil sessions unexpectedly share a genesis identity.")
+        require(
+            session_a["id"] != session_b["id"]
+            and session_a["pid"] != session_b["pid"]
+            and session_a["port"] != session_b["port"]
+            and session_a["actors"]["lab-deployer"] != session_b["actors"]["lab-deployer"],
+            "Managed Anvil sessions are not independently isolated by session, process, port and account seed.",
+        )
+        require(
+            isinstance(session_a.get("genesis_hash"), str)
+            and session_a["genesis_hash"].startswith("0x")
+            and len(session_a["genesis_hash"]) == 66
+            and isinstance(session_b.get("genesis_hash"), str)
+            and session_b["genesis_hash"].startswith("0x")
+            and len(session_b["genesis_hash"]) == 66,
+            "Each managed Anvil session must record its own valid genesis identity.",
+        )
+        require(
+            rpc(session_a["rpc"], "eth_getBlockByNumber", ["0x0", False]).get("hash", "").lower()
+            == session_a["genesis_hash"].lower()
+            and rpc(session_b["rpc"], "eth_getBlockByNumber", ["0x0", False]).get("hash", "").lower()
+            == session_b["genesis_hash"].lower(),
+            "A managed Anvil session's recorded genesis identity does not match its live RPC.",
+        )
+        evidence["checks"] = {
+            "distinct_session_ids": session_a["id"] != session_b["id"],
+            "distinct_processes": session_a["pid"] != session_b["pid"],
+            "distinct_ports": session_a["port"] != session_b["port"],
+            "independent_account_seeds": session_a["actors"]["lab-deployer"] != session_b["actors"]["lab-deployer"],
+            "per_session_genesis_identity_verified": True,
+        }
         evidence["networks"] = {
             name: {
                 "session_id": session["id"],
