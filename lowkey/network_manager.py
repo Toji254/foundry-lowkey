@@ -162,6 +162,7 @@ class NetworkManager:
         return _project_id(self.root)
 
     def _read(self) -> dict[str, Any]:
+        raw: str | None = None
         try:
             raw = self.state_path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -211,7 +212,7 @@ class NetworkManager:
         if not has_sessions and schema_version == SCHEMA_VERSION:
             raise NetworkError(
                 f"The managed network registry {self.state_path} is missing its required "
-                "'managed_sessions' field for schema version {SCHEMA_VERSION}."
+                f"'managed_sessions' field for schema version {SCHEMA_VERSION}."
             )
         if not has_sessions:
             sessions = {}
