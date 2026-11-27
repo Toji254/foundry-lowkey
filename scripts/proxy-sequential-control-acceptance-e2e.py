@@ -275,6 +275,8 @@ def run_transparent_hybrid_campaign(
     proof_axes = report.get("proof_axes") or {}
     if proof_axes.get("fidelity") not in {"synthetic_state", "simulated_caller"}:
         raise AssertionError(f"Transparent hybrid fidelity was not simulation-specific: {proof_axes}")
+    if proof_axes.get("confirmation_eligible") is not False:
+        raise AssertionError(f"Fixture-only Transparent hybrid evidence became confirmation eligible: {proof_axes}")
 
     destination = evidence_root / campaign_name
     destination.mkdir(parents=True, exist_ok=True)
