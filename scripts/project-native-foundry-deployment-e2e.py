@@ -121,7 +121,7 @@ def main() -> int:
 
         lab = run([lk, "lab"], root, env, timeout=300)
         target_match = re.search(
-                        r"(?im)^\\s*Target\\s*:\\s*NativeTarget\\s*(?:->|@)\\s*(?:NativeTarget\\s*)?\\(?\\s*(0x[0-9a-fA-F]{40})\\s*\\)?\\s*$",
+                        r"(?im)^\s*Target\s*:\s*NativeTarget\s*(?:->|@)\s*(?:NativeTarget\s*)?\(?\s*(0x[0-9a-fA-F]{40})\s*\)?\s*$",
             lab.stdout,
         )
         if not target_match:
