@@ -12,7 +12,9 @@ An AST entry with a stale source is rejected. If build info is absent, the repor
 
 ## 2. Runtime call graph
 
-Saved Lowkey audit artifacts under `.audit/` are scanned for canonical TraceEvent v2 streams. Events are revalidated through the trace schema before a call edge is emitted. Edges retain the accessor, destination, depth, selector, backend, revert status, source artifact, and run/transaction identifier when available.
+Saved Lowkey audit artifacts under `.audit/` are scanned for canonical TraceEvent v2 streams. Events are revalidated through the trace schema before a call edge is emitted. Validated observations are now surfaced in the same Lowkey protocol canvas as `RUNTIME_CALL_OBSERVED` edges. Each observed caller/target address appears as an explicit runtime endpoint node, and the edge inspector retains accessor, destination, depth, selector, backend, revert status, trace artifact, stream, sequence, and run/transaction identifier when available.
+
+Runtime endpoints deliberately remain detached from Solidity source declarations. A canonical trace event alone does not prove which source contract, chain deployment, proxy implementation, or code hash an address represents. Lowkey must not connect these addresses to source nodes until project/network/chain/genesis/deployment/proxy identity is independently validated.
 
 This graph is observational: it shows calls present in the saved executions only. It does not prove all paths are reachable or enumerate calls across untested states. Missing caller/target fields are never inferred.
 
