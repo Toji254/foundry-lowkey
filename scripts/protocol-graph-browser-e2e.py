@@ -65,11 +65,22 @@ contract Vault {
                 f"contract Vault{index:03d} {{",
                 "    uint256 private total;",
                 "    function deposit(uint256 amount) external {",
-                "        total += amount;",
-                "        _credit(amount);",
+                "        total += _credit(amount);",
                 "    }",
-                "    function _credit(uint256 amount) internal {",
-                "        total += amount;",
+                "    function _credit(uint256 amount) internal returns (uint256) {",
+                "        return _normalize(amount);",
+                "    }",
+                "    function _normalize(uint256 amount) internal pure returns (uint256) {",
+                "        return _scale(amount);",
+                "    }",
+                "    function _scale(uint256 amount) internal pure returns (uint256) {",
+                "        return amount * 2;",
+                "    }",
+                "    function withdraw(uint256 amount) external {",
+                "        _settle(amount);",
+                "    }",
+                "    function _settle(uint256 amount) internal {",
+                "        total -= _normalize(amount);",
                 "    }",
                 "    function balance() external view returns (uint256) {",
                 "        return total;",
@@ -96,7 +107,7 @@ def main() -> int:
         base = pathlib.Path(temporary)
         web_root = base / "www"
         write_graph(base / "small-project", web_root / "small", 1)
-        write_graph(base / "large-project", web_root / "large", 60)
+        write_graph(base / "large-project", web_root / "large", 200)
 
         server = ThreadingHTTPServer(
             ("127.0.0.1", 0),
@@ -218,13 +229,14 @@ def main() -> int:
                 started = time.monotonic()
                 group.click()
                 large.wait_for_function(
-                    "document.querySelectorAll('#graph .graph-node').length >= 180"
+                    "document.querySelectorAll('#graph .graph-node').length >= 1400"
+                    timeout=60000,
                 )
                 large.locator("#fit-graph").click()
                 expansion_seconds = time.monotonic() - started
                 node_count = large.locator("#graph .graph-node").count()
-                assert node_count >= 180, f"expanded graph too small: {node_count} nodes"
-                assert expansion_seconds < 12, (
+                assert node_count >= 1400, f"expanded graph too small: {node_count} nodes"
+                assert expansion_seconds < 25, (
                     f"large graph interaction took {expansion_seconds:.2f}s"
                 )
                 large.screenshot(
@@ -239,7 +251,7 @@ def main() -> int:
                 assert not request_failures, "failed browser requests: " + "; ".join(request_failures)
                 print(
                     "PROTOCOL GRAPH BROWSER ACCEPTANCE: PASS "
-                    f"(small workflows, 768px layout, {node_count} nodes, "
+                    f"(small workflows, 768px layout, {node_count} nodes from 200 contracts / 1,200 functions, "
                     f"large expansion {expansion_seconds:.2f}s)"
                 )
         finally:
