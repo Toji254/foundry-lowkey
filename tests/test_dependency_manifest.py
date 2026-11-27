@@ -86,6 +86,24 @@ class DependencyManifestTests(unittest.TestCase):
         self.assertEqual(result["status"], "BLOCKED")
         self.assertIn("Duplicate constructor binding", result["warnings"][0])
 
+    def test_duplicate_json_object_keys_are_rejected(self):
+        self.path.write_text(
+            '{"schema":"lowkey.external-dependencies.v1","schema":"lowkey.external-dependencies.v1","dependencies":[]}',
+            encoding="utf-8",
+        )
+        result = load_dependency_manifest(self.root).to_dict()
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertIn("Duplicate JSON object key", result["warnings"][0])
+
+    def test_consumer_must_have_nonempty_source_and_contract_parts(self):
+        self._write({
+            "schema": MANIFEST_SCHEMA,
+            "dependencies": [self._entry(consumer=":Widget")],
+        })
+        result = load_dependency_manifest(self.root).to_dict()
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertIn("source-qualified identity", result["warnings"][0])
+
     def test_manifest_symlink_cannot_escape_project_root(self):
         outside = Path(self.temp.name).parent / (Path(self.temp.name).name + "-outside.json")
         try:

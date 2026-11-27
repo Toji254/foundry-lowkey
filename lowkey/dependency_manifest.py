@@ -52,6 +52,16 @@ class DependencyManifest:
         }
 
 
+def _unique_json_object(pairs):
+    """Reject duplicate JSON keys instead of accepting last-write-wins ambiguity."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"Duplicate JSON object key: {key!r}")
+        result[key] = value
+    return result
+
+
 def _valid_chain_id(value: Any) -> bool:
     if isinstance(value, bool) or value is None:
         return False
@@ -113,8 +123,8 @@ def load_dependency_manifest(project_root: str | Path) -> DependencyManifest:
 
     digest = hashlib.sha256(raw).hexdigest()
     try:
-        payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        payload = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         return _blocked(relative, f"Dependency manifest is not valid UTF-8 JSON: {error}", digest=digest)
 
     if not isinstance(payload, dict):
@@ -167,6 +177,9 @@ def load_dependency_manifest(project_root: str | Path) -> DependencyManifest:
             return _blocked(relative, f"Duplicate dependency id: {identifier}.", schema=MANIFEST_SCHEMA, digest=digest)
         if not isinstance(consumer, str) or ":" not in consumer or len(consumer) > 512:
             return _blocked(relative, f"{prefix} consumer must be a source-qualified contract identity.", schema=MANIFEST_SCHEMA, digest=digest)
+        source_name, contract_name = consumer.rsplit(":", 1)
+        if not source_name.strip() or not contract_name.strip() or any(char.isspace() for char in contract_name):
+            return _blocked(relative, f"{prefix} consumer has an invalid source-qualified identity.", schema=MANIFEST_SCHEMA, digest=digest)
         if not isinstance(parameter, str) or not _PARAMETER_PATTERN.fullmatch(parameter):
             return _blocked(relative, f"{prefix} parameter must be a Solidity constructor parameter path.", schema=MANIFEST_SCHEMA, digest=digest)
         if not isinstance(kind, str) or kind not in DEPENDENCY_KINDS:
