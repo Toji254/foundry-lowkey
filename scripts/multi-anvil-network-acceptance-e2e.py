@@ -237,11 +237,26 @@ def main():
                 manager.use("gmx-dev")
 
                 from lowkey import lk as cli_module
-                detached = {"actor": "Alice", "wallets": {}, "_active_network_session": manager.get_by_id(a["id"])}
+                detached = {
+                    "actor": "Alice",
+                    "target": "0x" + ("a" * 40),
+                    "target_contract": "ForeignVault",
+                    "wallets": {},
+                    "_active_network_session": manager.get_by_id(a["id"]),
+                }
                 resolved = cli_module.effective_rpc(detached, explicit_rpc=b["rpc"])
-                checks["explicit_rpc_detaches_foreign_actor"] = resolved == b["rpc"] and detached.get("_explicit_rpc_unscoped") is True and cli_module._actor_profile_entry(detached, "Alice") is None
-                if not checks["explicit_rpc_detaches_foreign_actor"]:
-                    raise RuntimeError("Explicit RPC override retained the other network's actor.")
+                checks["explicit_rpc_detaches_foreign_actor"] = (
+                    resolved == b["rpc"]
+                    and detached.get("_explicit_rpc_unscoped") is True
+                    and cli_module._actor_profile_entry(detached, "Alice") is None
+                )
+                checks["explicit_rpc_detaches_foreign_target"] = (
+                    cli_module.active_project_target(detached) is None
+                )
+                if not checks["explicit_rpc_detaches_foreign_actor"] or not checks["explicit_rpc_detaches_foreign_target"]:
+                    raise RuntimeError(
+                        "Explicit RPC override retained a foreign session actor or project target."
+                    )
 
                 before_a = quantity(rpc(a["rpc"], "eth_getBalance", [a["actors"]["anvil-1"], "latest"]))
                 before_b = quantity(rpc(b["rpc"], "eth_getBalance", [b["actors"]["anvil-1"], "latest"]))

@@ -154,6 +154,27 @@ def test_explicit_rpc_override_to_another_network_detaches_session_actor_and_ide
     assert lk._actor_profile_entry(config, "Alice") is None
 
 
+def test_explicit_rpc_override_detaches_foreign_project_target(tmp_path):
+    session = {
+        "id": "managed-session-a",
+        "name": "dev",
+        "rpc": "http://127.0.0.1:8545",
+        "actors": {"anvil-1": "0x" + "2" * 40},
+    }
+    config = {
+        "actor": "anvil-1",
+        "target": "0x" + "a" * 40,
+        "target_contract": "ForeignVault",
+        "wallets": {},
+        "_active_network_session": session,
+    }
+    with patch.object(lk, "project_fixture_rpc_info", return_value=None):
+        assert lk.effective_rpc(config, explicit_rpc="http://127.0.0.1:9545") == "http://127.0.0.1:9545"
+    assert config.get("_explicit_rpc_unscoped") is True
+    assert lk._actor_profile_entry(config, "anvil-1") is None
+    assert lk.active_project_target(config, root=tmp_path) is None
+
+
 def test_explicit_rpc_override_matching_active_session_keeps_actor_identity():
     session = {
         "id": "managed-session-a",
