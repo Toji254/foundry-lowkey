@@ -1684,7 +1684,7 @@ def build_attack_plan(report: dict[str, Any]) -> dict[str, Any]:
         architecture not in {"DIRECT_OR_UNKNOWN", "NO_CODE", "UNKNOWN", "UNVERIFIED_EIP1967"}
         or bool(report.get("slot_candidates", {}).get("implementation"))
         or bool(report.get("slot_candidates", {}).get("beacon"))
-        or bool((report.get("checks") or {}).get("diamond_loupe))
+        or bool((report.get("checks") or {}).get("diamond_loupe"))
     )
     proxy_only_scenarios = {
         "PROXY-INIT-001",
