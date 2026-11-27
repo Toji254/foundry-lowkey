@@ -63,6 +63,15 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertNotIn("Why:", rendered)
         ai_footer.assert_called_once_with("status", native, {}, args=[], result=0)
 
+    def test_actor_help_documents_managed_alias_selection_by_name(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(lk._render_command_help(["actor"]), 0)
+        rendered = output.getvalue()
+        self.assertIn("lk actor <index>", rendered)
+        self.assertIn("lk actor <name>", rendered)
+        self.assertIn("active-session alias takes precedence", rendered)
+
     def test_status_rpc_provenance_uses_resolved_source_not_hydrated_rpc_presence(self):
         rpc = "http://127.0.0.1:8545"
         managed = {

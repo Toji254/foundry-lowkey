@@ -28187,13 +28187,14 @@ COMMAND_HELP = {
         related=["lk impersonate", "lk fork"],
     ),
     "actor": _help_entry(
-        "Name/select a local Anvil account.",
-        "lk actor <index> <name> | lk actor <name> | lk actor reset [1|2]",
-        "lk actor 1 Alice",
-        "Use it when you want readable role names instead of anonymous Anvil slots.",
+        "Select a local account or an actor registered in the active managed network.",
+        "lk actor <index> [name] | lk actor <name> | lk actor reset [1|2]",
+        "lk actor Alice",
+        "Use it to select a saved wallet or a session-scoped actor; in a managed network, a registered session alias takes precedence over a legacy wallet with the same name.",
         forms=[
-            ("lk actor <index> <name>", "Give an Anvil account a readable role name (account 1+; 0 is reserved).", "lk actor 1 Alice"),
-            ("lk actor <name>", "Switch to an actor profile you already created.", "lk actor Alice"),
+            ("lk actor <index>", "Select an available account by index in the active network; account 0 selects the reserved lab-deployer.", "lk actor 2"),
+            ("lk actor <index> <name>", "Register and select a readable alias for an available managed-network account (account 1+; 0 is reserved).", "lk actor 1 Alice"),
+            ("lk actor <name>", "Select an existing session alias or saved wallet profile; a matching active-session alias takes precedence over a legacy wallet name.", "lk actor Alice"),
             ("lk actor reset 1", "Clear the active actor without deleting saved Anvil profiles.", "lk actor reset 1"),
             ("lk actor reset 2", "Remove saved Anvil actor profiles; preserve key/env wallets and the internal lab-deployer.", "lk actor reset 2"),
         ],
@@ -30737,7 +30738,7 @@ def _apply_command_help_audit_catalog():
             notes=[
                 ("Fail-closed selection", "If several managed sessions exist without an active selection, RPC-consuming commands stop and request an explicit use selection. Lowkey does not fall back to another RPC.", "lk lab network use attack-lab"),
                 ("Process safety", "Lowkey validates PID, process start time, UID, executable and command line before signalling; unmanaged Anvil processes are never terminated.", "lk lab network status local-dev"),
-                ("Session actors", "Use lk actor <index> <name> to register an alias in the active session. Account zero is reserved for the internal deployer; no private key is stored.", "lk actor 1 Alice"),
+                ("Session actors", "Register an alias with lk actor <index> <name>, select it by name with lk actor <name>, or select it by account index with lk actor <index>. Account zero is reserved for the internal deployer; no private key is stored.", "lk actor Alice"),
                 ("Deployment identity", "A deployment record is scoped to project, session UUID, chain ID and address; the same address on another session is a different deployment.", "lk lab network status attack-lab"),
             ],
             related=["lk actor", "lk actors", "lk status", "lk deployments"],
@@ -32773,7 +32774,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         elif not args:
             list_anvil_actors(config)
         else:
-            return fail("Usage: lk actor <index> [name] | lk actor [existing-name] | lk actor reset")
+            return fail("Usage: lk actor <index> [name] | lk actor <name> | lk actor reset [1|2]")
     elif cmd=="abi":
         target=config.get("target")
         if not target: return fail("Error: Set target first.")
