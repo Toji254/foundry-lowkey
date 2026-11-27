@@ -192,40 +192,37 @@ def opcode_spec(opcode: int | str, *, fork: str = "osaka") -> dict[str, Any]:
             byte = int(raw[2:], 16)
         else:
             raw = _NAME_ALIASES.get(raw, raw)
-            # PUSH0 is its own Shanghai opcode, not PUSH followed by a depth.
-            # Handle it before the generic PUSHn parser so it cannot be rejected
-            # by the PUSH1..PUSH32 bounds below.
+            # PUSH0 is a distinct Shanghai opcode; it must bypass the PUSHn parser.
             if raw == "PUSH0":
                 byte = 0x5F
-                dynamic = None
             else:
                 dynamic = re.fullmatch(r"(PUSH|DUP|SWAP|LOG)([0-9]{1,2})", raw)
-            if dynamic:
-                kind, number = dynamic.group(1), int(dynamic.group(2))
-                valid = (
-                    (kind == "PUSH" and 1 <= number <= 32)
-                    or (kind == "DUP" and 1 <= number <= 16)
-                    or (kind == "SWAP" and 1 <= number <= 16)
-                    or (kind == "LOG" and 0 <= number <= 4)
-                )
-                if not valid:
-                    raise ValueError(f"Unknown opcode mnemonic: {opcode}")
-                byte = (
-                    0x5F + number if kind == "PUSH"
-                    else 0x7F + number if kind == "DUP"
-                    else 0x8F + number if kind == "SWAP"
-                    else 0xA0 + number
-                )
-            else:
-                byte = next((key for key, item in _BASE.items() if item[0] == raw), -1)
-                if raw == "CLZ":
-                    byte = 0x1E
-                if raw == "PREVRANDAO":
-                    byte = 0x44
-                if raw in {"SLOTNUM", "DUPN", "SWAPN", "EXCHANGE"}:
-                    byte = {"SLOTNUM": 0x4B, "DUPN": 0xE6, "SWAPN": 0xE7, "EXCHANGE": 0xE8}[raw]
-                if byte < 0:
-                    raise ValueError(f"Unknown opcode mnemonic: {opcode}")
+                if dynamic:
+                    kind, number = dynamic.group(1), int(dynamic.group(2))
+                    valid = (
+                        (kind == "PUSH" and 1 <= number <= 32)
+                        or (kind == "DUP" and 1 <= number <= 16)
+                        or (kind == "SWAP" and 1 <= number <= 16)
+                        or (kind == "LOG" and 0 <= number <= 4)
+                    )
+                    if not valid:
+                        raise ValueError(f"Unknown opcode mnemonic: {opcode}")
+                    byte = (
+                        0x5F + number if kind == "PUSH"
+                        else 0x7F + number if kind == "DUP"
+                        else 0x8F + number if kind == "SWAP"
+                        else 0xA0 + number
+                    )
+                else:
+                    byte = next((key for key, item in _BASE.items() if item[0] == raw), -1)
+                    if raw == "CLZ":
+                        byte = 0x1E
+                    if raw == "PREVRANDAO":
+                        byte = 0x44
+                    if raw in {"SLOTNUM", "DUPN", "SWAPN", "EXCHANGE"}:
+                        byte = {"SLOTNUM": 0x4B, "DUPN": 0xE6, "SWAPN": 0xE7, "EXCHANGE": 0xE8}[raw]
+                    if byte < 0:
+                        raise ValueError(f"Unknown opcode mnemonic: {opcode}")
     else:
         raise ValueError("opcode must be a byte value or mnemonic")
 
