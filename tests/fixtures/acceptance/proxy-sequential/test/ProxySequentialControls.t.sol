@@ -29,6 +29,7 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
         // independent UUPS route exposed to a non-admin implementation caller.
         vm.prank(owner);
         admin.setSecureMode(true);
+        require(admin.secureMode(), "TRANSPARENT_HYBRID_PROXY_ADMIN_NOT_SECURE");
         uint256 baseline = vm.snapshot();
 
         vm.prank(owner);
@@ -93,6 +94,10 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
             abi.encodeWithSignature("upgradeTo(address)", vm.envAddress("P0_VULNERABLE_IMPLEMENTATION"))
         );
         require(!adminUupsSucceeded, "TRANSPARENT_ADMIN_REACHED_UUPS_SELECTOR");
+        require(
+            proxy.implementation() == vm.envAddress("P0_SECURE_IMPLEMENTATION"),
+            "TRANSPARENT_ADMIN_PROBE_CHANGED_IMPLEMENTATION"
+        );
     }
 
     function test_paired_transparent_uups_second_surface() external {
