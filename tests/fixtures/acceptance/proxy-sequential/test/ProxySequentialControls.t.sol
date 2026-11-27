@@ -25,6 +25,10 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
         ProxyUpgradeActor actor = ProxyUpgradeActor(vm.envAddress("P0_ACTOR"));
         LowkeyProxyReplacement replacement = new LowkeyProxyReplacement();
         bytes memory upgradeCall = abi.encodeWithSignature("upgradeTo(address)", address(replacement));
+        // Keep the ProxyAdmin control secure so this experiment isolates the
+        // independent UUPS route exposed to a non-admin implementation caller.
+        vm.prank(owner);
+        admin.setSecureMode(true);
         uint256 baseline = vm.snapshot();
 
         vm.prank(owner);
@@ -65,6 +69,7 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
 
         // The ProxyAdmin contract is the immutable Transparent admin. Its
         // non-upgrade selector must be rejected by the proxy's admin branch.
+        vm.prank(owner);
         (bool adminOwnerSucceeded,) = admin.callProxy(
             address(proxy),
             abi.encodeWithSignature("owner()")
@@ -82,6 +87,7 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
 
         // An admin call using the UUPS selector is not the Transparent
         // upgrade interface and must not fall through to UUPS implementation logic.
+        vm.prank(owner);
         (bool adminUupsSucceeded,) = admin.callProxy(
             address(proxy),
             abi.encodeWithSignature("upgradeTo(address)", vm.envAddress("P0_VULNERABLE_IMPLEMENTATION"))
