@@ -728,10 +728,13 @@ def make_uups_reinitializer_replay_manifest(
         "function": signature,
         "same_calls_id": "p0-uups-reinitializer-replay-v1",
         "metric_name": "successful_reinitializer_replays",
+        # The secure and vulnerable implementation addresses are alternative
+        # scenario values: each individual trace calls only the implementation
+        # selected by its proxy implementation slot. Require the shared proxy
+        # and actor in both traces; the slot value below records the sole
+        # permitted difference between the branches.
         "prestate_addresses": list(dict.fromkeys(
-            value.lower() for value in (
-                proxy, actor, secure_implementation, vulnerable_implementation,
-            )
+            value.lower() for value in (proxy, actor)
         )),
         "prestate_slots": [
             {"address": proxy, "slot": "0x0"},
@@ -1287,7 +1290,7 @@ def main() -> int:
             raise AssertionError("UUPS reinitializer fork campaign mutated source Anvil implementation slot.")
 
         report = {
-            "gate": "Lowkey independent P0 UUPS authorization, UUID/lockout, direct implementation initialization, ProxyAdmin and Transparent hybrid acceptance",
+            "gate": "Lowkey independent P0 UUPS authorization, UUID/lockout, direct implementation initialization, reinitializer replay, ProxyAdmin and Transparent hybrid acceptance",
             "status": "PASS",
             "source_sha": expected_sha,
             "installed_git_sha": installed.get("git_sha"),
