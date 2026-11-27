@@ -6237,23 +6237,59 @@ def _transaction_argument_values(function_item, tx):
 
 
 def run_receipt(config, tx_hash=None, args=None):
-    values = list(args or [])
+    values = [str(value) for value in (args or [])]
+    if tx_hash and str(tx_hash).startswith("--"):
+        values.insert(0, str(tx_hash))
+        tx_hash = None
     raw = "--raw" in values
     values = [value for value in values if value != "--raw"]
-    if tx_hash and tx_hash.startswith("--"):
-        values.insert(0, tx_hash)
-        tx_hash = None
-    if values:
-        if len(values) > 1:
-            return fail("Usage: lk receipt [tx] [--raw]")
-        tx_hash = tx_hash or values[0]
+
+    rpc_override = None
+    filtered_values = []
+    index = 0
+    while index < len(values):
+        value = values[index]
+        if value == "--rpc-url":
+            if rpc_override is not None or index + 1 >= len(values):
+                return fail("Usage: lk receipt [tx] [--raw] [--rpc-url <url>]")
+            rpc_override = values[index + 1].strip()
+            if not rpc_override:
+                return fail("--rpc-url requires a non-empty URL.")
+            index += 2
+            continue
+        if value.startswith("--rpc-url="):
+            if rpc_override is not None:
+                return fail("--rpc-url may be supplied only once.")
+            rpc_override = value.split("=", 1)[1].strip()
+            if not rpc_override:
+                return fail("--rpc-url requires a non-empty URL.")
+            index += 1
+            continue
+        filtered_values.append(value)
+        index += 1
+
+    if filtered_values:
+        if len(filtered_values) > 1:
+            return fail("Usage: lk receipt [tx] [--raw] [--rpc-url <url>]")
+        tx_hash = tx_hash or filtered_values[0]
     tx_hash = tx_hash or last_transaction(config)
     if not tx_hash:
         return fail("Error: no transaction is saved for this project and target. Run lk receipt <tx> with an explicit hash, or send a transaction here first.")
     if not is_tx_hash(tx_hash):
         return fail("Error: invalid transaction ID")
     root = audit_context.foundry_project_root()
-    rpc = effective_rpc(config)
+    rpc = effective_rpc(config, explicit_rpc=rpc_override)
+    if not rpc:
+        return _lowkey_command_error(
+            "RPC selection is blocked: receipt inspection requires an explicit --rpc-url or an unambiguous active Lowkey network. "
+            "Select a managed network with 'lk lab network use <name>' or provide --rpc-url. "
+            "No RPC or Cast request was executed.",
+            2,
+            config=config,
+            target=config.get("target"),
+            command="receipt",
+        )
+    cast_rpc_args = ["--rpc-url", rpc_override] if rpc_override else []
     # Explicit hashes may come from sibling workspaces. Do not replace this
     # project's latest transaction until its active target is confirmed as
     # the transaction's top-level destination.
@@ -6265,7 +6301,7 @@ def run_receipt(config, tx_hash=None, args=None):
             _remember_transaction_for_project_target(
                 config, root, tx_hash, tx_target, rpc
             )
-        code = run_cast(["receipt", tx_hash, "--async"], original_config)
+        code = run_cast(["receipt", tx_hash, "--async", *cast_rpc_args], original_config)
         audit_context.record_tool(
             "receipt",
             root,
@@ -6282,7 +6318,7 @@ def run_receipt(config, tx_hash=None, args=None):
     # Lowkey cannot read JSON-RPC receipt data directly (and for lightweight
     # integrations that stub run_cast). The normal live path remains concise.
     if not isinstance(receipt, dict):
-        code = run_cast(["receipt", tx_hash, "--async"], original_config)
+        code = run_cast(["receipt", tx_hash, "--async", *cast_rpc_args], original_config)
         audit_context.record_tool(
             "receipt",
             root,
@@ -6532,6 +6568,18 @@ def run_trace(config,args=None):
     tx_hash=args.pop(0) if args and args[0].startswith("0x") else last_transaction(config)
     if not tx_hash: return fail("Error: no transaction is saved for this project and target. Pass an explicit hash or send a transaction here first.")
     if not is_tx_hash(tx_hash): return fail("Error: invalid transaction ID")
+    explicit_rpc = _explicit_cast_rpc(args)
+    rpc = effective_rpc(config, explicit_rpc=explicit_rpc)
+    if not rpc:
+        return _lowkey_command_error(
+            "RPC selection is blocked: transaction tracing requires an explicit --rpc-url or an unambiguous active Lowkey network. "
+            "Select a managed network with 'lk lab network use <name>' or provide --rpc-url. "
+            "No Cast command was executed.",
+            2,
+            config=config,
+            target=config.get("target"),
+            command="trace",
+        )
     grep=None
     if "--grep" in args:
         i=args.index("--grep")
@@ -6549,8 +6597,7 @@ def run_trace(config,args=None):
     trace_text=getattr(result, "text", str(result or ""))
 
     root=audit_context.foundry_project_root()
-    rpc=effective_rpc(config)
-    tx=rpc_json(rpc, "eth_getTransactionByHash", [tx_hash]) if rpc else None
+    tx=rpc_json(rpc, "eth_getTransactionByHash", [tx_hash])
     returned_lines, candidates=_trace_identifier_info(config, tx, trace_text)
     duplicate_warnings=_record_identifier_candidates(root, tx_hash, candidates)
 
@@ -29408,9 +29455,9 @@ COMMAND_HELP = {
     ),
     "receipt": _help_entry(
         "Show the important result of a transaction without dumping the full raw receipt.",
-        "lk receipt [tx] [--raw]",
+        "lk receipt [tx] [--raw] [--rpc-url <url>]",
         "lk receipt",
-        "Use it after sending a transaction when you want the answer first: did it succeed, who sent it, how much ETH moved, and what events were emitted. Use --raw only when you need the full Cast receipt.",
+        "Use it after sending a transaction when you want the answer first: did it succeed, who sent it, how much ETH moved, and what events were emitted. Use --raw only when you need the full Cast receipt. Pass --rpc-url when inspecting a transaction on another explicit endpoint.",
         forms=[
             ("lk receipt", "Show the last transaction Lowkey remembers in a simple summary.", "lk receipt"),
             ("lk receipt <tx>", "Show a specific transaction's simple summary.", "lk receipt 0x871f..."),
@@ -29418,12 +29465,13 @@ COMMAND_HELP = {
         ],
         options=[
             ("--raw", "Show the original detailed Cast receipt instead of Lowkey's simple summary.", "lk receipt --raw"),
+            ("--rpc-url <url>", "Read this transaction only from the supplied endpoint; a different endpoint detaches the active actor and target context.", "lk receipt 0x... --rpc-url http://127.0.0.1:8545"),
         ],
         related=["lk tx", "lk trace", "lk logs"],
     ),    
     "trace": _help_entry(
         "Inspect one transaction's EVM execution, or use the source subcommand to navigate static Solidity call and storage relationships.",
-        "lk trace [<transaction-hash>] [options] | lk trace source <Contract.function> [source options]",
+        "lk trace [<transaction-hash>] [--rpc-url <url>] [options] | lk trace source <Contract.function> [source options]",
         "lk trace source Vault.withdraw --detail all",
         "Use transaction mode after a send or when investigating an existing transaction. Use source mode before execution when mapping the code path and state touched by a function.",
         forms=[

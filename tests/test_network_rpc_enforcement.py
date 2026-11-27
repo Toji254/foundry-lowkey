@@ -378,3 +378,67 @@ def test_snapshot_does_not_persist_when_a_storage_read_fails():
     cast.assert_called_once_with(["st", "1"], config, capture=True)
     path.assert_not_called()
 
+def test_receipt_without_rpc_is_blocked_not_reported_as_pending():
+    tx_hash = "0x" + "a" * 64
+    config = {"target": "0x" + "1" * 40}
+    with patch.object(lk, "effective_rpc", return_value=None) as resolver, patch.object(
+        lk, "_lowkey_command_error", return_value=2
+    ) as command_error, patch.object(lk, "rpc_json") as rpc, patch.object(lk, "run_cast") as cast:
+        result = lk.run_receipt(config, tx_hash=tx_hash)
+
+    assert result == 2
+    resolver.assert_called_once_with(config, explicit_rpc=None)
+    command_error.assert_called_once()
+    rpc.assert_not_called()
+    cast.assert_not_called()
+
+
+def test_raw_receipt_preserves_explicit_rpc_override():
+    tx_hash = "0x" + "a" * 64
+    endpoint = "http://127.0.0.1:18549"
+    config = {}
+    with patch.object(lk, "effective_rpc", return_value=endpoint) as resolver, patch.object(
+        lk, "_transaction_target_for_hash", return_value=None
+    ), patch.object(lk, "run_cast", return_value=0) as cast, patch.object(
+        lk.audit_context, "record_tool"
+    ):
+        result = lk.run_receipt(config, tx_hash=tx_hash, args=["--raw", "--rpc-url", endpoint])
+
+    assert result == 0
+    resolver.assert_called_once_with(config, explicit_rpc=endpoint)
+    cast.assert_called_once_with(
+        ["receipt", tx_hash, "--async", "--rpc-url", endpoint],
+        config,
+    )
+
+
+def test_trace_without_rpc_is_blocked_before_cast():
+    tx_hash = "0x" + "b" * 64
+    config = {"target": "0x" + "1" * 40}
+    with patch.object(lk, "effective_rpc", return_value=None) as resolver, patch.object(
+        lk, "_lowkey_command_error", return_value=2
+    ) as command_error, patch.object(lk, "run_cast") as cast:
+        result = lk.run_trace(config, [tx_hash])
+
+    assert result == 2
+    resolver.assert_called_once_with(config, explicit_rpc=None)
+    command_error.assert_called_once()
+    cast.assert_not_called()
+
+
+def test_trace_uses_one_explicit_rpc_for_cast_and_metadata_reads():
+    tx_hash = "0x" + "b" * 64
+    endpoint = "http://127.0.0.1:18550"
+    config = {}
+    with patch.object(lk, "effective_rpc", return_value=endpoint) as resolver, patch.object(
+        lk, "run_cast", return_value=lk.CommandResult("trace output", 0)
+    ) as cast, patch.object(lk, "rpc_json", return_value=None) as rpc, patch.object(
+        lk.audit_context, "record_tool"
+    ), patch("builtins.print"):
+        result = lk.run_trace(config, [tx_hash, "--rpc-url", endpoint])
+
+    assert result == 0
+    resolver.assert_called_once_with(config, explicit_rpc=endpoint)
+    assert cast.call_args.args[0] == ["run", tx_hash, "--rpc-url", endpoint]
+    rpc.assert_called_once_with(endpoint, "eth_getTransactionByHash", [tx_hash])
+
