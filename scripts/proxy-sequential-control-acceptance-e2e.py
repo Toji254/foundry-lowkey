@@ -273,7 +273,7 @@ def run_transparent_hybrid_campaign(
         if report.get(field) is not True:
             raise AssertionError(f"Transparent hybrid pair did not verify {field}: {report}")
     proof_axes = report.get("proof_axes") or {}
-    if proof_axes.get("fidelity") not in {"synthetic_state", "fixture"}:
+    if proof_axes.get("fidelity") not in {"synthetic_state", "simulated_caller"}:
         raise AssertionError(f"Transparent hybrid fidelity was not simulation-specific: {proof_axes}")
 
     destination = evidence_root / campaign_name
