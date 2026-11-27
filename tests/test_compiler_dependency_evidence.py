@@ -138,6 +138,22 @@ class CompilerDependencyEvidenceTests(unittest.TestCase):
             self._build_info(root, contents)
 
             graph = project_tools.build_dependency_graph(root)
+            deployment_graph = graph["deployment_graph"]
+            self.assertEqual(deployment_graph["schema_version"], 1)
+            self.assertIn(deployment_graph["planning_status"], {"REVIEW_REQUIRED", "BLOCKED"})
+            graph_library = next(
+                node for node in deployment_graph["nodes"]
+                if node["id"] == "src/Math.sol:VectorMath"
+            )
+            self.assertEqual(graph_library["category"], "solidity-library")
+            self.assertEqual(graph_library["deployment_status"], "NOT_TESTED")
+            graph_link = next(
+                edge for edge in deployment_graph["edges"]
+                if edge["kind"] == "solidity-library-link"
+            )
+            self.assertEqual(graph_link["origin"]["build_info"], "generic.json")
+            self.assertEqual(graph_link["link_references"], [[158, 20], [178, 20]])
+            self.assertEqual(deployment_graph["execution_status"], "NOT_EXECUTED")
             edges = graph["typed_edges"]
             widget_edges = [edge for edge in edges if edge["from"] == "src/Widget.sol:Widget"]
 

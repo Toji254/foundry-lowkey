@@ -1489,6 +1489,32 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
             f"Compiler-backed dependency analysis unavailable: {type(error).__name__}: {error}"
         ]
     typed_edges = compiler_dependencies.get("edges") or []
+    try:
+        try:
+            import deployment_graph as dependency_graph_model
+        except ImportError:
+            from lowkey import deployment_graph as dependency_graph_model
+        typed_deployment_graph = dependency_graph_model.build_dependency_graph(
+            compiler_dependencies
+        ).to_dict()
+    except Exception as error:
+        typed_deployment_graph = {
+            "schema_version": 1,
+            "planning_status": "BLOCKED",
+            "execution_status": "NOT_EXECUTED",
+            "network_identity": None,
+            "nodes": [],
+            "edges": [],
+            "cycles": [],
+            "library_deployment_order": [],
+            "summary": {
+                "nodes": 0, "edges": 0, "unresolved_edges": 0,
+                "deployable_library_edges": 0, "cycles": 0,
+            },
+            "warnings": [
+                f"Typed deployment graph unavailable: {type(error).__name__}: {error}"
+            ],
+        }
 
     return {
         "root": str(root_path),
@@ -1497,6 +1523,7 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
         "unresolved": unresolved,
         "compiler_dependencies": compiler_dependencies,
         "typed_edges": typed_edges,
+        "deployment_graph": typed_deployment_graph,
         "summary": {
             "files": len(nodes),
             "imports": sum(1 for edge in edges if edge["kind"] == "import"),
@@ -1517,6 +1544,7 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
             "external_call_sites": sum(len(node.get("calls", [])) for node in nodes),
             "compiler_contracts": len(compiler_dependencies.get("contracts") or []),
             "typed_relationships": len(typed_edges),
+            "typed_dependency_nodes": len(typed_deployment_graph.get("nodes") or []),
             "constructor_inputs": int(compiler_dependencies.get("constructor_input_count") or 0),
             "constructor_abis_unavailable": int(compiler_dependencies.get("unavailable_constructor_abi_count") or 0),
             "unresolved_constructor_inputs": sum(

@@ -25343,7 +25343,12 @@ def run_native_project_command(config, command_name, args):
 
 
 def run_deps(args):
-    requested = Path(args[0] if args else ".").expanduser().resolve()
+    raw_args = list(args or [])
+    json_mode = "--json" in raw_args
+    positional = [item for item in raw_args if item != "--json"]
+    if len(positional) > 1:
+        return fail("Usage: lk deps [path] [--json]")
+    requested = Path(positional[0] if positional else ".").expanduser().resolve()
     if not requested.exists():
         return fail(f"Path not found: {requested}")
     if requested.is_file() and requested.suffix.lower() not in {".sol", ".vy", ".vyi"}:
@@ -25374,6 +25379,10 @@ def run_deps(args):
     except Exception as exc:
         return fail(f"Error: dependency analysis failed for {root}: {exc}")
 
+    if json_mode:
+        print(json.dumps(graph, indent=2, sort_keys=True))
+        return 0
+
     print("Dependency / inheritance map:")
     print(f"Project scope: {root}")
     edges = graph.get("edges") or []
@@ -25389,6 +25398,16 @@ def run_deps(args):
     if not edges:
         print("No imports or inheritance relationships detected.")
 
+    typed_graph = graph.get("deployment_graph") or {}
+    typed_summary = typed_graph.get("summary") or {}
+    if typed_graph:
+        print(
+            "\nTyped deployment graph: "
+            f"{typed_summary.get('nodes', 0)} node(s), "
+            f"{typed_summary.get('edges', 0)} typed edge(s); "
+            f"planning {typed_graph.get('planning_status', 'UNVERIFIED')}, "
+            f"execution {typed_graph.get('execution_status', 'NOT_EXECUTED')}."
+        )
     typed_edges = graph.get("typed_edges") or []
     if typed_edges:
         print("\nCompiler-backed relationships (source-matched solc evidence):")
