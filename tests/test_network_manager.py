@@ -46,7 +46,11 @@ def make_manager(tmp_path, monkeypatch):
         if method == "eth_chainId":
             return hex(31337)
         if method == "eth_getBlockByNumber":
-            return {"hash": genesis_by_port[port]}
+            # A fixture Anvil may start at a nonzero genesis block (--number).
+            # Block zero is then unavailable; "earliest" is the chain identity.
+            if params != ["earliest", False]:
+                return None
+            return {"hash": genesis_by_port[port], "number": "0x3039"}
         if method == "eth_accounts":
             return account_by_port[port]
         raise AssertionError(method)
@@ -60,7 +64,13 @@ def make_manager(tmp_path, monkeypatch):
             "start_ticks": pid * 10,
             "uid": os.getuid(),
             "executable": "/usr/local/bin/anvil",
-            "argv": f"anvil --host 127.0.0.1 --port {process['port']} --chain-id 31337",
+            "argv": (
+                f"anvil --host 127.0.0.1 --port {process['port']} --chain-id 31337"
+                + (
+                    f" --number {process['genesis_number']}"
+                    if process.get("genesis_number") is not None else ""
+                )
+            ),
         }
 
     manager = NetworkManager(
@@ -227,6 +237,46 @@ def test_supporting_deployment_operations_are_session_scoped_and_preserve_attemp
     assert any(item.get("runtime_verification") == "MATCHED" for item in alpha_records.values())
     assert any(item.get("runtime_verification") == "MISMATCH" for item in alpha_records.values())
     assert any(item["address"] is None for item in alpha_records.values())
+
+
+def test_fixture_registration_accepts_nonzero_genesis_and_checks_earliest_block(tmp_path, monkeypatch):
+    manager, processes, _, genesis, _ = make_manager(tmp_path, monkeypatch)
+    launched = manager.create("fixture-seed")
+    # Simulate the exact fixture-node shape produced by Anvil --number 12345:
+    # the lowest block is 12345 and eth_getBlockByNumber("0x0") returns null.
+    processes[launched["pid"]]["genesis_number"] = 12345
+    requests = []
+
+    def fixture_rpc(url, method, params=None, timeout=1.5):
+        port = int(url.rsplit(":", 1)[1])
+        if method == "web3_clientVersion":
+            return "anvil/v1.0.0"
+        if method == "eth_chainId":
+            return hex(31337)
+        if method == "eth_getBlockByNumber":
+            requests.append(list(params or []))
+            if params == ["earliest", False]:
+                return {"hash": genesis[port], "number": "0x3039"}
+            return None
+        if method == "eth_accounts":
+            return ["0x" + f"{(port * 100 + i):040x}" for i in range(10)]
+        raise AssertionError(method)
+
+    manager._rpc = fixture_rpc
+    registered = manager.register_existing_process(
+        "fixture-context-nonzero-genesis",
+        launched["rpc"],
+        launched["pid"],
+        purpose="project-fixture-block-context",
+    )
+    assert registered["genesis_hash"] == genesis[launched["port"]]
+    assert " --number 12345" in manager._identity(launched["pid"])["argv"]
+
+    status = manager.status("fixture-context-nonzero-genesis")
+    assert status["process_owned"] is True
+    assert status["rpc_healthy"] is True
+    assert status["genesis_matches"] is True
+    assert requests == [["earliest", False], ["earliest", False]]
 
 
 def test_lowkey_owned_fixture_process_can_be_registered_and_stopped_by_session_id(tmp_path, monkeypatch):

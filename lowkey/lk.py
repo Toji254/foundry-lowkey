@@ -18057,7 +18057,7 @@ def _current_deployment_network_identity(config, root, rpc):
         chain_id = int(str(chain_raw), 16) if str(chain_raw).lower().startswith("0x") else int(chain_raw)
     except (TypeError, ValueError):
         chain_id = None
-    genesis = rpc_json(rpc, "eth_getBlockByNumber", ["0x0", False]) if rpc else None
+    genesis = rpc_json(rpc, "eth_getBlockByNumber", ["earliest", False]) if rpc else None
     genesis_hash = genesis.get("hash") if isinstance(genesis, dict) else None
     rpc_identity = _rpc_identity_fingerprint(rpc)
     managed = read_project_anvil_state(root_path) or {}

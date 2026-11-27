@@ -35,12 +35,18 @@ class NetworkDeploymentRegistryIntegrationTests(unittest.TestCase):
         (root / ".audit" / "anvil.json").write_text(json.dumps(state), encoding="utf-8")
         return session
 
-    def _rpc_fakes(self):
-        def rpc(_url, method, _params):
-            return {
-                "eth_chainId": "0x7a69",
-                "eth_getBlockByNumber": {"hash": "0x" + "ab" * 32},
-            }[method]
+    def _rpc_fakes(self, *, genesis_number=0, calls=None):
+        def rpc(_url, method, params):
+            if method == "eth_chainId":
+                return "0x7a69"
+            if method == "eth_getBlockByNumber":
+                if calls is not None:
+                    calls.append(list(params or []))
+                # Model a chain whose configured genesis is not block zero.
+                if params != ["earliest", False]:
+                    return None
+                return {"hash": "0x" + "ab" * 32, "number": hex(genesis_number)}
+            raise AssertionError(method)
         return rpc
 
     def test_current_identity_uses_active_managed_session_not_a_random_invocation(self):
@@ -70,6 +76,23 @@ class NetworkDeploymentRegistryIntegrationTests(unittest.TestCase):
             self.assertEqual(identity["network_session_id"], "session-a")
             self.assertEqual(identity["session_kind"], "fixture-anvil")
             self.assertTrue(identity["reuse_permitted"])
+
+    def test_current_identity_accepts_nonzero_genesis_when_block_zero_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self._write_state(root, fixture=True)
+            manager = unittest.mock.Mock()
+            manager.list.return_value = [{"id": "session-a", "process_owned": True, "status": "running"}]
+            calls = []
+            with patch.object(
+                lk, "rpc_json", side_effect=self._rpc_fakes(genesis_number=12345, calls=calls)
+            ), patch.object(
+                lk, "_rpc_identity_fingerprint", return_value={"rpc_fingerprint": "fingerprint", "rpc_origin": "local"}
+            ), patch.object(lk, "_project_network_manager", return_value=manager):
+                identity = lk._current_deployment_network_identity({}, root, "http://127.0.0.1:18545")
+            self.assertEqual(identity["network_session_id"], "session-a")
+            self.assertTrue(identity["reuse_permitted"])
+            self.assertEqual(calls, [["earliest", False]])
 
     def test_legacy_rpc_record_is_not_silently_associated_with_a_managed_session(self):
         with tempfile.TemporaryDirectory() as tmp:

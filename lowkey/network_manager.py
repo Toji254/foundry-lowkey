@@ -268,7 +268,7 @@ class NetworkManager:
                 try:
                     client = self._rpc(rpc_url, "web3_clientVersion", [])
                     reported_chain = self._rpc(rpc_url, "eth_chainId", [])
-                    genesis = self._rpc(rpc_url, "eth_getBlockByNumber", ["0x0", False])
+                    genesis = self._rpc(rpc_url, "eth_getBlockByNumber", ["earliest", False])
                     accounts = self._rpc(rpc_url, "eth_accounts", [])
                     if "anvil" not in str(client).lower():
                         raise NetworkError("The selected endpoint did not identify itself as Anvil.")
@@ -363,7 +363,7 @@ class NetworkManager:
             return None
         try:
             chain = self._rpc(session["rpc"], "eth_chainId", [])
-            genesis = self._rpc(session["rpc"], "eth_getBlockByNumber", ["0x0", False])
+            genesis = self._rpc(session["rpc"], "eth_getBlockByNumber", ["earliest", False])
             session["rpc_healthy"] = int(str(chain), 16) == int(session["chain_id"])
             session["genesis_matches"] = isinstance(genesis, dict) and str(genesis.get("hash", "")).lower() == session["genesis_hash"]
         except Exception:
@@ -521,7 +521,7 @@ class NetworkManager:
         try:
             client = self._rpc(rpc_url, "web3_clientVersion", [])
             chain_value = self._rpc(rpc_url, "eth_chainId", [])
-            genesis = self._rpc(rpc_url, "eth_getBlockByNumber", ["0x0", False])
+            genesis = self._rpc(rpc_url, "eth_getBlockByNumber", ["earliest", False])
             accounts = self._rpc(rpc_url, "eth_accounts", [])
             chain_id = int(str(chain_value), 16)
         except Exception as exc:
