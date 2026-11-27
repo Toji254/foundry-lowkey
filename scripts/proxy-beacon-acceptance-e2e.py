@@ -18,14 +18,130 @@ BEACON_SLOT = "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d5
 FORGE_STD = Path("/tmp/lowkey-fixture/lib/forge-std")
 
 
-def run(argv: list[str], cwd: Path, env: dict[str, str], timeout: int = 360) -> subprocess.CompletedProcess[str]:
+def run(
+    argv: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    timeout: int = 360,
+    diagnostic_path: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True, timeout=timeout, check=False)
+    if diagnostic_path is not None:
+        diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostic_path.write_text(
+            json.dumps({
+                "argv": [str(item) for item in argv],
+                "cwd": str(cwd),
+                "returncode": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            }, indent=2, sort_keys=True) + "\\n",
+            encoding="utf-8",
+        )
     if result.returncode != 0:
         raise AssertionError(
-            f"Command failed ({result.returncode}): {argv!r}\n"
-            f"--- stdout ---\n{result.stdout[-16000:]}\n--- stderr ---\n{result.stderr[-16000:]}"
+            f"Command failed ({result.returncode}): {argv!r}\\n"
+            f"--- stdout ---\\n{result.stdout[-16000:]}\\n--- stderr ---\\n{result.stderr[-16000:]}"
         )
     return result
+
+
+def _scenario_diagnostics(payload: object) -> dict[str, object]:
+    if not isinstance(payload, dict):
+        return {}
+    runs = payload.get("runs")
+    if not isinstance(runs, dict):
+        return {}
+    result: dict[str, object] = {}
+    for name in ("control", "attack", "negative_control"):
+        row = runs.get(name)
+        if not isinstance(row, dict):
+            continue
+        result[name] = {
+            "trace_error": row.get("trace_error"),
+            "metric": row.get("metric"),
+            "metric_kind": row.get("metric_kind"),
+            "metric_evidence": row.get("metric_evidence"),
+            "entry_call": row.get("entry_call"),
+            "entry_call_sha256": row.get("entry_call_sha256"),
+            "prestate_sha256": row.get("prestate_sha256"),
+            "scenario_parameters": row.get("scenario_parameters"),
+            "prestate_comparison": row.get("prestate_comparison"),
+            "execution_verified": row.get("execution_verified"),
+        }
+    return result
+
+
+def preserve_failure_evidence(repo_root: Path, root: Path, error: BaseException) -> Path:
+    """Copy raw campaign inputs/outputs before TemporaryDirectory cleanup."""
+    destination = repo_root / ".audit" / "proxy-beacon-acceptance"
+    destination.mkdir(parents=True, exist_ok=True)
+
+    manifest = root / "beacon-control.json"
+    if manifest.is_file():
+        shutil.copy2(manifest, destination / "control-manifest.json")
+
+    copied: list[str] = []
+    source_audit = root / ".audit"
+    for name in ("godmode", "proxy"):
+        source = source_audit / name
+        target = destination / name
+        if source.is_dir():
+            shutil.copytree(source, target, dirs_exist_ok=True)
+            copied.append(name + "/")
+
+    logs = source_audit / "campaign-logs"
+    if logs.is_dir():
+        shutil.copytree(logs, destination / "campaign-logs", dirs_exist_ok=True)
+        copied.append("campaign-logs/")
+
+    report_candidates = [
+        source_audit / "godmode" / "control.json",
+        source_audit / "godmode" / "beacon-control-report.json",
+    ]
+    report_payloads: dict[str, object] = {}
+    for candidate in report_candidates:
+        if candidate.is_file():
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                report_payloads[candidate.name] = {"read_error": str(exc)}
+            else:
+                report_payloads[candidate.name] = {
+                    "status": payload.get("status") if isinstance(payload, dict) else None,
+                    "rejection_codes": payload.get("rejection_codes") if isinstance(payload, dict) else None,
+                    "rejection_reasons": payload.get("rejection_reasons") if isinstance(payload, dict) else None,
+                    "reasons": payload.get("reasons") if isinstance(payload, dict) else None,
+                    "scenarios": _scenario_diagnostics(payload),
+                }
+
+    expected = [
+        "control-manifest.json",
+        "godmode/control.freeze.json",
+        "godmode/control.json",
+        "godmode/beacon-control-report.json",
+        "godmode/control-beacon-state-diff.json",
+        "godmode/attack-beacon-state-diff.json",
+    ]
+    present = [item for item in expected if (destination / item).is_file()]
+    diagnostics = {
+        "gate": "Lowkey Beacon paired-control acceptance",
+        "status": "FAILED_WITH_EVIDENCE_PRESERVED",
+        "error": repr(error),
+        "expected_evidence": expected,
+        "present_evidence": present,
+        "copied_directories": copied,
+        "reports": report_payloads,
+        "note": (
+            "Raw state-diff files and campaign outputs are copied before the temporary fixture project "
+            "is removed. Missing files are reported explicitly; no evidence is synthesized."
+        ),
+    }
+    (destination / "failure-diagnostics.json").write_text(
+        json.dumps(diagnostics, indent=2, sort_keys=True) + "\\n",
+        encoding="utf-8",
+    )
+    return destination
 
 
 def deploy(forge: str, root: Path, env: dict[str, str], contract: str, *args: str) -> str:
@@ -164,10 +280,16 @@ def make_manifest(
 
 def execute_campaign(lk: str, root: Path, env: dict[str, str], manifest: str) -> dict:
     common = [lk, "proxy", "campaign", "--manifest", manifest, "--root", str(root), "--rpc-url", RPC]
-    run(common + ["--freeze"], root, env)
-    run(common + ["--validate"], root, env)
+    log_root = root / ".audit" / "campaign-logs"
+    run(common + ["--freeze"], root, env, diagnostic_path=log_root / "freeze.json")
+    run(common + ["--validate"], root, env, diagnostic_path=log_root / "validate.json")
     report_path = ".audit/godmode/beacon-control-report.json"
-    run(common + ["--output", report_path, "--non-economic"], root, env)
+    run(
+        common + ["--output", report_path, "--non-economic"],
+        root,
+        env,
+        diagnostic_path=log_root / "execute.json",
+    )
     path = root / report_path
     if not path.is_file():
         raise AssertionError("lk proxy campaign did not write its control report.")
@@ -220,6 +342,10 @@ def main() -> int:
     env = os.environ.copy()
     env["LOWKEY_RPC_URL"] = RPC
     env["FOUNDRY_ETH_RPC_URL"] = RPC
+    evidence_root = repo_root / ".audit" / "proxy-beacon-acceptance"
+    if evidence_root.exists():
+        shutil.rmtree(evidence_root)
+    evidence_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="lowkey-beacon-acceptance-") as temp:
         root = Path(temp).resolve()
         (root / "src").mkdir()
@@ -284,7 +410,12 @@ def main() -> int:
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        control_report = execute_campaign(lk, root, env, "beacon-control.json")
+        try:
+            control_report = execute_campaign(lk, root, env, "beacon-control.json")
+        except Exception as exc:
+            evidence = preserve_failure_evidence(repo_root, root, exc)
+            print(f"BEACON DIAGNOSTICS PRESERVED: {evidence}", flush=True)
+            raise
 
         # The control campaign runs only on a Forge fork. The original Anvil
         # deployments must retain their initial implementation and proxy slots.
