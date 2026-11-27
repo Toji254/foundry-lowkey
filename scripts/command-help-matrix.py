@@ -155,7 +155,12 @@ def main() -> int:
 
     canonical, aliases = registered_commands(ROOT / "lowkey" / "lk.py")
     launcher = launcher_commands(ROOT / "bin" / "lk")
-    commands = sorted(set(canonical) | set(aliases) | set(launcher))
+    # COMMAND_HELP and HELP_ALIASES define the standalone "lk <name> --help"
+    # contract. Some launcher routes are intentionally nested-only (for
+    # example "lk flow eth") and do not have a standalone help invocation.
+    # Inventory those routes separately rather than treating "lk flow --help"
+    # or "lk help --help" as valid top-level commands.
+    commands = sorted(set(canonical) | set(aliases))
     env = os.environ.copy()
     root_help = subprocess.run(
         [executable, "--help"], cwd=ROOT, env=env,
@@ -175,6 +180,7 @@ def main() -> int:
         "canonical_help_keys": len(canonical),
         "aliases": len(aliases),
         "launcher_routes": len(launcher),
+        "nested_only_launcher_routes": sorted(set(launcher) - set(canonical) - set(aliases)),
         "root_help_exit_code": root_help.returncode,
         "root_help_output_bytes": len(root_help.stdout.encode("utf-8")),
         "unique_invocations": len(commands),
