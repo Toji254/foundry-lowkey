@@ -29527,6 +29527,7 @@ COMMAND_HELP = {
             ),
         },
         options=[
+            ("--rpc-url <url>", "Pin transaction trace replay to this exact RPC endpoint; a different endpoint detaches unrelated actor and target context.", "lk trace 0x... --rpc-url http://127.0.0.1:8545"),
             ("--quick", "Use the quicker native Cast trace output where supported.", "lk trace --quick"),
             ("--decode-internal", "Ask Cast to decode internal calls where metadata is available.", "lk trace --decode-internal"),
             ("--trace-printer <value>", "Pass a trace display setting to Cast; see cast run --help for supported values.", "lk trace --trace-printer pretty"),

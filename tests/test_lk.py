@@ -835,13 +835,15 @@ class LowkeyCastTests(unittest.TestCase):
 
     def test_receipt_records_audit_evidence(self):
         tx_hash = "0x" + "1" * 64
+        endpoint = "http://127.0.0.1:8545"
         config = {"last_tx": tx_hash}
-        with patch.object(lk, "effective_rpc", return_value=None), \
+        with patch.object(lk, "effective_rpc", return_value=endpoint), \
+             patch.object(lk, "rpc_json", return_value=None), \
              patch.object(lk, "run_cast", return_value=0) as run_cast, \
              patch.object(lk, "audit_context") as ctx:
             result = lk.run_receipt(config, tx_hash=tx_hash)
         self.assertEqual(result, 0)
-        run_cast.assert_called_once_with(["receipt", tx_hash, "--async"], config)
+        run_cast.assert_called_once_with(["receipt", tx_hash, "--async", "--rpc-url", endpoint], config)
         ctx.update.assert_not_called()
         ctx.record_tool.assert_called_once()
         self.assertEqual(ctx.record_tool.call_args.args[0], "receipt")
@@ -4292,14 +4294,16 @@ contract Pool {
 
     def test_receipt_uses_async(self):
         tx_hash = "0x" + "1" * 64
+        endpoint = "http://127.0.0.1:8545"
         config = {"last_tx": tx_hash}
-        with patch.object(lk, "effective_rpc", return_value=None), \
+        with patch.object(lk, "effective_rpc", return_value=endpoint), \
+             patch.object(lk, "rpc_json", return_value=None), \
              patch.object(lk, "run_cast") as run_cast, \
              patch.object(lk, "audit_context") as audit_context:
             lk.run_receipt(config, tx_hash=tx_hash)
         run_cast.assert_called_once()
         call_args = run_cast.call_args.args
-        self.assertEqual(call_args[0], ["receipt", tx_hash, "--async"])
+        self.assertEqual(call_args[0], ["receipt", tx_hash, "--async", "--rpc-url", endpoint])
         self.assertEqual(call_args[1], {"last_tx": tx_hash})
         self.assertIsNot(call_args[1], config)
         audit_context.update.assert_not_called()
