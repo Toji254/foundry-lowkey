@@ -735,7 +735,7 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
 .panel-head{display:flex;align-items:center;justify-content:space-between;color:#b8c8dc;font-size:10px;font-weight:850;letter-spacing:.13em;margin:2px 2px 10px}.count-label{font-variant-numeric:tabular-nums;color:#8fa6c0;font-size:10px}
 .project-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px}.stat{background:#122138;border:1px solid #273d5b;border-radius:8px;padding:8px 6px}.stat b{font-size:16px;display:block;color:#f1f7ff;font-variant-numeric:tabular-nums}.stat span{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}
 .search-box{display:flex;align-items:center;gap:7px;border:1px solid #304764;background:#0a1525;border-radius:8px;padding:0 9px;margin-bottom:9px}.search-box input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:var(--text);padding:9px 0}
-.tree{display:grid;gap:2px;margin-bottom:14px}.entrypoint-panel{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:11px 0 12px;margin:0 0 13px}.entrypoint-list{display:grid;gap:4px;max-height:210px;overflow:auto}.entrypoint-contract{color:#7f98b4;font-size:9px;font-weight:850;letter-spacing:.1em;text-transform:uppercase;padding:5px 5px 2px}.entrypoint-row{display:block;width:100%;text-align:left;border:1px solid transparent;background:#101e32;border-radius:7px;padding:7px 8px;color:#dce7f4}.entrypoint-row:hover{border-color:#34718f;background:#142943}.entrypoint-row strong{display:block;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.entrypoint-row small{display:block;color:#8ea7c2;font-size:9px;margin-top:2px;overflow-wrap:anywhere}.entrypoint-empty{font-size:10px;color:#849ab3;padding:5px}.binding-select{display:block;width:100%;min-width:0;margin:8px 0;padding:8px;border:1px solid #38536f;border-radius:7px;background:#0b1728;color:#dce7f4;font-size:11px}.binding-select:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}.bookmark-panel{border-bottom:1px solid var(--line);padding:0 0 12px;margin:0 0 13px}.bookmark-list{display:grid;gap:4px;max-height:150px;overflow:auto}.bookmark-row{display:flex;align-items:center;gap:7px;width:100%;text-align:left;padding:6px 7px;border:1px solid transparent;background:#101e32;border-radius:7px;color:#dce7f4}.bookmark-row:hover{border-color:#34718f;background:#142943}.bookmark-open{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;text-align:left;border:0;background:transparent;color:#dce7f4;font-size:10px;padding:0}.bookmark-remove{border:0;background:transparent;color:#8ea7c2;padding:0 3px}.bookmark-empty{font-size:10px;color:#849ab3;padding:5px}.inspector-actions{display:flex;gap:6px;flex-wrap:wrap;margin:7px 0 12px}.inspector-actions .tool-button{font-size:10px}.folder-row{display:flex;align-items:center;gap:6px;padding:7px 5px;color:#9fb1c8;font-weight:800;font-size:10px;letter-spacing:.07em;text-transform:uppercase;border-radius:6px}.folder-row:hover{background:#172941}.folder-row button{all:unset;cursor:pointer;flex:1}.folder-row span{color:#718ba7}
+.tree{display:grid;gap:2px;margin-bottom:14px}.entrypoint-panel{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:11px 0 12px;margin:0 0 13px}.entrypoint-list{display:grid;gap:4px;max-height:210px;overflow:auto}.entrypoint-contract{color:#7f98b4;font-size:9px;font-weight:850;letter-spacing:.1em;text-transform:uppercase;padding:5px 5px 2px}.entrypoint-row{display:block;width:100%;text-align:left;border:1px solid transparent;background:#101e32;border-radius:7px;padding:7px 8px;color:#dce7f4}.entrypoint-row:hover{border-color:#34718f;background:#142943}.entrypoint-row strong{display:block;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.entrypoint-row small{display:block;color:#8ea7c2;font-size:9px;margin-top:2px;overflow-wrap:anywhere}.entrypoint-empty{font-size:10px;color:#849ab3;padding:5px}.binding-select{display:block;width:100%;min-width:0;margin:8px 0;padding:8px;border:1px solid #38536f;border-radius:7px;background:#0b1728;color:#dce7f4;font-size:11px}.binding-select:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}.bookmark-panel{border-bottom:1px solid var(--line);padding:0 0 12px;margin:0 0 13px}.bookmark-list{display:grid;gap:4px;max-height:150px;overflow:auto}.bookmark-row{display:flex;align-items:center;gap:7px;width:100%;text-align:left;padding:6px 7px;border:1px solid transparent;background:#101e32;border-radius:7px;color:#dce7f4}.bookmark-row:hover{border-color:#34718f;background:#142943}.bookmark-open{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;text-align:left;border:0;background:transparent;color:#dce7f4;font-size:10px;padding:0}.bookmark-remove{border:0;background:transparent;color:#8ea7c2;padding:0 3px}.bookmark-empty{font-size:10px;color:#849ab3;padding:5px}.scope-panel{border-bottom:1px solid var(--line);padding:0 0 12px;margin:0 0 13px}.scope-path-editor{display:grid;gap:6px;margin:9px 0}.scope-path-editor label{font-size:9px;color:#93a9c2;line-height:1.4}.scope-path-editor textarea{resize:vertical;min-height:48px;max-height:120px;padding:7px;border:1px solid #304761;border-radius:7px;background:#0b1728;color:#dce7f4;font:10px/1.45 ui-monospace,monospace}.scope-path-editor .tool-button{justify-self:start;font-size:9px;padding:5px 8px}.scope-excluded-contracts{display:grid;gap:4px;margin-top:6px}.scope-excluded-row{display:flex;align-items:center;gap:6px;font-size:9px;color:#b8c9db}.scope-excluded-row button{border:0;background:transparent;color:#8fa8c2;cursor:pointer}.scope-help{font-size:9px;line-height:1.4;margin:7px 0 0}.inspector-actions{display:flex;gap:6px;flex-wrap:wrap;margin:7px 0 12px}.inspector-actions .tool-button{font-size:10px}.folder-row{display:flex;align-items:center;gap:6px;padding:7px 5px;color:#9fb1c8;font-weight:800;font-size:10px;letter-spacing:.07em;text-transform:uppercase;border-radius:6px}.folder-row:hover{background:#172941}.folder-row button{all:unset;cursor:pointer;flex:1}.folder-row span{color:#718ba7}
 .declaration-row{width:100%;display:flex;align-items:center;gap:7px;text-align:left;padding:7px 7px;border:1px solid transparent;background:transparent;border-radius:7px;color:#dce7f4}.declaration-row:hover{background:#14263e;border-color:#2a4565}.declaration-row.active{background:#15334c;border-color:#2c83a7;box-shadow:inset 2px 0 var(--cyan)}.node-icon{width:19px;height:19px;display:grid;place-items:center;border-radius:5px;background:#173652;color:#70d3f7;font-size:11px;font-weight:850;flex:0 0 auto}.node-icon.interface{background:#2b2145;color:#c2a5ff}.node-icon.library{background:#173c32;color:#70ddb5}.declaration-main{min-width:0;flex:1}.declaration-name{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:650}.declaration-meta{display:block;font-size:10px;color:#8198b4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.declaration-count{font-size:10px;color:#8ca6c1;font-variant-numeric:tabular-nums}
 .filters{border-top:1px solid var(--line);padding-top:12px}.filter-section{margin-bottom:13px}.filter-title{display:flex;justify-content:space-between;font-size:10px;font-weight:850;color:#9eb1c9;letter-spacing:.11em;text-transform:uppercase;margin-bottom:7px}.filter-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.checkline{display:flex;align-items:center;gap:6px;color:#c2d0e2;font-size:10px;min-width:0}.checkline input{accent-color:#38bde9}.vendor-list{display:grid;gap:6px}.vendor-list .checkline{justify-content:space-between}
 .center{min-width:0;min-height:0;display:grid;grid-template-rows:52px minmax(250px,1fr) auto 105px;position:relative;background:radial-gradient(ellipse at 50% 40%,#142945 0%,#0a1423 68%)}
@@ -801,6 +801,17 @@ button,input,select{font:inherit}button{color:inherit;cursor:pointer}button:focu
     <section class="bookmark-panel">
       <div class="filter-title"><span>Bookmarks</span><span class="count-label" id="bookmark-count">0</span></div>
       <div class="bookmark-list" id="bookmark-explorer"></div>
+    </section>
+    <section class="scope-panel">
+      <div class="filter-title"><span>Investigation scope</span><span class="count-label" id="scope-count">ALL</span></div>
+      <label class="checkline"><input id="scope-inline-libraries" type="checkbox" checked> Expand library internals</label>
+      <div class="scope-path-editor">
+        <label for="scope-excluded-paths">Exclude source paths (one relative prefix per line)</label>
+        <textarea id="scope-excluded-paths" rows="3" spellcheck="false" placeholder="test&#10;script&#10;vendor/legacy"></textarea>
+        <button class="tool-button" id="scope-apply-paths">Apply path scope</button>
+      </div>
+      <div class="scope-excluded-contracts" id="scope-excluded-contracts"></div>
+      <p class="muted scope-help">Support sources can also be hidden with the Tests / mocks filter below. Scope changes affect exploration, not indexed source evidence.</p>
     </section>
     <div class="filters">
       <div class="filter-section"><div class="filter-title"><span>Declaration types</span><button class="muted" id="reset-filters" style="border:0;background:transparent">Reset</button></div>
@@ -901,6 +912,7 @@ const SERVER_MODE=__SERVER_MODE__;
 const byId=new Map(),positions=new Map(),hiddenVendors=new Set(),sourceFilesByPath=new Map();
 const bookmarkedIds=new Set(),investigatedEntrypoints=new Set(),manualPositionIds=new Set();
 const interfaceBindings=new Map();
+const scopePreferences={include_support_sources:false,inline_libraries:true,excluded_contract_ids:[],excluded_path_prefixes:[]};
 let projectWorkspaceSaveWarned=false;
 let workspaceStorageAvailable=true,restoredWorkspaceState=false;
 const nodeElementsById=new Map(),edgeElementsById=new Map(),edgeLabelsById=new Map(),edgeDataById=new Map(),edgeIndicesById=new Map(),incidentEdgesByNode=new Map();
@@ -923,6 +935,12 @@ function saveWorkspaceState(){
       bookmarks:Array.from(bookmarkedIds),
       investigated:Array.from(investigatedEntrypoints),
       interface_bindings:Array.from(interfaceBindings.entries()),
+      scope_preferences:{
+        include_support_sources:scopePreferences.include_support_sources,
+        inline_libraries:scopePreferences.inline_libraries,
+        excluded_contract_ids:scopePreferences.excluded_contract_ids.slice(0,500),
+        excluded_path_prefixes:scopePreferences.excluded_path_prefixes.slice(0,100)
+      },
       selected_id:selectedId,
       mode:mode,
       inspector_tab:selectedTab,
@@ -937,9 +955,25 @@ function saveWorkspaceState(){
     workspaceStorageAvailable=false;
   }
 }
+function restoreScopePreferences(value){
+  if(!value||typeof value!=="object")return;
+  scopePreferences.include_support_sources=value.include_support_sources===true;
+  scopePreferences.inline_libraries=value.inline_libraries!==false;
+  scopePreferences.excluded_contract_ids=Array.isArray(value.excluded_contract_ids)
+    ?value.excluded_contract_ids.filter(function(id){const item=node(id);return item&&item.type==="declaration"&&item.declaration_kind==="contract"}).slice(0,500):[];
+  scopePreferences.excluded_path_prefixes=Array.isArray(value.excluded_path_prefixes)
+    ?value.excluded_path_prefixes.filter(function(path){
+      if(typeof path!=="string"||!path||path.includes("\\\\")||path.startsWith("/"))return false;
+      const parts=path.split("/");
+      return parts.length>0&&parts.every(function(part){return part&&part!=="."&&part!==".."});
+    }).slice(0,100):[];
+  const support=document.querySelector('[data-filter="support"]');
+  if(support)support.checked=scopePreferences.include_support_sources;
+}
 function loadWorkspaceState(){
   bookmarkedIds.clear();investigatedEntrypoints.clear();manualPositionIds.clear();interfaceBindings.clear();restoredWorkspaceState=false;
   restoreInterfaceBindings((MODEL.workspace_state||{}).interface_bindings);
+  restoreScopePreferences((MODEL.workspace_state||{}).scope_preferences);
   try{
     const raw=localStorage.getItem(workspaceStorageKey());
     if(!raw)return;
@@ -948,6 +982,7 @@ function loadWorkspaceState(){
     (Array.isArray(saved.bookmarks)?saved.bookmarks:[]).forEach(function(id){if(node(id))bookmarkedIds.add(id)});
     (Array.isArray(saved.investigated)?saved.investigated:[]).forEach(function(id){const item=node(id);if(item&&isEntryPoint(item))investigatedEntrypoints.add(id)});
     if(Array.isArray(saved.interface_bindings)){interfaceBindings.clear();restoreInterfaceBindings(saved.interface_bindings);}
+    if(saved.scope_preferences)restoreScopePreferences(saved.scope_preferences);
     (Array.isArray(saved.manual_positions)?saved.manual_positions:[]).slice(0,1500).forEach(function(row){
       if(!Array.isArray(row)||row.length!==2||!node(row[0]))return;
       const point=row[1];
@@ -1003,7 +1038,17 @@ function saveInterfaceBindingsToProject(){
   fetch("/api/workspace",{
     method:"POST",
     headers:{"Content-Type":"application/json","Accept":"application/json"},
-    body:JSON.stringify({version:1,workspace_key:MODEL.workspace_key,interface_bindings:Array.from(interfaceBindings.entries())})
+    body:JSON.stringify({
+      version:1,
+      workspace_key:MODEL.workspace_key,
+      interface_bindings:Array.from(interfaceBindings.entries()),
+      scope_preferences:{
+        include_support_sources:!!(document.querySelector('[data-filter="support"]')||{}).checked,
+        inline_libraries:scopePreferences.inline_libraries,
+        excluded_contract_ids:scopePreferences.excluded_contract_ids,
+        excluded_path_prefixes:scopePreferences.excluded_path_prefixes
+      }
+    })
   }).then(function(response){return response.json().then(function(payload){return {ok:response.ok,payload:payload}})})
     .then(function(result){
       if(!result.ok||!result.payload.persisted){
@@ -1123,6 +1168,10 @@ function visibleNode(n){
     if(Array.isArray(n.declarations)&&n.declarations.length)return n.declarations.some(function(id){return visibleNode(node(id))});
     return true;
   }
+  const contractId=n.type==="declaration"?n.id:n.contract_id;
+  if(contractId&&scopePreferences.excluded_contract_ids.includes(contractId))return false;
+  const sourcePath=String(n.file||"").replace(/\\\\/g,"/");
+  if(sourcePath&&scopePreferences.excluded_path_prefixes.some(function(prefix){return sourcePath===prefix||sourcePath.startsWith(prefix+"/")}))return false;
   const declaration=n.type==="declaration"?n:node(n.contract_id);
   if(declaration&&declaration.type==="declaration"){
     const dk=(declaration.declaration_kind||"contract").toLowerCase();
@@ -1246,6 +1295,9 @@ function functionProjection(contractId,focusFunction){
       callEdges.push(e);
       const target=node(e.target);
       if(target&&["function","modifier"].includes(target.type)&&!distance.has(target.id)){
+        const targetOwner=node(target.contract_id);
+        const insideLibrary=!!(targetOwner&&targetOwner.declaration_kind==="library");
+        if(insideLibrary&&!scopePreferences.inline_libraries)return;
         distance.set(target.id,distance.get(current)+1);
         queue.push(target.id);
       }
@@ -1866,6 +1918,25 @@ function renderEntrypoints(){
   });
   if(!entries.length)add(root,"div","entrypoint-empty",query?"No entry points match this search.":"No public, external, receive or fallback entry points were indexed.");
 }
+function renderScopePanel(){
+  const inline=document.getElementById("scope-inline-libraries");
+  if(inline)inline.checked=scopePreferences.inline_libraries;
+  const paths=document.getElementById("scope-excluded-paths");
+  if(paths)paths.value=scopePreferences.excluded_path_prefixes.join("\\n");
+  const root=document.getElementById("scope-excluded-contracts");clear(root);
+  scopePreferences.excluded_contract_ids.forEach(function(id){
+    const item=node(id);if(!item)return;
+    const row=add(root,"div","scope-excluded-row","");
+    add(row,"span","",item.label);
+    const remove=add(row,"button","","Remove");
+    remove.addEventListener("click",function(){
+      scopePreferences.excluded_contract_ids=scopePreferences.excluded_contract_ids.filter(function(value){return value!==id});
+      saveWorkspaceState();saveInterfaceBindingsToProject();renderSidebar();renderGraph();renderInspector();
+    });
+  });
+  const count=scopePreferences.excluded_contract_ids.length+scopePreferences.excluded_path_prefixes.length+(scopePreferences.inline_libraries?0:1);
+  document.getElementById("scope-count").textContent=count?String(count)+" rules":"ALL";
+}
 function renderBookmarks(){
   const root=document.getElementById("bookmark-explorer");clear(root);
   const items=Array.from(bookmarkedIds).map(node).filter(Boolean).sort(function(a,b){
@@ -1905,6 +1976,7 @@ function renderSidebar(){
   if(!root.children.length)add(root,"p","muted","No declarations match. Reset filters to restore the full inventory.");
   renderEntrypoints();
   renderBookmarks();
+  renderScopePanel();
   renderVendorFilters();
 }
 function inspectorItem(parent,n,secondary){
@@ -2006,6 +2078,16 @@ function renderInspector(){
     const reviewed=investigatedEntrypoints.has(selected.id);
     const progress=add(actions,"button","tool-button "+(reviewed?"primary":""),reviewed?"Mark not investigated":"Mark investigated");
     progress.addEventListener("click",function(){toggleInvestigated(selected.id)});
+  }
+  if(selected.type==="declaration"&&selected.declaration_kind==="contract"){
+    const excluded=scopePreferences.excluded_contract_ids.includes(selected.id);
+    const scopeButton=add(actions,"button","tool-button "+(excluded?"primary":""),excluded?"Include contract in scope":"Exclude contract from scope");
+    scopeButton.addEventListener("click",function(){
+      if(excluded)scopePreferences.excluded_contract_ids=scopePreferences.excluded_contract_ids.filter(function(id){return id!==selected.id});
+      else if(scopePreferences.excluded_contract_ids.length<500)scopePreferences.excluded_contract_ids.push(selected.id);
+      else toast("Scope supports up to 500 excluded contracts.");
+      saveWorkspaceState();saveInterfaceBindingsToProject();renderSidebar();renderGraph();renderInspector();
+    });
   }
   const body=add(root,"div","inspector-body"),owner=contractContextForNode(selected);
   const owned=MODEL.nodes.filter(function(n){return n.contract_id===owner});
@@ -2309,8 +2391,32 @@ function resetFilters(){
 }
 function setupInteractions(){
   document.querySelectorAll(".mode-tab").forEach(function(button){button.addEventListener("click",function(){setMode(button.dataset.mode)})});
-  document.querySelectorAll("[data-filter],[data-edge]").forEach(function(input){input.addEventListener("change",function(){renderSidebar();renderGraph();renderInspector();saveWorkspaceState()})});
+  document.querySelectorAll("[data-filter],[data-edge]").forEach(function(input){input.addEventListener("change",function(){
+    if(input.dataset.filter==="support")scopePreferences.include_support_sources=input.checked;
+    renderSidebar();renderGraph();renderInspector();saveWorkspaceState();saveInterfaceBindingsToProject();
+  })});
   document.getElementById("reset-filters").addEventListener("click",resetFilters);
+  document.getElementById("scope-inline-libraries").addEventListener("change",function(){
+    scopePreferences.inline_libraries=this.checked;
+    saveWorkspaceState();saveInterfaceBindingsToProject();renderGraph();renderInspector();renderFlow();renderScopePanel();
+  });
+  document.getElementById("scope-apply-paths").addEventListener("click",function(){
+    const raw=document.getElementById("scope-excluded-paths").value.split(/\\r?\\n/);
+    const clean=[];
+    for(const value of raw){
+      const path=value.trim().replace(/\\\\/g,"/");
+      if(!path)continue;
+      const parts=path.split("/");
+      if(path.startsWith("/")||parts.some(function(part){return !part||part==="."||part===".."})||/[\\x00-\\x1f]/.test(path)){
+        toast("Use safe project-relative prefixes; absolute paths and . / .. segments are rejected.");
+        return;
+      }
+      if(!clean.includes(path))clean.push(path);
+      if(clean.length>100){toast("Scope supports up to 100 excluded path prefixes.");return}
+    }
+    scopePreferences.excluded_path_prefixes=clean;
+    saveWorkspaceState();saveInterfaceBindingsToProject();renderScopePanel();renderSidebar();renderGraph();renderInspector();renderFlow();
+  });
   document.getElementById("edge-select").addEventListener("change",renderGraph);
   sidebarSearch.addEventListener("input",renderSidebar);
   search.addEventListener("input",function(){sidebarSearch.value=search.value;renderSidebar();renderSearchResults()});
