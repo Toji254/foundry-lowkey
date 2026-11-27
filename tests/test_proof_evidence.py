@@ -79,6 +79,22 @@ class ProofEvidenceTests(unittest.TestCase):
         self.assertFalse(evaluate_economic_policy("reentrancy", 0)["accepted"])
         self.assertTrue(evaluate_economic_policy("reentrancy", 1)["accepted"])
 
+    def test_usd_portfolio_economics_requires_positive_integer_and_preserves_unit(self):
+        accepted = evaluate_economic_policy(
+            "economic", None, net_profit_usd_18=10**18
+        )
+        rejected = evaluate_economic_policy(
+            "economic", None, net_profit_usd_18=-1
+        )
+        malformed = evaluate_economic_policy(
+            "economic", None, net_profit_usd_18=True
+        )
+        self.assertTrue(accepted["accepted"])
+        self.assertEqual(accepted["net_profit_unit"], "USD_18")
+        self.assertEqual(accepted["net_profit_usd_18"], 10**18)
+        self.assertFalse(rejected["accepted"])
+        self.assertFalse(malformed["accepted"])
+
     def test_replay_signature_and_access_control_remain_economic_by_default(self):
         for family in ("replay", "signature_replay", "access_control", "authorization_bypass"):
             with self.subTest(family=family):
