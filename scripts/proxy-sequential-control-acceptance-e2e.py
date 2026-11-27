@@ -67,7 +67,7 @@ def make_manifest(target: str, function_signature: str, actor: str, proxy: str, 
         "function": function_signature,
         "same_calls_id": f"p0-{prefix}-same-target-same-call-v1",
         "metric_name": "successful_unauthorized_upgrade_calls",
-        "prestate_addresses": list(dict.fromkeys(x.lower() for x in (target, proxy, actor, scenario_address, OWNER, ATTACKER))),
+        "prestate_addresses": list(dict.fromkeys(x.lower() for x in (target, proxy, actor, scenario_address))),
         "metric_addresses": [actor],
         "metric_storage": {
             "address": actor, "slot": "0x0", "kind": "uint256_delta",
