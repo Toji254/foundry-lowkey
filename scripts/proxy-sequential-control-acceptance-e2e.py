@@ -227,6 +227,7 @@ def main() -> int:
         (root / "src").mkdir()
         (root / "test").mkdir()
         (root / "lib").mkdir()
+        (root / ".audit" / "godmode").mkdir(parents=True)
         (root / "lib" / "forge-std").symlink_to(FORGE_STD, target_is_directory=True)
         fixture_root = repo_root / "tests" / "fixtures" / "acceptance" / "proxy-sequential"
         shutil.copy2(fixture_root / "src" / "ProxySequentialFixtures.sol", root / "src" / "ProxySequentialFixtures.sol")
@@ -234,7 +235,8 @@ def main() -> int:
         shutil.copy2(repo_root / "docs" / "LowkeyForgeStateDiffRecorder.sol", root / "src" / "LowkeyForgeStateDiffRecorder.sol")
         (root / "foundry.toml").write_text(
             '[profile.default]\nsrc = "src"\ntest = "test"\nout = "out"\nlibs = ["lib"]\n'
-            'solc_version = "0.8.20"\noptimizer = true\noptimizer_runs = 200\n',
+            'solc_version = "0.8.20"\noptimizer = true\noptimizer_runs = 200\n'
+            'fs_permissions = [{ access = "read-write", path = "./.audit/godmode" }]\n',
             encoding="utf-8",
         )
 
