@@ -51,7 +51,7 @@ def address_word(address: str) -> str:
     return "0x" + ("0" * 24) + address[2:].lower()
 
 
-def make_manifest(target: str, actor: str, proxy: str, scenario_address: str, scenario_slot: str,
+def make_manifest(target: str, function_signature: str, actor: str, proxy: str, scenario_address: str, scenario_slot: str,
                   control_value: str, attack_value: str, prefix: str, test_name: str,
                   fork_block: int, forge: str) -> dict[str, Any]:
     argv = [forge, "test", "--match-path", "test/ProxySequentialControls.t.sol",
@@ -64,6 +64,7 @@ def make_manifest(target: str, actor: str, proxy: str, scenario_address: str, sc
         "expected_chain_id": 31337,
         "expected_fork_block": fork_block,
         "target_address": target,
+        "function": function_signature,
         "same_calls_id": f"p0-{prefix}-same-target-same-call-v1",
         "metric_name": "successful_unauthorized_upgrade_calls",
         "prestate_addresses": list(dict.fromkeys(x.lower() for x in (target, proxy, actor, scenario_address, OWNER, ATTACKER))),
@@ -112,8 +113,16 @@ def check_pair_result(root: Path, report_prefix: str, evidence_dir: Path) -> dic
     if not control_report.is_file():
         raise AssertionError("Independent control runner did not write .audit/godmode/control.json.")
     payload = json.loads(control_report.read_text(encoding="utf-8"))
-    if payload.get("attack_metric") != 1 or payload.get("control_metric") != 0 or payload.get("control_delta") != 1:
-        raise AssertionError(f"Paired proxy metrics do not show secure=0/vulnerable=1: {payload}")
+    runs = payload.get("runs") or {}
+    control_metric = (runs.get("control") or {}).get("metric")
+    attack_metric = (runs.get("attack") or {}).get("metric")
+    if control_metric != 0 or attack_metric != 1 or payload.get("control_delta") != 1:
+        raise AssertionError(
+            f"Paired proxy metrics do not show secure=0/vulnerable=1: "
+            f"control={control_metric}, attack={attack_metric}, report={payload}"
+        )
+    if payload.get("status") != "SIMULATED_BREAK" or payload.get("legacy_status") != "SIMULATED_BREAK":
+        raise AssertionError(f"Fixture-only paired report must remain SIMULATED_BREAK: {payload}")
     for field in ("state_diff_pair_verified", "same_entry_call_verified", "same_prestate_verified",
                   "same_chain_verified", "same_block_verified", "same_fork_anchor_verified",
                   "trace_delta_verified", "evidence_requirements_verified"):
@@ -183,9 +192,12 @@ def run_controlled_break(lk: str, root: Path, env: dict[str, str], contract: str
     shutil.copy2(root / manifest_name, destination / "control-manifest.json")
     shutil.copy2(validate_path, destination / "freeze-validation.json")
     evidence_path = result.get("evidence_path")
-    if not evidence_path or not Path(evidence_path).is_file():
-        raise AssertionError(f"{contract}: break evidence archive is missing.")
-    shutil.copy2(evidence_path, destination / "break-evidence.json")
+    evidence_file = Path(evidence_path) if evidence_path else None
+    if evidence_file is not None and not evidence_file.is_absolute():
+        evidence_file = root / evidence_file
+    if evidence_file is None or not evidence_file.is_file():
+        raise AssertionError(f"{contract}: break evidence archive is missing: {evidence_path!r}")
+    shutil.copy2(evidence_file, destination / "break-evidence.json")
     (destination / "cli-output.txt").write_text(output.stdout + (("\n" + output.stderr) if output.stderr else ""), encoding="utf-8")
     return {
         "contract": contract, "target": target, "function": result.get("function"),
@@ -254,7 +266,8 @@ def main() -> int:
         evidence_root.mkdir(parents=True, exist_ok=True)
 
         uups_manifest = make_manifest(
-            target=uups_proxy, actor=actor, proxy=uups_proxy, scenario_address=uups_proxy,
+            target=uups_proxy, function_signature="upgradeTo(address)", actor=actor,
+            proxy=uups_proxy, scenario_address=uups_proxy,
             scenario_slot=IMPLEMENTATION_SLOT, control_value=address_word(secure_impl),
             attack_value=address_word(vulnerable_impl), prefix="uups",
             test_name="test_paired_uups_upgrade", fork_block=fork_block, forge=forge,
@@ -269,7 +282,8 @@ def main() -> int:
         )
 
         admin_manifest = make_manifest(
-            target=admin, actor=actor, proxy=transparent_proxy, scenario_address=admin,
+            target=admin, function_signature="upgradeAndCall(address,address,bytes)", actor=actor,
+            proxy=transparent_proxy, scenario_address=admin,
             scenario_slot="0x0", control_value="0x" + ("0" * 63) + "1",
             attack_value="0x" + ("0" * 64), prefix="proxy-admin",
             test_name="test_paired_proxy_admin_upgrade", fork_block=fork_block, forge=forge,
