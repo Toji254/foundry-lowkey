@@ -358,5 +358,71 @@ class NetworkDeploymentRegistryIntegrationTests(unittest.TestCase):
             )
 
 
+    def test_primary_target_setter_records_session_and_native_broadcast_transaction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            session = self._write_state(root)
+            artifact_path = root / "out" / "NativeTarget.json"
+            artifact_path.parent.mkdir()
+            artifact_path.write_text(json.dumps({
+                "sourceName": "src/NativeTarget.sol",
+                "contractName": "NativeTarget",
+                "abi": [],
+            }), encoding="utf-8")
+            target = "0x" + "22" * 20
+            transaction = "0x" + "44" * 32
+            network = {
+                "project_id": session["project_id"],
+                "project_root": str(root.resolve()),
+                "network_session_id": "session-a",
+                "session_kind": "managed-anvil",
+                "reuse_permitted": True,
+                "chain_id": 31337,
+                "genesis_hash": "0x" + "ab" * 32,
+                "identity_block_hash": "0x" + "ab" * 32,
+                "identity_block_number": 0,
+                "rpc_fingerprint": "fingerprint",
+                "rpc_origin": "local",
+            }
+            config = {"project_target_registry": {}, "wallets": {}, "actor": "lab-deployer"}
+            runtime = {
+                "status": "DEPLOYED",
+                "verification": "MATCHED",
+                "rpc": "http://127.0.0.1:18545",
+                "chain_id": 31337,
+                "block_number": 1,
+                "runtime_code_hash": "0x" + "cd" * 32,
+                "runtime_code_hash_algorithm": "keccak256",
+                "initialization_status": "NOT_TESTED",
+                "dependency_readiness": "NOT_TESTED",
+                "protocol_readiness": "UNVERIFIED",
+            }
+            with patch.object(lk, "_sync_security_patterns"), patch.object(
+                lk, "save_config"
+            ), patch.object(lk.audit_context, "set_target"), patch.object(
+                lk, "_live_target_state", return_value=runtime
+            ), patch.object(lk, "_print_target_runtime_provenance"):
+                lk.set_lab_target(
+                    config,
+                    root,
+                    target,
+                    "NativeTarget",
+                    artifact_path,
+                    network_identity=network,
+                    deployment_transaction=transaction,
+                )
+
+            stored = lk._project_network_manager(root).get_deployments("session-a")
+            self.assertEqual(len(stored), 1)
+            record = next(iter(stored.values()))
+            self.assertEqual(record["address"], target)
+            self.assertEqual(record["role"], "primary_audit_target")
+            self.assertEqual(record["deployment_transaction"], transaction)
+            self.assertEqual(record["network"]["network_session_id"], "session-a")
+            self.assertEqual(record["operation_key"], transaction)
+            project_record = config["project_target_registry"][str(root.resolve())]["NativeTarget"]
+            self.assertEqual(project_record["network_registry_status"], "RECORDED")
+
+
 if __name__ == "__main__":
     unittest.main()

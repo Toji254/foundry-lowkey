@@ -15924,7 +15924,8 @@ def _live_project_contract_target(config, root, contract_name, rpc):
 
 
 def set_lab_target(
-    config, root, target, contract, artifact, *, network_identity=None, link_evidence=None
+    config, root, target, contract, artifact, *, network_identity=None,
+    link_evidence=None, deployment_transaction=None
 ):
     _sync_security_patterns(root)
     config["target"] = target
@@ -15963,8 +15964,14 @@ def set_lab_target(
             ).lstrip(":"),
             "artifact": str(Path(artifact).resolve()) if artifact else None,
             "deployment_transaction": (
-                (config.get("_last_deployment_receipt") or {}).get("tx_hash")
-                if isinstance(config.get("_last_deployment_receipt"), dict) else None
+                deployment_transaction
+                if is_tx_hash(deployment_transaction)
+                else (
+                    (config.get("_last_deployment_receipt") or {}).get("tx_hash")
+                    if isinstance(config.get("_last_deployment_receipt"), dict)
+                    and is_tx_hash((config.get("_last_deployment_receipt") or {}).get("tx_hash"))
+                    else None
+                )
             ),
             "runtime_verification": runtime_state.get("verification"),
             "runtime_code_hash": runtime_state.get("runtime_code_hash"),
@@ -17306,6 +17313,44 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     if not is_address(target):
         return fail("Error: local project deployment did not produce a valid application target.")
 
+    # A LOWKEY_TARGET marker may select a contract even when the script output
+    # also contains other deployments. Recover transaction provenance only from
+    # this script's own Foundry broadcast directory and only for the exact
+    # selected address; never borrow a newer unrelated deployment.
+    if selected_record is None:
+        script_broadcast_root = (
+            Path(root).expanduser().resolve() / "broadcast" / Path(script).name
+        ).resolve()
+        matching_records = []
+        try:
+            for item in discover_deployments(root):
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("address") or "").strip().lower() != str(target).lower():
+                    continue
+                raw_record_path = item.get("file")
+                if not raw_record_path:
+                    continue
+                record_path = Path(str(raw_record_path)).expanduser()
+                if not record_path.is_absolute():
+                    record_path = Path(root) / record_path
+                try:
+                    record_path.resolve().relative_to(script_broadcast_root)
+                except (OSError, ValueError):
+                    continue
+                if is_tx_hash(item.get("hash")):
+                    matching_records.append(item)
+        except Exception as discovery_error:
+            print(
+                "WARNING  native deployment transaction provenance is unavailable: "
+                + type(discovery_error).__name__
+            )
+        if matching_records:
+            selected_record = max(
+                matching_records,
+                key=lambda item: int(item.get("run_timestamp") or 0),
+            )
+
     # Do not trust stale broadcast records from another chain/run. The selected
     # target must have bytecode on the exact Anvil RPC used for this lab and must
     # map back to a first-party application artifact in this project.
@@ -17401,7 +17446,21 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
         "address": accounts[0],
     }
     config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
-    set_lab_target(config, root, effective_target, contract, artifact)
+    network_identity = _current_deployment_network_identity(config, root, rpc)
+    deployment_transaction = (
+        selected_record.get("hash")
+        if isinstance(selected_record, dict) and is_tx_hash(selected_record.get("hash"))
+        else None
+    )
+    set_lab_target(
+        config,
+        root,
+        effective_target,
+        contract,
+        artifact,
+        network_identity=network_identity,
+        deployment_transaction=deployment_transaction,
+    )
 
     print(f"Target  : {contract} -> {apply_labels(effective_target, config)}")
     print(f"ABI     : {artifact or 'auto-discovered from build artifacts'}")

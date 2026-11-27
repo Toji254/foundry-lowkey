@@ -1947,6 +1947,8 @@ jobs:
           echo "PASS: live escrow flow covered receipt, trace, ID aliases, typed reads, mapping, array, storage, actor permissions, and enum state transitions"
       - name: Exercise generic protocol-aware local lab setup
         run: python3 scripts/project-lab-protocol-e2e.py
+      - name: Exercise reviewed native Foundry script deployment
+        run: python3 scripts/project-native-foundry-deployment-e2e.py
 
       - name: Generate and compile project-aware test artifacts
         working-directory: /tmp/lowkey-fixture
