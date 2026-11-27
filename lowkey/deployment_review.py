@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
+import tempfile
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
@@ -41,6 +44,7 @@ class FoundryScriptReview:
     required_environment: tuple[str, ...]
     safe_default_environment: tuple[str, ...]
     unresolved_environment: tuple[str, ...]
+    environment_fingerprints: tuple[Mapping[str, str], ...]
     configuration_files: tuple[FileFingerprint, ...]
     expected_side_effects: str
     warnings: tuple[str, ...]
@@ -60,6 +64,7 @@ class FoundryScriptReview:
             "required_environment": list(self.required_environment),
             "safe_default_environment": list(self.safe_default_environment),
             "unresolved_environment": list(self.unresolved_environment),
+            "environment_fingerprints": [dict(item) for item in self.environment_fingerprints],
             "configuration_files": [
                 {
                     "path": item.path,
@@ -72,6 +77,135 @@ class FoundryScriptReview:
             "expected_side_effects": self.expected_side_effects,
             "warnings": list(self.warnings),
         }
+
+
+def _environment_fingerprints(values: Mapping[str, Any] | None) -> tuple[dict[str, str], ...]:
+    """Fingerprint relevant environment values without retaining their contents."""
+    if values is None:
+        values = {}
+    if not isinstance(values, Mapping):
+        raise ValueError("deployment environment snapshot must be a mapping")
+    fingerprints = []
+    for raw_name, raw_value in values.items():
+        name = str(raw_name).strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ValueError(f"invalid environment variable name in deployment review: {name!r}")
+        value = "" if raw_value is None else (raw_value if isinstance(raw_value, str) else str(raw_value))
+        digest = hashlib.sha256(
+            b"LOWKEY_FOUNDRY_ENV\\0" + name.encode("utf-8") + b"\\0" + value.encode("utf-8")
+        ).hexdigest()
+        fingerprints.append({"name": name, "sha256": digest})
+    fingerprints.sort(key=lambda item: item["name"])
+    return tuple(fingerprints)
+
+
+def _review_path(root: Path, review_id: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{64}", str(review_id)):
+        raise ValueError("invalid native deployment review id")
+    directory = root / ".audit" / "deployment-reviews"
+    resolved_directory = directory.resolve(strict=False)
+    if not resolved_directory.is_relative_to(root):
+        raise ValueError("native deployment review directory resolves outside project root")
+    target = resolved_directory / f"{review_id}.json"
+    if not target.resolve(strict=False).is_relative_to(root):
+        raise ValueError("native deployment review evidence resolves outside project root")
+    return target
+
+
+def persist_foundry_script_review(
+    review: FoundryScriptReview,
+    project_root: str | Path,
+    *,
+    state: str,
+    details: Mapping[str, Any] | None = None,
+) -> str:
+    """Atomically persist review/approval state without storing raw secrets or output."""
+    allowed_states = {
+        "REVIEW_REQUIRED", "BLOCKED", "DECLINED", "APPROVED", "STALE",
+        "BROADCAST_STARTED", "FORGE_SUCCEEDED", "FORGE_FAILED",
+    }
+    normalized_state = str(state or "").upper()
+    if normalized_state not in allowed_states:
+        raise ValueError(f"unsupported Foundry review state: {state!r}")
+    root = Path(project_root).expanduser().resolve(strict=True)
+    if str(root) != review.project_root:
+        raise ValueError("native deployment review project root changed before evidence persistence")
+    path = _review_path(root, review.review_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = review.to_dict()
+    previous_created = None
+    if path.exists():
+        try:
+            previous = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(previous, dict):
+                previous_created = previous.get("created_at")
+        except (OSError, json.JSONDecodeError):
+            previous_created = None
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    payload["approval_state"] = normalized_state
+    payload["created_at"] = previous_created or now
+    payload["updated_at"] = now
+
+    safe_details: dict[str, Any] = {}
+    if details is not None:
+        if not isinstance(details, Mapping):
+            raise ValueError("review outcome details must be an object")
+        allowed_details = {
+            "reason", "forge_exit_code", "output_sha256", "target_address",
+            "transaction_hashes",
+        }
+        unknown = sorted(set(details) - allowed_details)
+        if unknown:
+            raise ValueError("unsupported review outcome detail(s): " + ", ".join(unknown))
+        for key, value in details.items():
+            if key == "reason":
+                safe_details[key] = str(value)[:512]
+            elif key == "forge_exit_code":
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise ValueError("forge_exit_code must be an integer")
+                safe_details[key] = value
+            elif key == "output_sha256":
+                digest = str(value)
+                if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                    raise ValueError("output_sha256 must be a lowercase SHA-256 digest")
+                safe_details[key] = digest
+            elif key == "target_address":
+                address = str(value)
+                if not re.fullmatch(r"0x[0-9a-fA-F]{40}", address):
+                    raise ValueError("target_address must be an EVM address")
+                safe_details[key] = address
+            elif key == "transaction_hashes":
+                if not isinstance(value, (list, tuple)) or len(value) > 512:
+                    raise ValueError("transaction_hashes must be a bounded sequence")
+                hashes = [str(item) for item in value]
+                if any(not re.fullmatch(r"0x[0-9a-fA-F]{64}", item) for item in hashes):
+                    raise ValueError("transaction_hashes contains an invalid hash")
+                safe_details[key] = hashes
+    payload["outcome"] = safe_details
+
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=f".{review.review_id}.", suffix=".tmp", delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            os.fchmod(handle.fileno(), 0o600)
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+    return path.relative_to(root).as_posix()
 
 
 def _file_fingerprint(root: Path, candidate: str | Path, *, required: bool = False) -> FileFingerprint:
@@ -129,8 +263,13 @@ def _normalized_network_identity(identity: Mapping[str, Any] | None, rpc_origin:
             raise ValueError("selected managed session RPC changed before deployment review")
     if session_id:
         genesis = str(source.get("genesis_hash") or "")
+        identity_block = str(source.get("identity_block_hash") or "")
         project_id = str(source.get("project_id") or "")
-        if not project_id or len(genesis) != 66 or not genesis.startswith("0x"):
+        if (
+            not project_id
+            or not re.fullmatch(r"0x[0-9a-fA-F]{64}", genesis)
+            or not re.fullmatch(r"0x[0-9a-fA-F]{64}", identity_block)
+        ):
             raise ValueError("managed network identity is incomplete; refusing a native deployment")
         return {
             "kind": "managed-anvil",
@@ -139,6 +278,7 @@ def _normalized_network_identity(identity: Mapping[str, Any] | None, rpc_origin:
             "name": str(source.get("name") or ""),
             "chain_id": parsed_chain_id,
             "genesis_hash": genesis.lower(),
+            "identity_block_hash": identity_block.lower(),
             "rpc_origin": rpc_origin,
         }
     return {
@@ -163,6 +303,7 @@ def build_foundry_script_review(
     safe_default_environment: tuple[str, ...] | list[str] = (),
     unresolved_environment: tuple[str, ...] | list[str] = (),
     configuration_paths: tuple[str | Path, ...] | list[str | Path] = (),
+    environment_values: Mapping[str, Any] | None = None,
 ) -> FoundryScriptReview:
     root = Path(project_root).expanduser().resolve(strict=True)
     script = Path(script_path).expanduser().resolve(strict=True)
@@ -177,6 +318,7 @@ def build_foundry_script_review(
     unresolved = tuple(sorted({str(name).strip() for name in unresolved_environment if str(name).strip()}))
     required = tuple(sorted({str(name).strip() for name in required_environment if str(name).strip()}))
     safe_defaults = tuple(sorted({str(name).strip() for name in safe_default_environment if str(name).strip()}))
+    environment_fingerprints = _environment_fingerprints(environment_values)
     if unresolved:
         raise ValueError(
             "required project deployment environment is unresolved: " + ", ".join(unresolved)
@@ -203,6 +345,7 @@ def build_foundry_script_review(
         "network_identity": network,
         "required_environment": list(required),
         "safe_default_environment": list(safe_defaults),
+        "environment_fingerprints": [dict(item) for item in environment_fingerprints],
         "configuration_files": [
             {
                 "path": item.path,
@@ -239,6 +382,7 @@ def build_foundry_script_review(
         required_environment=required,
         safe_default_environment=safe_defaults,
         unresolved_environment=unresolved,
+        environment_fingerprints=environment_fingerprints,
         configuration_files=tuple(config_files),
         expected_side_effects=_SIDE_EFFECTS,
         warnings=tuple(warnings),
@@ -251,6 +395,8 @@ def verify_foundry_script_review_current(
     *,
     rpc: str,
     network_identity: Mapping[str, Any] | None,
+    forge_version: str | None = None,
+    environment_values: Mapping[str, Any] | None = None,
 ) -> tuple[bool, str | None]:
     """Re-check script/config/network identity immediately before broadcast."""
     try:
@@ -263,6 +409,10 @@ def verify_foundry_script_review_current(
         network = _normalized_network_identity(network_identity, origin)
         if network != dict(review.network_identity):
             return False, "network session identity changed after the deployment review"
+        if str(forge_version or "").strip() != review.forge_version:
+            return False, "Forge toolchain version changed after the deployment review"
+        if _environment_fingerprints(environment_values) != review.environment_fingerprints:
+            return False, "deployment environment values changed after the review"
         script = (root / review.script_path).resolve(strict=True)
         if not script.is_relative_to(root) or not script.is_file():
             return False, "deployment script path changed after the deployment review"
@@ -294,6 +444,10 @@ def render_foundry_script_review(review: FoundryScriptReview) -> str:
         f"RPC origin      : {review.rpc_origin}",
         "Required env    : " + (", ".join(review.required_environment) or "none detected"),
         "Safe defaults   : " + (", ".join(review.safe_default_environment) or "none"),
+        "Env fingerprints: " + (
+            ", ".join(f"{item['name']} sha256={item['sha256'][:12]}…" for item in review.environment_fingerprints)
+            or "none"
+        ),
         "Config files    : " + (
             ", ".join(
                 f"{item.path} sha256={item.sha256 or 'absent'}"

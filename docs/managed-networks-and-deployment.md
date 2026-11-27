@@ -80,12 +80,12 @@ The generic ABI deployer is a fallback. When the project contains a discoverable
 
 ### Reviewed project-native Foundry deployment
 
-When Lowkey discovers a project-native Foundry script, it prepares a review snapshot before the `forge script --broadcast` invocation. The snapshot binds:
+When Lowkey discovers a project-native Foundry script, it prepares a review snapshot before the `forge script --broadcast` invocation. The snapshot is atomically persisted under `.audit/deployment-reviews/<review-id>.json` and binds:
 
 - the script's project-relative path and SHA-256;
 - the Forge version;
 - the loopback RPC endpoint and managed-session identity (or an explicitly labelled unmanaged local Anvil endpoint);
-- required `vm.env(...)` names and Lowkey-supplied safe defaults, without printing secret values;
+- required `vm.env(...)` names, Lowkey-supplied safe defaults, and SHA-256 fingerprints of relevant shell environment values (the values themselves are never written or printed);
 - hashes of `foundry.toml`, `.env` and configured `env_file` inputs;
 - a warning that arbitrary script code may deploy, call contracts, transfer value, mutate storage and write Foundry broadcast files.
 
@@ -95,7 +95,7 @@ Lowkey displays the snapshot and requires the user to type `DEPLOY` before conti
 LOWKEY_NONINTERACTIVE_DEPLOY=1 lk lab
 ```
 
-This opt-in is an approval signal only. It does not bypass unresolved environment checks, loopback-only RPC enforcement or the revalidation step. Immediately before broadcast, Lowkey checks that the selected project, script hash, configuration hashes, RPC origin and network-session identity still match the approved snapshot. A stale review or missing evidence blocks execution before the script broadcast. Lowkey does not silently edit `foundry.toml`, enable FFI or switch to a remote network.
+This opt-in is an approval signal only. It does not bypass unresolved environment checks, loopback-only RPC enforcement or the revalidation step. Immediately before broadcast, Lowkey checks that the selected project, script hash, configuration hashes, environment fingerprints, Forge version, RPC origin and network-session identity still match the approved snapshot. The evidence file records review/approval/broadcast/Forge-result state and a hash of Forge output, not raw output or secrets. A stale review or missing evidence blocks execution before the script broadcast. Lowkey does not silently edit `foundry.toml`, enable FFI or switch to a remote network.
 
 The review is not a static proof of script safety and cannot enumerate every possible side effect. It establishes what was selected and what was approved so the auditor can make an informed local execution decision. The implementation is a Foundry adapter only: project-native Hardhat deployment scripts and protocol-specific post-deployment configuration remain pending. Dedicated end-to-end acceptance of a real project script broadcast, its complete transaction set and registry capture is also still pending.
 

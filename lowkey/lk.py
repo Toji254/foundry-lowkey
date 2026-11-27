@@ -16914,7 +16914,7 @@ def _validate_project_lab_target(
     )
 
 def _review_project_lab_script(config, root, script, rpc, accounts, key, script_env, unresolved_env):
-    """Print and obtain approval for the exact local Foundry script/config snapshot."""
+    """Print, persist and obtain approval for the exact local Foundry script snapshot."""
     try:
         try:
             import deployment_review as deployment_review_engine
@@ -16928,8 +16928,13 @@ def _review_project_lab_script(config, root, script, rpc, accounts, key, script_
         if not isinstance(session, dict):
             session = {}
         info = anvil_rpc_info(config) or {}
+        live_chain_id = info.get("chain_id")
+        if live_chain_id is None:
+            return fail("Error: could not establish the live local Anvil chain ID; deployment blocked.")
         identity = dict(session)
-        identity.setdefault("chain_id", info.get("chain_id"))
+        if session.get("chain_id") is not None and str(session.get("chain_id")) != str(live_chain_id):
+            return fail("Error: managed session chain ID does not match the selected local RPC; deployment blocked.")
+        identity["chain_id"] = live_chain_id
         config_paths = [Path(root) / "foundry.toml", Path(root) / ".env"]
         foundry_text = _foundry_project_config_text(root)
         for raw_value in re.findall(
@@ -16945,6 +16950,19 @@ def _review_project_lab_script(config, root, script, rpc, accounts, key, script_
             r"vm\.env(?!Or)[A-Za-z0-9_]*\s*\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]",
             source,
         ))
+        second_key = str(int(str(derive_default_anvil_key(1) or key), 16))
+        reserved_environment = {
+            "LOWKEY_LAB_KEY": str(int(str(key), 16)),
+            "LOWKEY_BOB_KEY": second_key,
+        }
+        effective_environment = dict(os.environ)
+        effective_environment.update(script_env)
+        effective_environment.update(reserved_environment)
+        tracked_names = required_names | set(script_env) | set(reserved_environment)
+        environment_values = {
+            name: str(effective_environment.get(name, ""))
+            for name in sorted(tracked_names)
+        }
         review = deployment_review_engine.build_foundry_script_review(
             root,
             script,
@@ -16955,6 +16973,10 @@ def _review_project_lab_script(config, root, script, rpc, accounts, key, script_
             safe_default_environment=tuple(script_env.keys()),
             unresolved_environment=tuple(unresolved_env),
             configuration_paths=config_paths,
+            environment_values=environment_values,
+        )
+        evidence_path = deployment_review_engine.persist_foundry_script_review(
+            review, root, state="REVIEW_REQUIRED"
         )
     except Exception as error:
         return fail(
@@ -16963,10 +16985,15 @@ def _review_project_lab_script(config, root, script, rpc, accounts, key, script_
         )
 
     print(deployment_review_engine.render_foundry_script_review(review))
+    print(f"Review evidence : {evidence_path}")
     if os.environ.get("LOWKEY_NONINTERACTIVE_DEPLOY") == "1":
         print("Approval       : explicitly authorized by LOWKEY_NONINTERACTIVE_DEPLOY=1")
     else:
         if not sys.stdin.isatty():
+            deployment_review_engine.persist_foundry_script_review(
+                review, root, state="BLOCKED",
+                details={"reason": "non-interactive execution requires explicit approval"},
+            )
             return fail(
                 "Error: native deployment needs explicit review approval. "
                 "Run it in a terminal and type DEPLOY, or set LOWKEY_NONINTERACTIVE_DEPLOY=1 "
@@ -16977,22 +17004,46 @@ def _review_project_lab_script(config, root, script, rpc, accounts, key, script_
         except EOFError:
             answer = ""
         if answer != "DEPLOY":
+            deployment_review_engine.persist_foundry_script_review(
+                review, root, state="DECLINED",
+                details={"reason": "user declined the native deployment review"},
+            )
             print("Deployment cancelled. No broadcast transaction was sent.")
             return 1
 
+    current_version = run_foundry(["--version"], capture=True)
+    if getattr(current_version, "code", 1) != 0:
+        deployment_review_engine.persist_foundry_script_review(
+            review, root, state="BLOCKED",
+            details={"reason": "Forge toolchain version could not be re-established"},
+        )
+        return fail("Error: could not re-establish the Forge toolchain version; deployment blocked.")
+    current_effective_environment = dict(os.environ)
+    current_effective_environment.update(script_env)
+    current_effective_environment.update(reserved_environment)
+    current_environment_values = {
+        name: str(current_effective_environment.get(name, ""))
+        for name in sorted(tracked_names)
+    }
     valid, reason = deployment_review_engine.verify_foundry_script_review_current(
-        review,
-        root,
-        rpc=rpc,
-        network_identity=identity,
+        review, root, rpc=rpc, network_identity=identity,
+        forge_version=str(getattr(current_version, "text", "") or "").strip(),
+        environment_values=current_environment_values,
     )
     if not valid:
+        deployment_review_engine.persist_foundry_script_review(
+            review, root, state="STALE", details={"reason": str(reason)}
+        )
         return fail(
             "Error: deployment review became stale before broadcast; no transaction was sent. "
             + str(reason)
         )
+    deployment_review_engine.persist_foundry_script_review(review, root, state="APPROVED")
+    if isinstance(config, dict):
+        config["_lowkey_active_foundry_script_review"] = review
     print(f"Approval       : accepted for review {review.review_id}")
     return 0
+
 
 
 def run_project_lab_script(config, root, script, rpc, accounts, key, requested=None, explicit_requested=False):
@@ -17029,12 +17080,54 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
         "LOWKEY_LAB_KEY": str(int(str(key), 16)),
         "LOWKEY_BOB_KEY": str(int(str(derive_default_anvil_key(1) or key), 16)),
     }
+    active_review = config.pop("_lowkey_active_foundry_script_review", None) if isinstance(config, dict) else None
     previous = {}
     for name, value in {**reserved, **script_env}.items():
         previous[name] = os.environ.get(name)
         os.environ[name] = value
 
     try:
+        if active_review is not None:
+            try:
+                try:
+                    import deployment_review as deployment_review_engine
+                except ImportError:
+                    from lowkey import deployment_review as deployment_review_engine
+                current_version = run_foundry(["--version"], capture=True)
+                current_environment = {
+                    item["name"]: str(os.environ.get(item["name"], ""))
+                    for item in active_review.environment_fingerprints
+                }
+                active_session = (
+                    config.get("_active_network_session")
+                    if isinstance(config, dict) and isinstance(config.get("_active_network_session"), dict)
+                    else {"chain_id": (anvil_rpc_info(config) or {}).get("chain_id")}
+                )
+                valid, reason = deployment_review_engine.verify_foundry_script_review_current(
+                    active_review,
+                    root,
+                    rpc=rpc,
+                    network_identity=active_session,
+                    forge_version=str(getattr(current_version, "text", "") or "").strip()
+                    if getattr(current_version, "code", 1) == 0 else "",
+                    environment_values=current_environment,
+                )
+                if not valid:
+                    deployment_review_engine.persist_foundry_script_review(
+                        active_review, root, state="STALE", details={"reason": str(reason)}
+                    )
+                    return fail(
+                        "Error: deployment review changed immediately before broadcast; no transaction was sent. "
+                        + str(reason)
+                    )
+                deployment_review_engine.persist_foundry_script_review(
+                    active_review, root, state="BROADCAST_STARTED"
+                )
+            except Exception as review_error:
+                return fail(
+                    "Error: deployment review could not be revalidated immediately before broadcast; "
+                    f"no transaction was sent. {type(review_error).__name__}: {review_error}"
+                )
         result = run_foundry(
             [
                 "script",
@@ -17055,6 +17148,26 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
                 os.environ[name] = old_value
 
     output = result.text
+    if active_review is not None:
+        try:
+            try:
+                import deployment_review as deployment_review_engine
+            except ImportError:
+                from lowkey import deployment_review as deployment_review_engine
+            deployment_review_engine.persist_foundry_script_review(
+                active_review,
+                root,
+                state="FORGE_SUCCEEDED" if result.code == 0 else "FORGE_FAILED",
+                details={
+                    "forge_exit_code": int(result.code),
+                    "output_sha256": hashlib.sha256(str(output or "").encode("utf-8")).hexdigest(),
+                },
+            )
+        except Exception as review_error:
+            return fail(
+                "Error: deployment review evidence could not be updated after the Forge run. "
+                f"{type(review_error).__name__}: {review_error}"
+            )
     if result.code != 0:
         tail = "\n".join(output.splitlines()[-30:]) if output else "forge script failed"
         return fail(

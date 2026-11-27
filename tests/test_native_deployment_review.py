@@ -17,6 +17,7 @@ def _network():
         "project_id": "project-1",
         "chain_id": 31337,
         "genesis_hash": "0x" + "ab" * 32,
+        "identity_block_hash": "0x" + "ab" * 32,
         "rpc": "http://127.0.0.1:8545",
     }
 
@@ -37,6 +38,11 @@ def _build(root, *, rpc="http://127.0.0.1:8545", network=None, unresolved=()):
         safe_default_environment=("OWNER",),
         unresolved_environment=unresolved,
         configuration_paths=("foundry.toml", ".env"),
+        environment_values={
+            "EXTERNAL_REGISTRY": "0x" + "12" * 20,
+            "OWNER": "0x" + "34" * 20,
+            "PRIVATE_RPC_TOKEN": "do-not-write-this-secret",
+        },
     )
 
 
@@ -52,7 +58,13 @@ def test_review_binds_script_config_toolchain_and_managed_session():
         assert "Script SHA-256" in rendered
         assert "not-shown" not in rendered
         valid, error = verify_foundry_script_review_current(
-            review, root, rpc="http://127.0.0.1:8545", network_identity=_network()
+            review, root, rpc="http://127.0.0.1:8545", network_identity=_network(),
+            forge_version="forge 1.0.0",
+            environment_values={
+                "EXTERNAL_REGISTRY": "0x" + "12" * 20,
+                "OWNER": "0x" + "34" * 20,
+                "PRIVATE_RPC_TOKEN": "do-not-write-this-secret",
+            },
         )
         assert valid and error is None
 
@@ -103,14 +115,26 @@ def test_review_revalidation_detects_script_and_configuration_changes():
         review = _build(root)
         (root / "script" / "Deploy.s.sol").write_text("contract Deploy { function run() external { selfdestruct(payable(msg.sender)); } }", encoding="utf-8")
         valid, error = verify_foundry_script_review_current(
-            review, root, rpc="http://127.0.0.1:8545", network_identity=_network()
+            review, root, rpc="http://127.0.0.1:8545", network_identity=_network(),
+            forge_version="forge 1.0.0",
+            environment_values={
+                "EXTERNAL_REGISTRY": "0x" + "12" * 20,
+                "OWNER": "0x" + "34" * 20,
+                "PRIVATE_RPC_TOKEN": "do-not-write-this-secret",
+            },
         )
         assert not valid and "script content changed" in error
 
         review = _build(root)
         (root / "foundry.toml").write_text('[profile.default]\nffi = true\n', encoding="utf-8")
         valid, error = verify_foundry_script_review_current(
-            review, root, rpc="http://127.0.0.1:8545", network_identity=_network()
+            review, root, rpc="http://127.0.0.1:8545", network_identity=_network(),
+            forge_version="forge 1.0.0",
+            environment_values={
+                "EXTERNAL_REGISTRY": "0x" + "12" * 20,
+                "OWNER": "0x" + "34" * 20,
+                "PRIVATE_RPC_TOKEN": "do-not-write-this-secret",
+            },
         )
         assert not valid and "configuration changed" in error
 
@@ -130,3 +154,50 @@ def test_review_rejects_changed_network_identity_and_allows_only_local_unmanaged
         unmanaged = {"chain_id": 31337}
         review = _build(root, network=unmanaged)
         assert review.network_identity["kind"] == "unmanaged-local-anvil"
+
+
+def test_review_detects_toolchain_and_shell_environment_changes():
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        review = _build(root)
+        valid, error = verify_foundry_script_review_current(
+            review, root, rpc="http://127.0.0.1:8545", network_identity=_network(),
+            forge_version="forge 1.0.1",
+            environment_values={
+                "EXTERNAL_REGISTRY": "0x" + "12" * 20,
+                "OWNER": "0x" + "34" * 20,
+                "PRIVATE_RPC_TOKEN": "do-not-write-this-secret",
+            },
+        )
+        assert not valid and "Forge toolchain version changed" in error
+
+        valid, error = verify_foundry_script_review_current(
+            review, root, rpc="http://127.0.0.1:8545", network_identity=_network(),
+            forge_version="forge 1.0.0",
+            environment_values={
+                "EXTERNAL_REGISTRY": "0x" + "99" * 20,
+                "OWNER": "0x" + "34" * 20,
+                "PRIVATE_RPC_TOKEN": "do-not-write-this-secret",
+            },
+        )
+        assert not valid and "environment values changed" in error
+
+
+def test_review_evidence_is_atomic_and_never_persists_environment_values():
+    import json
+    from lowkey.deployment_review import persist_foundry_script_review
+
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        review = _build(root)
+        path = persist_foundry_script_review(review, root, state="REVIEW_REQUIRED")
+        evidence = root / path
+        payload = json.loads(evidence.read_text(encoding="utf-8"))
+        assert payload["approval_state"] == "REVIEW_REQUIRED"
+        assert payload["review_id"] == review.review_id
+        assert "PRIVATE_RPC_TOKEN" in [item["name"] for item in payload["environment_fingerprints"]]
+        assert "do-not-write-this-secret" not in evidence.read_text(encoding="utf-8")
+        persist_foundry_script_review(review, root, state="APPROVED")
+        updated = json.loads(evidence.read_text(encoding="utf-8"))
+        assert updated["approval_state"] == "APPROVED"
+        assert updated["created_at"] == payload["created_at"]
