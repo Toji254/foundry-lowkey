@@ -116,8 +116,8 @@ def load_dependency_manifest(project_root: str | Path) -> DependencyManifest:
         if resolved_path.stat().st_size > MAX_MANIFEST_BYTES:
             return _blocked(relative, f"Dependency manifest exceeds the {MAX_MANIFEST_BYTES}-byte size limit.")
         raw = resolved_path.read_bytes()
-    except OSError as error:
-        return _blocked(relative, f"Dependency manifest could not be read: {type(error).__name__}: {error}")
+    except (OSError, RuntimeError) as error:
+        return _blocked(relative, f"Dependency manifest could not be read safely: {type(error).__name__}: {error}")
 
     digest = hashlib.sha256(raw).hexdigest()
     try:

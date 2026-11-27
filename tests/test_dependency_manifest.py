@@ -116,6 +116,12 @@ class DependencyManifestTests(unittest.TestCase):
         self.assertEqual(result["status"], "BLOCKED")
         self.assertIn("source-qualified identity", result["warnings"][0])
 
+    def test_manifest_symlink_loop_fails_closed(self):
+        self.path.symlink_to(self.path)
+        result = load_dependency_manifest(self.root).to_dict()
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertIn("safely", result["warnings"][0].lower())
+
     def test_manifest_symlink_cannot_escape_project_root(self):
         outside = Path(self.temp.name).parent / (Path(self.temp.name).name + "-outside.json")
         try:
