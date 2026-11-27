@@ -28,11 +28,14 @@ def round_data(answer, *, updated=9990, answered_round=5):
 
 
 class RpcFixture:
-    def __init__(self, *, stale=False, incomplete=False, source_code_mismatch=False, proxy_identity_mismatch=False, wrong_vault_asset=False, changed_decimals=False, changed_vault_asset=False):
+    def __init__(self, *, stale=False, incomplete=False, source_code_mismatch=False, proxy_identity_mismatch=False, proxy_implementation=False, proxy_implementation_code_mismatch=False, changed_proxy_implementation=False, wrong_vault_asset=False, changed_decimals=False, changed_vault_asset=False):
         self.stale = stale
         self.incomplete = incomplete
         self.source_code_mismatch = source_code_mismatch
         self.proxy_identity_mismatch = proxy_identity_mismatch
+        self.proxy_implementation = proxy_implementation
+        self.proxy_implementation_code_mismatch = proxy_implementation_code_mismatch
+        self.changed_proxy_implementation = changed_proxy_implementation
         self.wrong_vault_asset = wrong_vault_asset
         self.changed_decimals = changed_decimals
         self.changed_vault_asset = changed_vault_asset
@@ -41,15 +44,23 @@ class RpcFixture:
         if method == "eth_getStorageAt":
             address, slot, block_tag = params
             implementation_slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
-            if (
-                self.proxy_identity_mismatch and url == "source"
-                and address.lower() == TOKEN and slot.lower() == implementation_slot
-            ):
-                return word(int("8" * 40, 16))
+            if address.lower() == TOKEN and slot.lower() == implementation_slot:
+                block = int(block_tag, 16)
+                if self.proxy_identity_mismatch and url == "source":
+                    return word(int("8" * 40, 16))
+                if self.proxy_implementation:
+                    implementation = 8
+                    if self.proxy_identity_mismatch and url == "source":
+                        implementation = 9
+                    if self.changed_proxy_implementation and block > 100:
+                        implementation = 9
+                    return word(int(str(implementation) * 40, 16))
             return word(0)
         if method == "eth_getCode":
             address = params[0].lower()
             if url == "source" and self.source_code_mismatch and address == TOKEN:
+                return "0x60026002"
+            if url == "source" and self.proxy_implementation_code_mismatch and address == "0x" + "8" * 40:
                 return "0x60026002"
             return "0x60016001"
         if method == "eth_call":
@@ -214,6 +225,24 @@ class TokenEconomicsTests(unittest.TestCase):
                 RpcFixture(proxy_identity_mismatch=True), local_url="local", source_url="source",
                 manifest=manifest(), accounts=[ACTOR], before_block=100,
                 after_block=101, block_timestamp=10_000,
+            )
+
+    def test_proxy_implementation_bytecode_mismatch_is_refused(self):
+        with self.assertRaisesRegex(TokenEconomicsError, "implementation bytecode differs"):
+            measure_token_portfolio(
+                RpcFixture(proxy_implementation=True, proxy_implementation_code_mismatch=True),
+                local_url="local", source_url="source", manifest=manifest(),
+                accounts=[ACTOR], before_block=100, after_block=101,
+                block_timestamp=10_000,
+            )
+
+    def test_proxy_implementation_change_during_transaction_is_refused(self):
+        with self.assertRaisesRegex(TokenEconomicsError, "implementation identity changed"):
+            measure_token_portfolio(
+                RpcFixture(proxy_implementation=True, changed_proxy_implementation=True),
+                local_url="local", source_url=None, manifest=manifest(),
+                accounts=[ACTOR], before_block=100, after_block=101,
+                block_timestamp=10_000,
             )
 
     def test_source_code_mismatch_is_refused(self):
