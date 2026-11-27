@@ -82,22 +82,32 @@ These are **candidate signals only**. A PUSH20 address may be unrelated data; a 
 
 ## Current limitations — do not overclaim
 
-The current implementation does not yet provide:
-- proof that an observed EIP-1967 slot is consumed by the target's reachable runtime dispatch path;
-- proof of selector-to-facet DELEGATECALL routing for Diamonds or Diamond-cut authorization;
-- definitive immutable-admin recovery or full authority proof: the current graph only surfaces bounded PUSH20, ProxyAdmin v4/v5, owner(), Safe-style and timelock-style candidates;
-- complete custom proxy slot discovery;
-- complete historical upgrade reconstruction: `history` currently covers only standard EIP-1967 events emitted by the target itself, within an explicit bounded range; it does not discover ProxyAdmin-emitted events, custom events, silent storage writes or events before the selected start block;
-- full ERC-7201 namespace compatibility proof;
-- a generic broadcast, deploy or upgrade workflow;
-- generic fork upgrade simulation;
-- broad executable proxy exploit campaigns: the current local adapters cover standard UUPS and ProxyAdmin v4/v5 ABI routes only; Beacon upgrades, Diamond cuts, initializer/reinitializer replay and custom upgrade routes remain unimplemented.
+CI now accepts fixture-level paired-control campaigns for:
 
-These stay blocked/partial until there are dedicated Solidity fixtures, target-specific adapters, paired controls, trace-backed state assertions, seeded mutations and CI acceptance. A source pattern, ABI method name, loupe response or storage comparison is never automatically reported as a vulnerability.
+- Standard UUPS implementation replacement with an owner-gated control.
+- OpenZeppelin-style ProxyAdmin upgrade routes with authorized and unauthorized controls.
+- A shared Beacon controlling two proxies, including implementation replacement and independent application-storage preservation.
+- EIP-2535 Diamond unauthorized cuts, selector removal and malicious initializer delegatecall takeover.
+
+The Beacon and Diamond campaigns remain `SIMULATED_BREAK` with fixture authenticity. They demonstrate the tested mechanisms and Lowkey's paired evidence pipeline; they are not production-target exploit confirmation.
+
+The live-deployment inspector and broader proxy subsystem still do not provide:
+
+- Proof that an observed EIP-1967 slot is consumed by the target's reachable runtime dispatch path.
+- Proof that a target's actual fallback dispatch reaches every facet reported by its self-reported Diamond Loupe interface.
+- Definitive immutable-admin recovery or complete authority proof. The current graph surfaces bounded PUSH20, ProxyAdmin v4/v5, owner(), Safe-style and timelock-style candidates.
+- Complete custom proxy slot discovery or arbitrary delegatecall-target resolution.
+- Complete historical upgrade reconstruction. `history` currently covers bounded standard EIP-1967 events emitted by the target itself; it does not comprehensively discover ProxyAdmin-emitted events, custom events or silent storage writes.
+- Full ERC-7201 compiler-backed namespace compatibility and migration proof.
+- Generic production broadcast, deployment or upgrade execution.
+
+The following executable attack areas remain pending: UUPS UUID mismatch and post-upgrade lockout; standalone implementation initialization and reinitializer replay; Transparent admin/non-admin dispatch and UUPS-behind-Transparent hybrid paths; caller-dependent Beacon behavior and automatic dependent-proxy fan-out discovery; nested-clone and custom-proxy attack campaigns; and broader target-specific storage migration/invariant campaigns.
+
+These remain partial until the relevant deployment-specific adapters, paired controls, trace-backed assertions and adversarial CI fixtures exist. A source pattern, ABI method name, coherent Loupe response or storage comparison is never automatically reported as a vulnerability.
 
 ## Test boundary
 
-`tests/test_proxy_engine.py` exercises slot decoding and conflict handling, exact clone matching, PUSH-data-safe opcode scanning, UUPS UUID interpretation, beacon caller-dependence, Diamond Loupe candidate handling, bounded ProxyAdmin/owner candidate discovery, storage reordering/type/gap behavior, source anchors, bounded EIP-1967 event decoding/reconciliation and non-executed attack plans. `tests/test_break_engine.py` checks the generated UUPS replacement harness and its telemetry gates. `scripts/proxy-break-acceptance-e2e.py` deploys vulnerable and owner-gated UUPS and ProxyAdmin fixtures to local Anvil. It requires complete candidate telemetry on vulnerable fixtures, rejection on owner-gated controls, and unchanged source Anvil implementation slots. Because the generated harness uses caller impersonation and synthetic replacement code, all results remain OBSERVED unless a separate sequential-control manifest passes; this acceptance does not claim a confirmed exploit. This validates these fixture routes only, not generic proxy-family coverage.
+`tests/test_proxy_engine.py` covers slot decoding and conflicts, exact clone matching, UUPS UUID interpretation, Beacon caller-dependence, Diamond Loupe candidate handling, bounded authority candidates, storage-layout comparisons, source anchors, bounded event reconciliation and non-executed attack plans. The proxy P0 CI workflow additionally runs fixture-level UUPS and ProxyAdmin controls, the shared-Beacon paired campaign, and the EIP-2535 Diamond acceptance. The Diamond gate runs eight Forge scenarios and three independent Lowkey paired-control campaigns for cut authorization, selector removal and malicious initializer takeover. It also exercises authorized replacement, selector collision rejection, compatible/incompatible facet storage behavior, migration and Loupe consistency. Every fixture campaign remains `SIMULATED_BREAK`; none is a production vulnerability finding.
 
 ## Bounded upgrade history
 
