@@ -479,7 +479,10 @@ def main() -> int:
             "role": primary_record.get("role"),
             "runtime_code": code_pm,
         }
-        evidence["checks"]["support_library_is_not_primary_target"] = library_record_a.get("role") == "solidity_library" and config_a.get("target") == position_manager_address
+        evidence["checks"]["support_library_is_not_primary_target"] = (
+            library_record_a.get("role") == "solidity_library"
+            and str(config_a.get("target") or "").lower() == position_manager_address
+        )
         evidence["checks"]["primary_target_is_positionmanager"] = primary_record.get("qualified_identity") == "contracts/core/PositionManager.sol:PositionManager"
 
         match_a = lowkey_cli._matching_supporting_deployment(
@@ -513,15 +516,10 @@ def main() -> int:
         library_address_b = str(library_addresses_b.get(library_identity.qualified_name) or "").lower()
         require(library_address_b and library_address_b != library_address_a, "PositionUtils was silently reused across two distinct Anvil sessions.")
         record_b = supporting_record(manager, session_b["id"], "solidity_library", library_identity.qualified_name)
-        require(record_b.get("runtime_verification") == "MATCHED" and record_b.get("address") == library_address_b, "Second-session PositionUtils runtime or registry verification failed.")
-        after_b = lowkey_cli._matching_supporting_deployment(
-            config_b, root, session_b["rpc"], library_identity,
-            library_artifact_path, resolved_lib, identity_b,
-            role="solidity_library", dependencies={},
-        )
-        require(after_b is not None and str(after_b.get("address", "")).lower() == library_address_b, "PositionUtils did not become reusable after verification on its own second session.")
+        record_b_address = str(record_b.get("address") or "").lower()
         evidence["deployments"]["PositionUtils_second_session"] = {
             "address": library_address_b,
+            "recorded_address": record_b.get("address"),
             "transaction_hash": record_b.get("deployment_transaction"),
             "runtime_verification": record_b.get("runtime_verification"),
             "artifact_sha256": record_b.get("artifact_sha256"),
@@ -529,12 +527,23 @@ def main() -> int:
             "role": record_b.get("role"),
             "link_evidence": link_result_b.evidence(),
         }
+        require(
+            record_b.get("runtime_verification") == "MATCHED"
+            and record_b_address == library_address_b,
+            "Second-session PositionUtils runtime or registry verification failed.",
+        )
+        after_b = lowkey_cli._matching_supporting_deployment(
+            config_b, root, session_b["rpc"], library_identity,
+            library_artifact_path, resolved_lib, identity_b,
+            role="solidity_library", dependencies={},
+        )
+        require(after_b is not None and str(after_b.get("address", "")).lower() == library_address_b, "PositionUtils did not become reusable after verification on its own second session.")
         evidence["checks"]["cross_session_library_reuse_is_rejected"] = before_b is None and library_address_b != library_address_a
         evidence["checks"]["second_session_library_deployed_and_verified"] = after_b is not None
 
         manager.use("gmx-dev")
         evidence["checks"]["primary_target_preserved_after_second_session"] = (
-            config_a.get("target") == position_manager_address
+            str(config_a.get("target") or "").lower() == position_manager_address
             and sum(1 for item in manager.get_deployments(session_a["id"]).values() if item.get("role") == "primary_audit_target") == 1
         )
         evidence["operational_readiness"] = {
