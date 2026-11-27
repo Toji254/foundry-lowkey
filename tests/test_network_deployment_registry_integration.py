@@ -423,6 +423,59 @@ class NetworkDeploymentRegistryIntegrationTests(unittest.TestCase):
             project_record = config["project_target_registry"][str(root.resolve())]["NativeTarget"]
             self.assertEqual(project_record["network_registry_status"], "RECORDED")
 
+
+
+    def test_primary_target_setter_records_target_without_optional_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target = "0x" + "55" * 20
+            network = {
+                "project_id": "project-test",
+                "project_root": str(root.resolve()),
+                "network_session_id": "session-no-artifact",
+                "session_kind": "managed-anvil",
+                "reuse_permitted": True,
+                "chain_id": 31337,
+                "genesis_hash": "0x" + "ab" * 32,
+                "identity_block_hash": "0x" + "ab" * 32,
+                "identity_block_number": 0,
+                "rpc_fingerprint": "fingerprint",
+                "rpc_origin": "local",
+            }
+            config = {"wallets": {}, "project_target_registry": {}}
+            runtime = {
+                "status": "DEPLOYED",
+                "verification": "MATCHED",
+                "rpc": "http://127.0.0.1:18545",
+                "chain_id": 31337,
+                "block_number": 1,
+                "runtime_code_hash": "0x" + "cd" * 32,
+                "runtime_code_hash_algorithm": "keccak256",
+                "initialization_status": "NOT_TESTED",
+                "dependency_readiness": "NOT_TESTED",
+                "protocol_readiness": "UNVERIFIED",
+            }
+            with patch.object(lk, "_sync_security_patterns"), patch.object(
+                lk, "save_config"
+            ), patch.object(lk.audit_context, "set_target"), patch.object(
+                lk, "_live_target_state", return_value=runtime
+            ), patch.object(lk, "_print_target_runtime_provenance"), patch.object(
+                lk, "_record_network_session_deployment", return_value="RECORDED"
+            ) as record:
+                lk.set_lab_target(
+                    config,
+                    root,
+                    target,
+                    "NativeTarget",
+                    None,
+                    network_identity=network,
+                )
+
+            session_record = record.call_args.args[3]
+            self.assertEqual(session_record["qualified_identity"], "NativeTarget")
+            self.assertIsNone(session_record["artifact"])
+            self.assertEqual(session_record["role"], "primary_audit_target")
+
     def test_native_foundry_signer_never_uses_default_key_for_different_session_actor(self):
         session_actor = "0x" + "11" * 20
         unrelated_key_address = "0x" + "22" * 20

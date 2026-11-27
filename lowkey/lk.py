@@ -16052,11 +16052,18 @@ def set_lab_target(
         and network_identity.get("network_session_id")
         and is_address(target)
     ):
+        artifact_source = ""
+        if artifact:
+            try:
+                artifact_data = read_artifact(artifact) or {}
+                artifact_source = artifact_source_name(artifact_data, artifact, root) or ""
+            except (OSError, TypeError, ValueError):
+                # Keep the deployed target record even when optional artifact
+                # provenance is unavailable; do not fabricate a source path.
+                artifact_source = ""
         session_record = {
             "role": "primary_audit_target",
-            "qualified_identity": (
-                f"{artifact_source_name(read_artifact(artifact) or {}, artifact, root) or ''}:{contract}"
-            ).lstrip(":"),
+            "qualified_identity": f"{artifact_source}:{contract}".lstrip(":"),
             "artifact": str(Path(artifact).resolve()) if artifact else None,
             "deployment_transaction": (
                 deployment_transaction

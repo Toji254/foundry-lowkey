@@ -3163,6 +3163,20 @@ class LowkeyCastTests(unittest.TestCase):
                 return_value={"url": "http://127.0.0.1:8545", "chain_id": 31337},
             ), patch.dict(lk.os.environ, {"LOWKEY_NONINTERACTIVE_DEPLOY": "1"}), patch.object(
                 lk, "auto_abi_path", return_value=None
+            ), patch.object(
+                lk, "_current_deployment_network_identity", return_value={
+                    "project_id": "unit-test-project",
+                    "project_root": str(root.resolve()),
+                    "network_session_id": "unit-test-managed-session",
+                    "session_kind": "managed-anvil",
+                    "reuse_permitted": True,
+                    "chain_id": 31337,
+                    "genesis_hash": "0x" + "ab" * 32,
+                    "identity_block_hash": "0x" + "ab" * 32,
+                    "identity_block_number": 0,
+                    "rpc_fingerprint": "sha256:unit-test",
+                    "rpc_origin": "http://127.0.0.1:8545",
+                }
             ):
                 with patch.object(
                     lk,
@@ -3237,7 +3251,21 @@ class LowkeyCastTests(unittest.TestCase):
             }
             with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
                  patch.object(lk, "auto_abi_path", return_value=None), \
-                 patch.dict(lk.os.environ, {"LOWKEY_NONINTERACTIVE_DEPLOY": "1"}):
+                 patch.dict(lk.os.environ, {"LOWKEY_NONINTERACTIVE_DEPLOY": "1"}), \
+                 patch.object(lk, "_current_deployment_network_identity", return_value={
+                    "project_id": "unit-test-project",
+                    "project_root": str(root.resolve()),
+                    "network_session_id": "unit-test-managed-session",
+                    "session_kind": "managed-anvil",
+                    "reuse_permitted": True,
+                    "chain_id": 31337,
+                    "genesis_hash": "0x" + "ab" * 32,
+                    "identity_block_hash": "0x" + "ab" * 32,
+                    "identity_block_number": 0,
+                    "rpc_fingerprint": "sha256:unit-test",
+                    "rpc_origin": "http://127.0.0.1:8545",
+                }), \
+                 patch.object(lk, "set_lab_target"):
                 result = lk.run_project_lab_script(
                     config,
                     root,
@@ -8420,6 +8448,19 @@ def withdraw(amount: uint256):
 
             with patch.object(lk, "anvil_rpc_info", return_value={"url": "http://127.0.0.1:8545", "chain_id": 31337}), \
                  patch.dict(lk.os.environ, {"LOWKEY_NONINTERACTIVE_DEPLOY": "1"}), \
+                 patch.object(lk, "_current_deployment_network_identity", return_value={
+                    "project_id": "unit-test-project",
+                    "project_root": str(root.resolve()),
+                    "network_session_id": "unit-test-managed-session",
+                    "session_kind": "managed-anvil",
+                    "reuse_permitted": True,
+                    "chain_id": 31337,
+                    "genesis_hash": "0x" + "ab" * 32,
+                    "identity_block_hash": "0x" + "ab" * 32,
+                    "identity_block_number": 0,
+                    "rpc_fingerprint": "sha256:unit-test",
+                    "rpc_origin": "http://127.0.0.1:8545",
+                }), \
                  patch.object(lk, "_ensure_lab_deployer", side_effect=ensure_deployer), \
                  patch.object(lk, "run_foundry", return_value=lk.CommandResult(f"LOWKEY_TARGET {target}", 0)), \
                  patch.object(lk, "_lab_script_environment", return_value=({}, [])), \
