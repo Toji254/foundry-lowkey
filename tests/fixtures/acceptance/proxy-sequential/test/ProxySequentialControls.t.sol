@@ -58,6 +58,91 @@ contract ProxySequentialControlsTest is LowkeyForgeStateDiffRecorder {
         require(markerOk && markerData.length == 32 && abi.decode(markerData, (bytes32)) == keccak256("LOWKEY_PROXY_SEQUENTIAL_REPLACEMENT"), "UUPS_DELEGATE_ROUTE_NOT_CONFIRMED");
     }
 
+    function test_transparent_admin_non_admin_selector_routing() external view {
+        address owner = vm.envAddress("P0_OWNER");
+        PairedProxyAdmin admin = PairedProxyAdmin(vm.envAddress("P0_PROXY_ADMIN"));
+        LowkeyTransparentProxy proxy = LowkeyTransparentProxy(payable(vm.envAddress("P0_TRANSPARENT_PROXY")));
+
+        // The ProxyAdmin contract is the immutable Transparent admin. Its
+        // non-upgrade selector must be rejected by the proxy's admin branch.
+        (bool adminOwnerSucceeded,) = admin.callProxy(
+            address(proxy),
+            abi.encodeWithSignature("owner()")
+        );
+        require(!adminOwnerSucceeded, "TRANSPARENT_ADMIN_REACHED_IMPLEMENTATION_GETTER");
+
+        // The same selector from an ordinary caller must delegate to the
+        // implementation and read the proxy's application storage.
+        (bool userOwnerSucceeded, bytes memory ownerData) = address(proxy).staticcall(
+            abi.encodeWithSignature("owner()")
+        );
+        require(userOwnerSucceeded, "TRANSPARENT_NON_ADMIN_DID_NOT_DELEGATE");
+        require(ownerData.length == 32 && abi.decode(ownerData, (address)) == owner,
+            "TRANSPARENT_NON_ADMIN_OWNER_VALUE_MISMATCH");
+
+        // An admin call using the UUPS selector is not the Transparent
+        // upgrade interface and must not fall through to UUPS implementation logic.
+        (bool adminUupsSucceeded,) = admin.callProxy(
+            address(proxy),
+            abi.encodeWithSignature("upgradeTo(address)", vm.envAddress("P0_VULNERABLE_IMPLEMENTATION"))
+        );
+        require(!adminUupsSucceeded, "TRANSPARENT_ADMIN_REACHED_UUPS_SELECTOR");
+    }
+
+    function test_paired_transparent_uups_second_surface() external {
+        address owner = vm.envAddress("P0_OWNER");
+        PairedProxyAdmin admin = PairedProxyAdmin(vm.envAddress("P0_PROXY_ADMIN"));
+        LowkeyTransparentProxy proxy = LowkeyTransparentProxy(payable(vm.envAddress("P0_TRANSPARENT_PROXY")));
+        ProxyUpgradeActor actor = ProxyUpgradeActor(vm.envAddress("P0_ACTOR"));
+        address secureImplementation = vm.envAddress("P0_SECURE_IMPLEMENTATION");
+        address vulnerableImplementation = vm.envAddress("P0_VULNERABLE_IMPLEMENTATION");
+        LowkeyProxyReplacement replacement = new LowkeyProxyReplacement();
+        bytes memory upgradeCall = abi.encodeWithSignature("upgradeTo(address)", address(replacement));
+        uint256 baseline = vm.snapshot();
+
+        // Control: the Transparent admin installs the secure UUPS-compatible
+        // implementation through its own selector. A normal actor then reaches
+        // the implementation's UUPS selector, but authorization must reject it.
+        vm.prank(owner);
+        admin.upgradeAndCall(address(proxy), secureImplementation, bytes(""));
+        _lowkeyStartTrace(address(proxy));
+        require(proxy.owner() == owner, "TRANSPARENT_CONTROL_OWNER_PRESTATE_MISMATCH");
+        require(proxy.implementation() == secureImplementation, "TRANSPARENT_CONTROL_IMPLEMENTATION_MISMATCH");
+        require(actor.successfulCalls() == 0, "TRANSPARENT_CONTROL_METRIC_PRESTATE_MISMATCH");
+        vm.prank(ATTACKER);
+        bool controlSucceeded = actor.execute(address(proxy), upgradeCall);
+        require(!controlSucceeded, "SECURE_UUPS_SECOND_SURFACE_ACCEPTED_UNAUTHORIZED_CALL");
+        require(actor.successfulCalls() == 0, "SECURE_UUPS_SECOND_SURFACE_METRIC_CHANGED");
+        require(proxy.implementation() == secureImplementation, "SECURE_UUPS_SECOND_SURFACE_SLOT_CHANGED");
+        _lowkeyWriteTrace(".audit/godmode/control-transparent-hybrid-state-diff.json");
+
+        require(vm.revertTo(baseline), "TRANSPARENT_HYBRID_BASELINE_REVERT_FAILED");
+
+        // Attack: keep the same Transparent proxy, actor and exact calldata,
+        // but let the authorized setup step install the deliberately vulnerable
+        // UUPS-compatible implementation. The later ordinary actor call still
+        // traverses the Transparent fallback and reaches UUPS upgradeTo(address).
+        vm.prank(owner);
+        admin.upgradeAndCall(address(proxy), vulnerableImplementation, bytes(""));
+        _lowkeyStartTrace(address(proxy));
+        require(proxy.owner() == owner, "TRANSPARENT_ATTACK_OWNER_PRESTATE_MISMATCH");
+        require(proxy.implementation() == vulnerableImplementation, "TRANSPARENT_ATTACK_IMPLEMENTATION_MISMATCH");
+        require(actor.successfulCalls() == 0, "TRANSPARENT_ATTACK_METRIC_PRESTATE_MISMATCH");
+        vm.prank(ATTACKER);
+        bool attackSucceeded = actor.execute(address(proxy), upgradeCall);
+        require(attackSucceeded, "VULNERABLE_UUPS_SECOND_SURFACE_REJECTED_ATTACK");
+        require(actor.successfulCalls() == 1, "VULNERABLE_UUPS_SECOND_SURFACE_METRIC_MISSING");
+        require(proxy.implementation() == address(replacement), "VULNERABLE_UUPS_SECOND_SURFACE_SLOT_NOT_REPLACED");
+        _lowkeyWriteTrace(".audit/godmode/attack-transparent-hybrid-state-diff.json");
+
+        (bool markerOk, bytes memory markerData) = address(proxy).staticcall(
+            abi.encodeWithSignature("lowkeyProxyMarker()")
+        );
+        require(markerOk && markerData.length == 32
+            && abi.decode(markerData, (bytes32)) == keccak256("LOWKEY_PROXY_SEQUENTIAL_REPLACEMENT"),
+            "TRANSPARENT_HYBRID_DELEGATE_ROUTE_NOT_CONFIRMED");
+    }
+
     function test_paired_proxy_admin_upgrade() external {
         address owner = vm.envAddress("P0_OWNER");
         PairedProxyAdmin admin = PairedProxyAdmin(vm.envAddress("P0_PROXY_ADMIN"));
