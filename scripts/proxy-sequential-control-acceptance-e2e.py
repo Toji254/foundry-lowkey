@@ -238,7 +238,6 @@ def run_transparent_hybrid_campaign(
     shutil.copy2(manifest_path, destination / "control-manifest.json")
 
     freeze_path = ".audit/godmode/transparent-hybrid.freeze.json"
-    freeze_report_path = ".audit/godmode/transparent-hybrid-freeze-report.json"
     validation_report_path = ".audit/godmode/transparent-hybrid-validation.json"
     report_path = ".audit/godmode/transparent-hybrid-control.json"
     raw_paths = {
@@ -271,17 +270,13 @@ def run_transparent_hybrid_campaign(
     try:
         capture_step(
             "freeze",
-            common + ["--freeze", "--output", freeze_report_path],
+            common + ["--freeze"],
             360,
         )
         frozen = root / freeze_path
         if not frozen.is_file():
             raise AssertionError("Transparent hybrid frozen manifest was not written.")
         shutil.copy2(frozen, destination / "freeze.json")
-        freeze_report = root / freeze_report_path
-        if not freeze_report.is_file():
-            raise AssertionError("Transparent hybrid freeze report was not written.")
-        shutil.copy2(freeze_report, destination / "freeze-report.json")
 
         capture_step(
             "validate",
