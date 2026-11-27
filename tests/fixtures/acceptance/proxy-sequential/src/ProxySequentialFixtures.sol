@@ -99,6 +99,14 @@ contract PairedProxyAdmin {
         secureMode = enabled;
     }
 
+    // Test-only forwarding hook used to verify the immutable Transparent admin
+    // branch sees the ProxyAdmin contract as msg.sender.
+    function callProxy(address proxy, bytes calldata data)
+        external returns (bool success, bytes memory returned)
+    {
+        (success, returned) = proxy.call(data);
+    }
+
     function upgradeAndCall(address proxy, address implementation, bytes calldata data)
         external payable
     {
@@ -115,12 +123,16 @@ contract LowkeyTransparentProxy {
         bytes4(keccak256("upgradeToAndCall(address,bytes)"));
     event Upgraded(address indexed implementation);
 
-    constructor(address implementation_, address admin_) {
+    constructor(address implementation_, address admin_, address initialOwner) {
         require(implementation_.code.length > 0, "NO_IMPLEMENTATION_CODE");
         require(admin_.code.length > 0, "NO_ADMIN_CODE");
+        require(initialOwner != address(0), "ZERO_INITIAL_OWNER");
         _admin = admin_;
         bytes32 slot = IMPLEMENTATION_SLOT;
-        assembly { sstore(slot, implementation_) }
+        assembly {
+            sstore(slot, implementation_)
+            sstore(0, initialOwner)
+        }
         emit Upgraded(implementation_);
     }
 
