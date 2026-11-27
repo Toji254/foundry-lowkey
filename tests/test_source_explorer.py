@@ -329,7 +329,11 @@ class ProtocolExplorerTests(unittest.TestCase):
             self.assertIn("contract Protocol", source["content"])
             self.assertEqual(source["sha256"], hashlib.sha256((self.root / "src" / "Protocol.sol").read_bytes()).hexdigest())
 
-            for unsafe in ("../outside.sol", "/etc/passwd.sol", "src\\\\..\\\\outside.sol", "foundry.toml"):
+            outside = self.root.parent / "lowkey-outside-source.sol"
+            outside.write_text("contract Outside {}", encoding="utf-8")
+            escaped = self.root / "src" / "Escaped.sol"
+            escaped.symlink_to(outside)
+            for unsafe in ("../outside.sol", "/etc/passwd.sol", "src\\\\..\\\\outside.sol", "foundry.toml", "src/Escaped.sol"):
                 with self.subTest(unsafe=unsafe):
                     url = base + "/api/source?path=" + urllib.parse.quote(unsafe, safe="")
                     with self.assertRaises(urllib.error.HTTPError) as error:
