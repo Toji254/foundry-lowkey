@@ -120,6 +120,20 @@ def _slot_address(value: int, label: str) -> str | None:
     return address
 
 
+def _contains_delegatecall(code: str) -> bool:
+    """Scan EVM instruction boundaries so PUSH data is never mistaken for DELEGATECALL."""
+    raw = bytes.fromhex(code[2:])
+    pc = 0
+    while pc < len(raw):
+        opcode = raw[pc]
+        pc += 1
+        if opcode == 0xF4:
+            return True
+        if 0x60 <= opcode <= 0x7F:
+            pc += opcode - 0x5F
+    return False
+
+
 def _proxy_identity(
     rpc: Callable[..., Any], local_url: str, source_url: str | None,
     address: str, block: int, label: str,
@@ -152,6 +166,14 @@ def _proxy_identity(
             "implementation": implementation,
             "implementation_code_sha256": hashlib.sha256(bytes.fromhex(local_code[2:])).hexdigest(),
         }
+    elif not implementation and not beacon:
+        # Unknown delegatecall-based proxy designs cannot be source-verified by
+        # this resolver. Refuse rather than label them as ordinary direct assets.
+        runtime = _code(rpc, local_url, address, block, label + " runtime")
+        if _contains_delegatecall(runtime):
+            raise TokenEconomicsError(
+                f"{label} uses DELEGATECALL without a supported EIP-1967 identity; unsupported proxy identity fails closed."
+            )
     elif beacon:
         local_beacon_code = _code(rpc, local_url, beacon, block, label + " beacon")
         source_beacon_code = None
