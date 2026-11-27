@@ -420,6 +420,99 @@ class ProtocolExplorerTests(unittest.TestCase):
         self.assertEqual(override["file"], "src/Dispatch.sol")
         self.assertEqual(override["line"], source[:final_function_start].count("\n") + 1)
 
+    def test_validated_runtime_traces_join_the_canvas_without_guessing_source_identity(self):
+        audit = self.root / ".audit"
+        audit.mkdir()
+        accessor = "0x1111111111111111111111111111111111111111"
+        account = "0x2222222222222222222222222222222222222222"
+        (audit / "trace.json").write_text(
+            json.dumps({
+                "run_id": "fixture-local-run",
+                "network_identity": {"chain_id": 31337, "genesis_hash": "0x" + "ab" * 32},
+                "canonical_trace_events": [{
+                    "seq": 0,
+                    "backend": "anvil-calltracer",
+                    "kind": "Call",
+                    "accessor": accessor,
+                    "account": account,
+                    "depth": 1,
+                    "value": 0,
+                    "selector": "0x12345678",
+                    "calldata": "0x12345678",
+                    "reverted": False,
+                    "storage": None,
+                    "storage_support": "declared_only",
+                }],
+            }),
+            encoding="utf-8",
+        )
+
+        model = build_explorer_model(self.index, root=self.root)
+        runtime_nodes = {
+            item["runtime_address"]: item
+            for item in model["nodes"]
+            if item.get("kind") == "runtime_address"
+        }
+        runtime_edges = [
+            edge for edge in model["edges"]
+            if edge.get("kind") == "RUNTIME_CALL_OBSERVED"
+        ]
+        source_contract_ids = {
+            item["id"] for item in model["nodes"] if item.get("type") == "declaration"
+        }
+
+        self.assertEqual(set(runtime_nodes), {accessor, account})
+        self.assertEqual(len(runtime_edges), 1)
+        edge = runtime_edges[0]
+        self.assertEqual(edge["evidence"], "RUNTIME_TRACE")
+        self.assertEqual(edge["resolution"], "OBSERVED")
+        self.assertEqual(edge["details"]["run_id"], "fixture-local-run")
+        self.assertEqual(edge["details"]["artifact"], ".audit/trace.json")
+        self.assertEqual(edge["details"]["seq"], 0)
+        self.assertEqual(edge["details"]["selector"], "0x12345678")
+        self.assertTrue({edge["source"], edge["target"]}.isdisjoint(source_contract_ids))
+        self.assertEqual(
+            model["runtime_trace"]["source_join"],
+            "UNAVAILABLE_WITHOUT_VERIFIED_DEPLOYMENT_AND_NETWORK_IDENTITY",
+        )
+        self.assertEqual(model["runtime_trace"]["observations"], 1)
+        self.assertTrue(any(group.get("runtime_endpoint") for group in model["groups"]))
+
+        html = render_explorer_html(model)
+        self.assertIn('data-edge="RUNTIME_CALL_OBSERVED"', html)
+        self.assertIn("RUNTIME_CALL_OBSERVED", html)
+        self.assertIn("Source mapping: unavailable", html)
+
+    def test_malformed_runtime_trace_stream_is_rejected_and_never_drawn(self):
+        audit = self.root / ".audit"
+        audit.mkdir()
+        (audit / "bad-trace.json").write_text(
+            json.dumps({
+                "canonical_trace_events": [{
+                    "seq": 4,
+                    "backend": "anvil-calltracer",
+                    "kind": "Call",
+                    "accessor": "0x1111111111111111111111111111111111111111",
+                    "account": "0x2222222222222222222222222222222222222222",
+                    "depth": 1,
+                    "value": 0,
+                    "selector": "0x12345678",
+                    "calldata": "0x12345678",
+                    "reverted": False,
+                    "storage": None,
+                    "storage_support": "declared_only",
+                }],
+            }),
+            encoding="utf-8",
+        )
+
+        model = build_explorer_model(self.index, root=self.root)
+        self.assertEqual(model["runtime_trace"]["streams"], 0)
+        self.assertEqual(model["runtime_trace"]["observations"], 0)
+        self.assertTrue(model["runtime_trace"]["rejected"])
+        self.assertFalse(any(item.get("kind") == "runtime_address" for item in model["nodes"]))
+        self.assertFalse(any(edge.get("kind") == "RUNTIME_CALL_OBSERVED" for edge in model["edges"]))
+
     def test_uploaded_files_keep_project_paths_and_reject_traversal(self):
         destination = self.root / "uploaded"
         write_uploaded_files(
