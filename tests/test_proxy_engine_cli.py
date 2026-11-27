@@ -228,7 +228,9 @@ class ProxyEngineCliTests(unittest.TestCase):
 
             def control(args):
                 captured["args"] = list(args)
-                report_path = root / ".audit" / "godmode" / "proxy-campaign.json"
+                output_index = args.index("--output") + 1
+                report_path = (root / args[output_index]).resolve()
+                self.assertFalse(report_path.exists(), "campaign output must be unique for this execution")
                 report_path.parent.mkdir(parents=True, exist_ok=True)
                 report_path.write_text(json.dumps({
                     "status": "SIMULATED_BREAK",
@@ -251,10 +253,11 @@ class ProxyEngineCliTests(unittest.TestCase):
             self.assertIn("--require-frozen", captured["args"])
             self.assertIn("--rpc-url", captured["args"])
             self.assertIn("SIMULATED_BREAK", output.getvalue())
+            self.assertIn("DECLARED FAM", output.getvalue())
             reports = list((root / ".audit" / "proxy" / ("0x" + "11" * 20)).glob("campaign-control-*.json"))
             self.assertEqual(len(reports), 1)
             saved = json.loads(reports[0].read_text(encoding="utf-8"))
-            self.assertEqual(saved["proxy_family"], "beacon")
+            self.assertEqual(saved["declared_proxy_family"], "beacon")
             self.assertEqual(saved["runs"]["attack"]["metric"], 1)
 
     def test_proxy_campaign_freeze_is_a_nonexecuting_operation(self):
@@ -306,6 +309,60 @@ class ProxyEngineCliTests(unittest.TestCase):
                 )
             self.assertEqual(code, 2)
             self.assertIn("inside the active project", output.getvalue())
+
+
+    def test_proxy_campaign_rejects_unsupported_render_flags(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "m.json").write_text(json.dumps({
+                "family": "proxy", "target_address": "0x" + "11" * 20,
+                "same_calls_id": "x", "control": {}, "attack": {},
+            }), encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = lk.proxy_engine.run_cli(
+                    {}, ["campaign", "--manifest", "m.json", "--json"],
+                    root_resolver=lambda: root,
+                )
+            self.assertEqual(code, 2)
+            self.assertIn("Unsupported campaign flag", output.getvalue())
+
+    def test_proxy_campaign_uses_cwd_when_root_resolver_returns_none(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "family": "proxy", "target_address": "0x" + "11" * 20,
+                "same_calls_id": "cwd-root", "control": {"argv": ["forge", "test"]},
+                "attack": {"argv": ["forge", "test"]},
+            }
+            (root / "m.json").write_text(json.dumps(manifest), encoding="utf-8")
+            captured = {}
+            def fake_control(args):
+                captured["args"] = list(args)
+                report = root / args[args.index("--output") + 1]
+                report.parent.mkdir(parents=True, exist_ok=True)
+                report.write_text(json.dumps({"status": "OBSERVED", "proof_axes": {}, "runs": {}}), encoding="utf-8")
+                return 0
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(root)
+                with patch.dict(sys.modules, {"godmode": SimpleNamespace(control=fake_control)}):
+                    code = lk.proxy_engine.run_cli(
+                        {}, ["campaign", "--manifest", "m.json"],
+                        root_resolver=lambda: None,
+                    )
+            finally:
+                os.chdir(old_cwd)
+            self.assertEqual(code, 0)
+            self.assertTrue(Path(captured["args"][captured["args"].index("--root") + 1]).samefile(root))
 
 if __name__ == "__main__":
     unittest.main()

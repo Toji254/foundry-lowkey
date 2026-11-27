@@ -11,6 +11,7 @@ import json
 import re
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -2396,6 +2397,18 @@ def _run_proxy_campaign_cli(
     root_resolver=None,
 ) -> int:
     """Execute a paired proxy experiment through Lowkey's existing frozen control gate."""
+    unsupported_flags = flags - {"freeze", "validate", "non-economic"}
+    if unsupported_flags:
+        print("LOWKEY ERROR: Unsupported campaign flag(s): " + ", ".join("--" + item for item in sorted(unsupported_flags)))
+        return 2
+    accepted_values = {
+        "--manifest", "--root", "--rpc-url", "--source-rpc-url",
+        "--output", "--freeze-file",
+    }
+    unsupported_values = set(values) - accepted_values
+    if unsupported_values:
+        print("LOWKEY ERROR: Unsupported campaign option(s): " + ", ".join(sorted(unsupported_values)))
+        return 2
     if "freeze" in flags and "validate" in flags:
         print("LOWKEY ERROR: --freeze and --validate are separate campaign operations.")
         return 2
@@ -2413,7 +2426,8 @@ def _run_proxy_campaign_cli(
         if root_value:
             root = Path(root_value).expanduser().resolve()
         elif callable(root_resolver):
-            root = Path(root_resolver()).expanduser().resolve()
+            resolved_root = root_resolver()
+            root = Path(resolved_root or Path.cwd()).expanduser().resolve()
         else:
             root = Path.cwd().resolve()
         if not root.is_dir():
@@ -2451,7 +2465,9 @@ def _run_proxy_campaign_cli(
         if not rpc:
             rpc = config.get("rpc_url") or config.get("rpc")
 
-        output_name = values.get("--output") or ".audit/godmode/proxy-campaign.json"
+        output_name = values.get("--output") or (
+            ".audit/godmode/proxy-campaign-" + uuid.uuid4().hex + ".json"
+        )
         freeze_name = values.get("--freeze-file") or ".audit/godmode/proxy-campaign.freeze.json"
         for label, raw_path in (("output", output_name), ("freeze file", freeze_name)):
             candidate = Path(raw_path).expanduser()
@@ -2487,6 +2503,17 @@ def _run_proxy_campaign_cli(
         if "non-economic" in flags:
             control_args.append("--non-economic")
 
+        if "freeze" not in flags and "validate" not in flags:
+            output_candidate = Path(output_name).expanduser()
+            output_candidate = (
+                (root / output_candidate).resolve()
+                if not output_candidate.is_absolute() else output_candidate.resolve()
+            )
+            if output_candidate.exists():
+                raise ProxyError(
+                    "Campaign output already exists; choose a new --output path to avoid stale evidence reuse."
+                )
+
         exit_code = int(godmode_module.control(control_args))
         if "freeze" in flags or "validate" in flags:
             return exit_code
@@ -2503,7 +2530,7 @@ def _run_proxy_campaign_cli(
         if not isinstance(control_report, dict):
             raise ProxyError("Control runner evidence report is not a JSON object.")
 
-        proxy_family = (
+        declared_proxy_family = (
             manifest.get("proxy_family")
             or manifest.get("proxy_type")
             or manifest.get("upgrade_mechanism")
@@ -2512,7 +2539,7 @@ def _run_proxy_campaign_cli(
         campaign = {
             "schema": "lowkey.proxy.campaign.v1",
             "target": str(target).lower(),
-            "proxy_family": str(proxy_family),
+            "declared_proxy_family": str(declared_proxy_family),
             "same_calls_id": manifest["same_calls_id"],
             "manifest": str(manifest_path.relative_to(root)),
             "control_report_path": str(output_path.relative_to(root)),
@@ -2540,7 +2567,7 @@ def _run_proxy_campaign_cli(
         print(
             "LOWKEY / PROXY PAIRED CAMPAIGN\n"
             f"TARGET       {campaign['target']}\n"
-            f"FAMILY       {campaign['proxy_family']}\n"
+            f"DECLARED FAM {campaign['declared_proxy_family']}\n"
             f"STATUS       {campaign['status']}\n"
             f"FIDELITY     {(campaign['proof_axes'] or {}).get('fidelity', 'see control report')}\n"
             f"EVIDENCE     {campaign_path.relative_to(root)}\n"
