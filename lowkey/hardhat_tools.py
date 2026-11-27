@@ -244,13 +244,14 @@ def _render_help(command: str | None = None) -> str:
         "hardhat": {
             "what": "Initialize a Hardhat project or inspect/prepare an existing project's local Hardhat toolchain.",
             "when": "Use this for a repository that actually uses Hardhat. Normal build, test, and clean commands remain lk build, lk test, and lk clean.",
-            "usage": "lk hardhat <init|doctor|prepare|clean>",
+            "usage": "lk hardhat <init|doctor|prepare|deploy|clean>",
             "example": "lk hardhat doctor",
             "forms": [
                 ("lk hardhat init", "Create a new Hardhat project with the minimal template. Refuses to overwrite an existing Hardhat config.", "lk hardhat init"),
                 ("lk hardhat init --templates", "List initializer templates supported by the installed Hardhat initializer.", "lk hardhat init --templates"),
                 ("lk hardhat doctor", "Show a read-only report of dependencies, local config, project Node pins, and Hardhat's Node engine range.", "lk hardhat doctor"),
                 ("lk hardhat prepare", "Prepare repository-declared dependencies when the project-local Hardhat executable is missing. May create the initial lockfile when none exists.", "lk hardhat prepare"),
+                ("lk hardhat deploy <script> --network <name> --target <Contract>", "Review and execute one direct-creation Hardhat 3 script against the selected managed Anvil network. Factory and proxy topologies remain blocked.", "lk hardhat deploy scripts/Deploy.mjs --network localhost --target Vault"),
                 ("lk clean", "Clean generated build artifacts using the selected native cleaner. Foundry takes precedence in mixed Foundry/Hardhat projects.", "lk clean"),
             ],
             "options": [
@@ -263,6 +264,7 @@ def _render_help(command: str | None = None) -> str:
                 "Hardhat remains a project-local dependency. Lowkey does not install a global Hardhat executable.",
                 "Initialization is for a new Hardhat project. Existing hardhat.config.* files are not overwritten.",
                 "Doctor is read-only. Prepare/build/test may install only dependencies declared by the repository and honor its lockfile.",
+                "Hardhat deploy requires a local Hardhat 3 binary, a selected managed Anvil session, an HTTP network with remote accounts, and explicit PROBE and DEPLOY approval.",
             ],
         },
         "init": {
@@ -1044,6 +1046,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(_render_help())
         return 0
     command, rest = values[0], values[1:]
+    if command == "deploy":
+        from hardhat_deployment import run_deploy_cli
+        return run_deploy_cli(rest, hardhat_tools=sys.modules[__name__])
     if command == "init":
         return run_init(rest)
     if command == "clean":

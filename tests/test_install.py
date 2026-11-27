@@ -122,6 +122,8 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertTrue(manifest.exists())
             question_engine = pathlib.Path(home) / ".lowkey" / "question_engine.py"
             self.assertTrue(question_engine.exists())
+            hardhat_deployment_module = pathlib.Path(home) / ".lowkey" / "hardhat_deployment.py"
+            self.assertTrue(hardhat_deployment_module.is_file())
             proxy_engine_module = pathlib.Path(home) / ".lowkey" / "proxy_engine.py"
             self.assertTrue(proxy_engine_module.is_file())
             deployment_review_module = pathlib.Path(home) / ".lowkey" / "deployment_review.py"
@@ -214,6 +216,7 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertEqual(len(pack_paths), 10)
             install_manifest = json.loads(manifest.read_text(encoding="utf-8"))
             self.assertIn(str(shared_context), install_manifest["files"])
+            self.assertIn(str(hardhat_deployment_module), install_manifest["files"])
             self.assertIn(str(proxy_engine_module), install_manifest["files"])
             self.assertIn(str(deployment_review_module), install_manifest["files"])
             self.assertIn(str(opcode_module), install_manifest["files"])
